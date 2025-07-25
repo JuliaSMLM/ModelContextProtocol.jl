@@ -43,15 +43,15 @@ greet_tool = MCPTool(
         )
     ],
     handler = function(params)
-        name = params["name"]
+        user_name = params["name"]
         language = get(params, "language", "english")
         
         greeting = if language == "spanish"
-            "¡Hola, $name!"
+            "¡Hola, $(user_name)!"
         elseif language == "french"
-            "Bonjour, $name!"
+            "Bonjour, $(user_name)!"
         else
-            "Hello, $name!"
+            "Hello, $(user_name)!"
         end
         
         return TextContent(text = greeting)
