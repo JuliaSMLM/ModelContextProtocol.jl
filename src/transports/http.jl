@@ -68,11 +68,47 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     target = request.target
     path = HTTP.URI(target).path
     
-    # Only handle POST requests to our endpoint
-    if method != "POST" || path != transport.endpoint
+    # Handle both POST and GET requests to our endpoint
+    if path != transport.endpoint
         HTTP.setstatus(stream, 404)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         write(stream, "Not Found")
+        return nothing
+    end
+    
+    # Handle GET requests for SSE notification stream
+    if method == "GET"
+        accept_header = HTTP.header(request, "Accept", "")
+        if contains(accept_header, "text/event-stream")
+            # Set up SSE stream for notifications
+            HTTP.setstatus(stream, 200)
+            HTTP.setheader(stream, "Content-Type" => "text/event-stream")
+            HTTP.setheader(stream, "Cache-Control" => "no-cache")
+            HTTP.setheader(stream, "Connection" => "keep-alive")
+            HTTP.startwrite(stream)
+            
+            # For now, just keep the connection open
+            # In a full implementation, we'd send notifications here
+            try
+                while transport.connected
+                    sleep(1)
+                end
+            catch e
+                @debug "SSE connection closed" error=e
+            end
+        else
+            HTTP.setstatus(stream, 406)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            write(stream, "Not Acceptable - GET requests must Accept: text/event-stream")
+        end
+        return nothing
+    end
+    
+    # Handle POST requests
+    if method != "POST"
+        HTTP.setstatus(stream, 405)
+        HTTP.setheader(stream, "Content-Type" => "text/plain")
+        write(stream, "Method Not Allowed")
         return nothing
     end
     
