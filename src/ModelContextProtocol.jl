@@ -59,24 +59,28 @@ include("features/prompts.jl")
 # 3. Protocol Types
 include("protocol/messages.jl")
 
-# 4. Server Types
+# 4. Transport Layer
+include("transports/base.jl")
+include("transports/stdio.jl")
+
+# 5. Server Types
 include("core/server_types.jl")  
 
-# 5. Utils
+# 6. Utils
 include("utils/errors.jl")
 include("utils/logging.jl")
 
-# 6. Implementation
+# 7. Implementation
 include("protocol/jsonrpc.jl")
 include("core/capabilities.jl")
 include("core/server.jl")
 include("core/init.jl")
 include("protocol/handlers.jl")
 
-# 7. Serialization (needs all types)
+# 8. Serialization (needs all types)
 include("utils/serialization.jl")
 
-# 8. API documentation
+# 9. API documentation
 include("api.jl")
 
 # Export all public interfaces
@@ -96,6 +100,9 @@ export
     # Server types
     Server, ServerConfig,
     Tool, Resource, Capability,
+    
+    # Transport types
+    Transport, TransportError, StdioTransport,
     
     # Feature types
     ToolParameter, MCPTool, MCPResource, 

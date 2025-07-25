@@ -5,7 +5,13 @@
       "WebFetch(domain:modelcontextprotocol.io)",
       "Bash(rg:*)",
       "Bash(grep:*)",
-      "WebFetch(domain:spec.modelcontextprotocol.io)"
+      "WebFetch(domain:spec.modelcontextprotocol.io)",
+      "Bash(gh release:*)",
+      "Bash(gh api:*)",
+      "Bash(gh run list:*)",
+      "WebFetch(domain:juliaregistries.github.io)",
+      "WebFetch(domain:github.com)",
+      "Bash(git fetch:*)"
     ],
     "deny": []
   }

@@ -53,12 +53,13 @@ Base.@kwdef struct ServerConfig
 end
 
 """
-    Server(config::ServerConfig)
+    Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing)
 
 Represent a running MCP server instance that manages resources, tools, and prompts.
 
 # Fields
 - `config::ServerConfig`: Server configuration settings
+- `transport::Union{Transport,Nothing}`: Transport implementation for client-server communication
 - `resources::Vector{Resource}`: Available resources
 - `tools::Vector{Tool}`: Available tools
 - `prompts::Vector{MCPPrompt}`: Available prompts
@@ -68,10 +69,11 @@ Represent a running MCP server instance that manages resources, tools, and promp
 - `active::Bool`: Whether the server is currently active
 
 # Constructor
-- `Server(config::ServerConfig)`: Creates a new server with the specified configuration
+- `Server(config::ServerConfig; transport=nothing)`: Creates a new server with the specified configuration
 """
 mutable struct Server
     config::ServerConfig
+    transport::Union{Transport,Nothing}
     resources::Vector{Resource}
     tools::Vector{Tool}
     prompts::Vector{MCPPrompt}
@@ -80,9 +82,10 @@ mutable struct Server
     progress_trackers::Dict{Union{String,Int}, Progress}
     active::Bool
     
-    function Server(config::ServerConfig)
+    function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing)
         new(
             config,
+            transport,
             Resource[],
             Tool[],
             MCPPrompt[],
