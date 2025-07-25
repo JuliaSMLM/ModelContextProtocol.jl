@@ -7,8 +7,8 @@ using UUIDs: uuid4
 """
     HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
 
-Transport implementation using HTTP with chunked transfer encoding for streaming.
-Follows the MCP HTTP transport specification.
+Transport implementation using HTTP following the Streamable HTTP specification.
+Implements simple request-response pattern without streaming.
 
 # Fields
 - `host::String`: Host address to bind to (default: "127.0.0.1")
@@ -52,7 +52,8 @@ end
 """
     handle_request(transport::HttpTransport, stream::HTTP.Stream)
 
-Handle incoming HTTP requests and set up streaming response.
+Handle incoming HTTP requests following the Streamable HTTP specification.
+Returns a single JSON response per request.
 
 # Arguments
 - `transport::HttpTransport`: The transport instance
@@ -91,40 +92,40 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # Generate unique request ID
         request_id = string(uuid4())
         
-        # Create response channel for this request
-        response_channel = Channel{String}(10)
+        # Create response channel for this request (buffer size 1 for single response)
+        response_channel = Channel{String}(1)
         transport.response_channels[request_id] = response_channel
         transport.active_streams[request_id] = stream
         
         # Queue the request for processing
         put!(transport.request_queue, (request_id, body))
         
-        # Set up streaming response headers
-        HTTP.setstatus(stream, 200)
-        HTTP.setheader(stream, "Content-Type" => "application/json")
-        HTTP.setheader(stream, "Transfer-Encoding" => "chunked")
-        HTTP.setheader(stream, "Cache-Control" => "no-cache")
-        HTTP.startwrite(stream)
-        
-        # Handle streaming responses
+        # Wait for the single response
         try
-            while true
-                # Wait for response messages
-                response = take!(response_channel)
-                
-                # Check for end-of-stream marker
-                if response == "END_STREAM"
-                    break
-                end
-                
-                # Write response as chunk
-                write(stream, response)
-                write(stream, "\n")  # Add newline for readability
-                Base.flush(stream)
-            end
+            response = take!(response_channel)
+            
+            # Write the response
+            HTTP.setstatus(stream, 200)
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            HTTP.setheader(stream, "Cache-Control" => "no-cache")
+            write(stream, response)
+            
         catch e
             if !(e isa InvalidStateException)
-                @debug "Error in response handler" error=e
+                @debug "Error waiting for response" error=e
+                if !HTTP.iswritestarted(stream)
+                    HTTP.setstatus(stream, 500)
+                    HTTP.setheader(stream, "Content-Type" => "application/json")
+                    error_response = JSON3.write(Dict(
+                        "jsonrpc" => "2.0",
+                        "error" => Dict(
+                            "code" => -32603,
+                            "message" => "Internal error"
+                        ),
+                        "id" => nothing
+                    ))
+                    write(stream, error_response)
+                end
             end
         finally
             # Cleanup
@@ -137,9 +138,16 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         @error "Error handling request" error=e
         if !HTTP.iswritestarted(stream)
             HTTP.setstatus(stream, 500)
-            HTTP.setheader(stream, "Content-Type" => "text/plain")
-            HTTP.startwrite(stream)
-            write(stream, "Internal Server Error")
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            error_response = JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "error" => Dict(
+                    "code" => -32603,
+                    "message" => "Internal error: $(e)"
+                ),
+                "id" => nothing
+            ))
+            write(stream, error_response)
         end
     end
     
@@ -207,10 +215,10 @@ function close(transport::HttpTransport)::Nothing
     
     transport.connected = false
     
-    # Send end-of-stream to all active connections
+    # Close all response channels
     for (id, channel) in transport.response_channels
         try
-            put!(channel, "END_STREAM")
+            Base.close(channel)
         catch
             # Channel might be closed already
         end
@@ -287,7 +295,8 @@ end
 """
     write_message(transport::HttpTransport, message::String) -> Nothing
 
-Write a message to the current request's response stream.
+Write a message to the current request's response channel.
+The request handler will send this as the HTTP response.
 
 # Arguments
 - `transport::HttpTransport`: The transport instance
@@ -309,6 +318,8 @@ function write_message(transport::HttpTransport, message::String)::Nothing
         if haskey(transport.response_channels, request_id)
             try
                 put!(transport.response_channels[request_id], message)
+                # Clear current request ID after sending response
+                transport.current_request_id = nothing
             catch e
                 @debug "Failed to write message" error=e
             end
@@ -324,7 +335,8 @@ end
 """
     end_response(transport::HttpTransport) -> Nothing
 
-Signal the end of the current response stream.
+Deprecated: No longer needed as HTTP transport now sends complete responses.
+This method exists for backward compatibility but does nothing.
 
 # Arguments
 - `transport::HttpTransport`: The transport instance
@@ -333,27 +345,7 @@ Signal the end of the current response stream.
 - `Nothing`
 """
 function end_response(transport::HttpTransport)::Nothing
-    if !transport.connected
-        return nothing
-    end
-    
-    # Get the current request ID
-    if isdefined(transport, :current_request_id) && !isnothing(transport.current_request_id)
-        request_id = transport.current_request_id
-        
-        # Send end-of-stream marker
-        if haskey(transport.response_channels, request_id)
-            try
-                put!(transport.response_channels[request_id], "END_STREAM")
-            catch e
-                @debug "Failed to end response" error=e
-            end
-        end
-        
-        # Clear current request ID
-        transport.current_request_id = nothing
-    end
-    
+    # No-op: responses are now sent immediately in write_message
     nothing
 end
 
