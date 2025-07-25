@@ -1,5 +1,41 @@
 # ModelContextProtocol.jl Development Guide
 
+## HTTP Transport Usage
+
+### Windows Localhost Issues
+On Windows, use `127.0.0.1` instead of `localhost` to avoid IPv6 connection issues:
+- Server: `HttpTransport(host="127.0.0.1", port=3000)`
+- Client: `http://127.0.0.1:3000/`
+- MCP Remote: `npx mcp-remote http://127.0.0.1:3000 --allow-http`
+
+### Testing HTTP Transport
+1. **Direct curl test**:
+   ```bash
+   curl -X POST http://127.0.0.1:3000/ -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+   ```
+
+2. **MCP Inspector with mcp-remote bridge**:
+   ```bash
+   npx @modelcontextprotocol/inspector stdio -- npx mcp-remote http://127.0.0.1:3000 --allow-http
+   ```
+
+3. **Claude Desktop configuration**:
+   ```json
+   {
+     "mcpServers": {
+       "julia-http": {
+         "command": "npx",
+         "args": ["mcp-remote", "http://127.0.0.1:3000", "--allow-http"]
+       }
+     }
+   }
+   ```
+
+### HTTP Transport Implementation
+The HTTP transport implements the Streamable HTTP specification:
+- **POST requests**: JSON-RPC messages with immediate JSON responses
+- **GET requests**: SSE streams for server-to-client notifications (requires `Accept: text/event-stream` header)
+
 ## Commands
 - Build: `using Pkg; Pkg.build("ModelContextProtocol")`
 - Test all: `using Pkg; Pkg.test("ModelContextProtocol")`
@@ -226,3 +262,6 @@ The ModelContextProtocol.jl package includes infrastructure for progress monitor
 3. **Long-term**: Implement full bidirectional communication with proper notification support
 
 The infrastructure exists but requires additional implementation to enable progress monitoring from within tool handlers.
+
+## Dev Notes
+- use 127.0.0.1 instead of localhost on windows
