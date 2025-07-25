@@ -142,7 +142,16 @@ function run_server_loop(server::Server, state::ServerState)
             message = read_message(transport)
             
             # Skip if no message (empty or connection closed)
-            isnothing(message) && continue
+            if isnothing(message)
+                # For HTTP transport, keep running even without messages
+                if isa(transport, HttpTransport)
+                    sleep(0.1)  # Small delay to prevent busy loop
+                    continue
+                else
+                    # For stdio transport, null message means EOF
+                    break
+                end
+            end
             
             # Process the message
             @debug "Processing message" raw=message

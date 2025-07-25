@@ -62,6 +62,7 @@ include("protocol/messages.jl")
 # 4. Transport Layer
 include("transports/base.jl")
 include("transports/stdio.jl")
+include("transports/http.jl")
 
 # 5. Server Types
 include("core/server_types.jl")  
@@ -102,7 +103,7 @@ export
     Tool, Resource, Capability,
     
     # Transport types
-    Transport, TransportError, StdioTransport,
+    Transport, TransportError, StdioTransport, HttpTransport,
     
     # Feature types
     ToolParameter, MCPTool, MCPResource, 

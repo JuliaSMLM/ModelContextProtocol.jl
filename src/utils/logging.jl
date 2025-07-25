@@ -97,7 +97,7 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
     
     # Write to output stream
     println(logger.stream, String(take!(buf)))
-    flush(logger.stream)
+    Base.flush(logger.stream)
 end
 
 """
