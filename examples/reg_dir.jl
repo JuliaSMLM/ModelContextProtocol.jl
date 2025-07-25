@@ -17,7 +17,7 @@ end
 server = mcp_server(
     name = "mcp_tools_directory",
     description = "example mcp tools",
-    auto_register_dir="examples\\mcp_tools"
+    auto_register_dir=joinpath(@__DIR__, "mcp_tools")
 )
 
 # Start the server

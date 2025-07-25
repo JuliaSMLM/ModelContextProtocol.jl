@@ -3,8 +3,10 @@
 # Demonstration of HTTP transport with direct usage
 
 using ModelContextProtocol
+using ModelContextProtocol: HttpTransport
 using HTTP
 using JSON3
+using Dates
 
 # Create HTTP transport
 transport = HttpTransport(port=3001)

@@ -1,8 +1,9 @@
 #!/usr/bin/env julia
 
-# Example of running an MCP server with HTTP+SSE transport
+# Example of running an MCP server with HTTP transport
 
 using ModelContextProtocol
+using ModelContextProtocol: HttpTransport
 
 # Create a simple server with some tools
 server = mcp_server(
