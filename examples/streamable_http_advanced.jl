@@ -1,6 +1,7 @@
 #!/usr/bin/env julia
 
-# Demonstration of HTTP transport with direct usage
+# Advanced demonstration of Streamable HTTP transport with direct API usage
+# Shows low-level HTTP interaction with MCP servers
 
 using ModelContextProtocol
 using ModelContextProtocol: HttpTransport

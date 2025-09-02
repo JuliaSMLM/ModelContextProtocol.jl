@@ -1,6 +1,7 @@
 #!/usr/bin/env julia
 
-# Simple HTTP MCP server for testing with inspector
+# Simple Streamable HTTP MCP server for testing with inspector
+# Implements MCP protocol version 2025-03-26
 
 using ModelContextProtocol
 using ModelContextProtocol: HttpTransport
@@ -58,14 +59,17 @@ greet_tool = MCPTool(
     end
 )
 
-# Create HTTP transport
-transport = HttpTransport(port=3000)
+# Create Streamable HTTP transport
+transport = HttpTransport(
+    port = 3000,
+    protocol_version = "2025-03-26"  # Current MCP protocol
+)
 
 # Create server with tools
 server = mcp_server(
-    name = "simple-http-server",
+    name = "simple-streamable-http-server",
     version = "1.0.0",
-    description = "Simple HTTP MCP server for testing",
+    description = "Simple Streamable HTTP MCP server for testing",
     tools = [echo_tool, greet_tool]
 )
 
@@ -75,14 +79,17 @@ server.transport = transport
 # Connect the transport (starts HTTP server)
 ModelContextProtocol.connect(transport)
 
-println("Starting Simple HTTP MCP Server on port 3000...")
+println("Starting Simple Streamable HTTP MCP Server on port 3000...")
+println("Protocol Version: 2025-03-26")
+println()
 println("Test with MCP Inspector:")
 println("  npx @modelcontextprotocol/inspector")
 println("  Then connect to: http://localhost:3000/")
 println()
 println("Or test manually:")
 println("  curl -X POST http://localhost:3000/ -H 'Content-Type: application/json' \\")
-println("    -d '{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}'")
+println("    -H 'MCP-Protocol-Version: 2025-03-26' \\")
+println("    -d '{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{},\"id\":1}'")
 println()
 println("Press Ctrl+C to stop")
 

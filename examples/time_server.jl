@@ -1,16 +1,16 @@
-using Pkg
-Pkg.activate(@__DIR__)
+#!/usr/bin/env julia
+
+# stdio MCP server example with time-related tools
 
 using ModelContextProtocol
 using Dates
 
-# Define a tool - can now return Dict directly!
+# Define a tool that returns current time
 time_tool = MCPTool(
     name = "current_time",
     description = "Get Current Date and Time",
     parameters = [],
-    handler = params -> Dict("time" => Dates.format(now(), "yyyy-mm-ddTHH:MM:SS")),
-    return_type = TextContent  # Explicitly expect single TextContent
+    handler = params -> TextContent(text = "Current time: $(Dates.format(now(), "yyyy-mm-dd HH:MM:SS"))")
 )
 
 # Define a resource 

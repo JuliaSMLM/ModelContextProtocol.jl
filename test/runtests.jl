@@ -17,5 +17,6 @@ using OrderedCollections: LittleDict
     include("utils/logging.jl")
     include("transports/test_stdio.jl")
     include("transports/test_http.jl")
+    include("transports/test_streamable_http.jl")
     include("integration/full_server.jl")
 end

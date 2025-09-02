@@ -104,6 +104,7 @@ export
     
     # Transport types
     Transport, TransportError, StdioTransport, HttpTransport,
+    send_notification, broadcast_to_sse, format_sse_event,
     
     # Feature types
     ToolParameter, MCPTool, MCPResource, 

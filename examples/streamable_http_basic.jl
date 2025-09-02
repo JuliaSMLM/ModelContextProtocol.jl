@@ -1,6 +1,7 @@
 #!/usr/bin/env julia
 
-# Example of running an MCP server with HTTP transport
+# Basic example of running an MCP server with Streamable HTTP transport
+# Minimal setup for getting started with Streamable HTTP
 
 using ModelContextProtocol
 using ModelContextProtocol: HttpTransport

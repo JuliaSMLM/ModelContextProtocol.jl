@@ -20,6 +20,7 @@ makedocs(
         "Tools" => "tools.md",
         "Resources" => "resources.md",
         "Prompts" => "prompts.md",
+        "Transports" => "transports.md",
         "Claude Integration" => "claude.md",
         "API Reference" => "api.md"
     ],

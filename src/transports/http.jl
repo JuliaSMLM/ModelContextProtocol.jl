@@ -7,8 +7,8 @@ using UUIDs: uuid4
 """
     HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
 
-Transport implementation using HTTP following the Streamable HTTP specification.
-Implements simple request-response pattern without streaming.
+Transport implementation following the MCP Streamable HTTP specification (2025-03-26).
+Supports Server-Sent Events (SSE) for streaming and session management.
 
 # Fields
 - `host::String`: Host address to bind to (default: "127.0.0.1")
@@ -29,11 +29,25 @@ mutable struct HttpTransport <: Transport
     connected::Bool
     server_task::Union{Task,Nothing}
     active_streams::Dict{String,HTTP.Stream}
+    sse_streams::Dict{String,HTTP.Stream}  # SSE connections
     request_queue::Channel{Tuple{String,String}}
     response_channels::Dict{String,Channel{String}}
+    notification_queue::Channel{String}  # For SSE notifications
     current_request_id::Union{String,Nothing}
+    session_id::Union{String,Nothing}  # Session management
+    session_required::Bool  # Whether session is required after init
+    protocol_version::String  # MCP protocol version
+    event_counter::Int64  # SSE event IDs
+    allowed_origins::Vector{String}  # CORS security
     
-    function HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
+    function HttpTransport(; 
+        host::String="127.0.0.1", 
+        port::Int=8080, 
+        endpoint::String="/",
+        allowed_origins::Vector{String}=String[],
+        protocol_version::String="2025-03-26",
+        session_required::Bool=false
+    )
         new(
             host,
             port,
@@ -42,10 +56,186 @@ mutable struct HttpTransport <: Transport
             false,
             nothing,
             Dict{String,HTTP.Stream}(),
+            Dict{String,HTTP.Stream}(),  # SSE streams
             Channel{Tuple{String,String}}(32),  # Buffer up to 32 requests
             Dict{String,Channel{String}}(),
-            nothing
+            Channel{String}(100),  # Notification queue
+            nothing,
+            nothing,  # No session initially
+            session_required,
+            protocol_version,
+            0,  # Event counter starts at 0
+            allowed_origins
         )
+    end
+end
+
+"""
+    is_valid_session_id(session_id::String) -> Bool
+
+Validate that a session ID contains only visible ASCII characters (0x21 to 0x7E).
+
+# Arguments
+- `session_id::String`: The session ID to validate
+
+# Returns
+- `Bool`: true if valid, false otherwise
+"""
+function is_valid_session_id(session_id::String)::Bool
+    for char in session_id
+        code = Int(char)
+        if code < 0x21 || code > 0x7E
+            return false
+        end
+    end
+    return true
+end
+
+"""
+    generate_session_id() -> String
+
+Generate a cryptographically secure session ID that meets MCP requirements.
+Must contain only visible ASCII characters (0x21 to 0x7E).
+
+# Returns
+- `String`: A valid session ID
+"""
+function generate_session_id()::String
+    # Use UUID which contains only alphanumeric and hyphens (all valid ASCII)
+    return string(uuid4())
+end
+
+"""
+    format_sse_event(data::String; event::Union{String,Nothing}=nothing, id::Union{Int64,String,Nothing}=nothing) -> String
+
+Format a message as a Server-Sent Event.
+
+# Arguments
+- `data::String`: The data to send
+- `event::Union{String,Nothing}`: Optional event type
+- `id::Union{Int64,String,Nothing}`: Optional event ID
+
+# Returns
+- `String`: Formatted SSE event
+"""
+function format_sse_event(data::String; event::Union{String,Nothing}=nothing, id::Union{Int64,String,Nothing}=nothing)
+    parts = String[]
+    
+    if !isnothing(event)
+        push!(parts, "event: $event")
+    end
+    
+    if !isnothing(id)
+        push!(parts, "id: $id")
+    end
+    
+    # Split data by newlines and format each line
+    for line in split(data, '\n')
+        push!(parts, "data: $line")
+    end
+    
+    # SSE events end with double newline
+    return join(parts, "\n") * "\n\n"
+end
+
+"""
+    handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream_id::String)
+
+Handle a Server-Sent Events connection for notifications and streaming responses.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+- `stream::HTTP.Stream`: The HTTP stream
+- `stream_id::String`: Unique identifier for this SSE stream
+
+# Returns
+- `Nothing`
+"""
+function handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream_id::String)
+    request = stream.message
+    
+    # Check for Last-Event-ID header for resumption
+    last_event_id = HTTP.header(request, "Last-Event-ID", "")
+    if !isempty(last_event_id)
+        # In a full implementation, we'd resume from this event
+        @debug "SSE resumption requested" last_event_id=last_event_id
+    end
+    
+    # Set up SSE headers
+    HTTP.setstatus(stream, 200)
+    HTTP.setheader(stream, "Content-Type" => "text/event-stream")
+    HTTP.setheader(stream, "Cache-Control" => "no-cache")
+    HTTP.setheader(stream, "Connection" => "keep-alive")
+    HTTP.setheader(stream, "X-Accel-Buffering" => "no")  # Disable nginx buffering
+    
+    # Start writing the stream
+    HTTP.startwrite(stream)
+    
+    # Send initial connection event
+    transport.event_counter += 1
+    connection_event = format_sse_event(
+        JSON3.write(Dict("type" => "connection", "status" => "connected")),
+        event="connection",
+        id=transport.event_counter
+    )
+    write(stream, connection_event)
+    flush(stream)
+    
+    # Store the SSE stream
+    transport.sse_streams[stream_id] = stream
+    
+    try
+        # Keep connection alive and send notifications
+        while transport.connected && isopen(stream)
+            # Check for notifications to send with timeout
+            notification = nothing
+            ch = transport.notification_queue
+            
+            # Use a non-blocking check with timeout
+            t = @async begin
+                try
+                    take!(ch)
+                catch e
+                    if e isa InvalidStateException
+                        nothing  # Queue closed
+                    else
+                        rethrow(e)
+                    end
+                end
+            end
+            
+            # Wait for notification with timeout
+            timer = Timer(0.1)  # 100ms timeout
+            notification = nothing
+            while !istaskdone(t) && isopen(timer)
+                sleep(0.01)
+            end
+            close(timer)
+            
+            if istaskdone(t)
+                result = fetch(t)
+                if isnothing(result)
+                    break  # Queue closed, shutting down
+                end
+                notification = result
+            end
+            
+            if !isnothing(notification)
+                transport.event_counter += 1
+                event = format_sse_event(
+                    notification,
+                    event="message",
+                    id=transport.event_counter
+                )
+                write(stream, event)
+                Base.flush(stream)
+            end
+        end
+    catch e
+        @debug "SSE stream closed" stream_id=stream_id error=e
+    finally
+        # Clean up
+        delete!(transport.sse_streams, stream_id)
     end
 end
 
@@ -80,22 +270,11 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     if method == "GET"
         accept_header = HTTP.header(request, "Accept", "")
         if contains(accept_header, "text/event-stream")
-            # Set up SSE stream for notifications
-            HTTP.setstatus(stream, 200)
-            HTTP.setheader(stream, "Content-Type" => "text/event-stream")
-            HTTP.setheader(stream, "Cache-Control" => "no-cache")
-            HTTP.setheader(stream, "Connection" => "keep-alive")
-            HTTP.startwrite(stream)
+            # Generate unique stream ID
+            stream_id = string(uuid4())
             
-            # For now, just keep the connection open
-            # In a full implementation, we'd send notifications here
-            try
-                while transport.connected
-                    sleep(1)
-                end
-            catch e
-                @debug "SSE connection closed" error=e
-            end
+            # Handle SSE stream
+            handle_sse_stream(transport, stream, stream_id)
         else
             HTTP.setstatus(stream, 406)
             HTTP.setheader(stream, "Content-Type" => "text/plain")
@@ -112,7 +291,26 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         return nothing
     end
     
-    # Check Content-Type
+    # Check MCP-Protocol-Version header (optional, defaults to previous version if missing)
+    client_protocol_version = HTTP.header(request, "MCP-Protocol-Version", "")
+    if !isempty(client_protocol_version) && client_protocol_version != transport.protocol_version
+        @debug "Protocol version mismatch" client=client_protocol_version server=transport.protocol_version
+        # Log but continue - protocol negotiation happens during initialization
+    end
+    
+    # Security: Validate Origin header if configured
+    if !isempty(transport.allowed_origins)
+        origin = HTTP.header(request, "Origin", "")
+        if !isempty(origin) && !(origin in transport.allowed_origins)
+            @debug "Rejected request from unauthorized origin" origin=origin
+            HTTP.setstatus(stream, 403)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            write(stream, "Forbidden: Invalid Origin")
+            return nothing
+        end
+    end
+    
+    # Check Content-Type first
     content_type = HTTP.header(request, "Content-Type", "")
     if !startswith(content_type, "application/json")
         HTTP.setstatus(stream, 415)
@@ -121,9 +319,84 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         return nothing
     end
     
+    # Check for session ID header
+    session_id = HTTP.header(request, "Mcp-Session-Id", "")
+    
     try
         # Read request body
         body = String(read(stream))
+        
+        # Parse to check if it's an initialization request
+        local is_initialize = false
+        local is_notification = false
+        try
+            msg = JSON3.read(body)
+            is_initialize = get(msg, "method", "") == "initialize"
+            is_notification = !haskey(msg, "id")  # Notifications don't have IDs
+        catch
+            # If parsing fails, let the server handle it
+        end
+        
+        # Session validation - only check after we know if it's initialization
+        if !is_initialize
+            # After initialization, session may be required
+            if transport.session_required && !isnothing(transport.session_id) && isempty(session_id)
+                @debug "Missing required session ID"
+                HTTP.setstatus(stream, 400)  # 400 Bad Request per spec
+                HTTP.setheader(stream, "Content-Type" => "application/json")
+                error_response = JSON3.write(Dict(
+                    "jsonrpc" => "2.0",
+                    "error" => Dict(
+                        "code" => -32000,
+                        "message" => "Session ID required"
+                    ),
+                    "id" => nothing
+                ))
+                write(stream, error_response)
+                return nothing
+            end
+            
+            # Validate provided session ID
+            if !isempty(session_id) && !isnothing(transport.session_id) && session_id != transport.session_id
+                @debug "Invalid session ID" provided=session_id expected=transport.session_id
+                HTTP.setstatus(stream, 400)  # 400 Bad Request per spec (not 401)
+                HTTP.setheader(stream, "Content-Type" => "application/json")
+                error_response = JSON3.write(Dict(
+                    "jsonrpc" => "2.0",
+                    "error" => Dict(
+                        "code" => -32000,
+                        "message" => "Invalid session"
+                    ),
+                    "id" => nothing
+                ))
+                write(stream, error_response)
+                return nothing
+            end
+        end
+        
+        # Generate session ID on initialization if not exists
+        if is_initialize && isnothing(transport.session_id)
+            transport.session_id = generate_session_id()
+            @debug "Generated session ID" session_id=transport.session_id
+            # Don't automatically require session - let server config decide
+        end
+        
+        # For notifications, return 202 Accepted immediately
+        if is_notification
+            HTTP.setstatus(stream, 202)
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
+            if !isnothing(transport.session_id)
+                HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
+            end
+            HTTP.setheader(stream, "Content-Length" => "0")
+            # No body for 202 Accepted per spec
+            HTTP.startwrite(stream)  # Ensure headers are sent
+            
+            # Still queue the notification for processing
+            put!(transport.request_queue, ("notification-" * string(uuid4()), body))
+            return nothing
+        end
         
         # Generate unique request ID
         request_id = string(uuid4())
@@ -140,11 +413,46 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         try
             response = take!(response_channel)
             
-            # Write the response
-            HTTP.setstatus(stream, 200)
-            HTTP.setheader(stream, "Content-Type" => "application/json")
-            HTTP.setheader(stream, "Cache-Control" => "no-cache")
-            write(stream, response)
+            # Check if we should send via SSE or direct response
+            accept_header = HTTP.header(request, "Accept", "")
+            use_sse = contains(accept_header, "text/event-stream") && !isempty(transport.sse_streams)
+            
+            if use_sse && length(transport.sse_streams) > 0
+                # Send response via SSE stream
+                for (_, sse_stream) in transport.sse_streams
+                    try
+                        transport.event_counter += 1
+                        event = format_sse_event(
+                            response,
+                            event="response",
+                            id=transport.event_counter
+                        )
+                        write(sse_stream, event)
+                        flush(sse_stream)
+                    catch e
+                        @debug "Failed to write to SSE stream" error=e
+                    end
+                end
+                
+                # Still send 200 OK for the POST request
+                HTTP.setstatus(stream, 200)
+                HTTP.setheader(stream, "Content-Type" => "application/json")
+                HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
+                if !isnothing(transport.session_id)
+                    HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
+                end
+                write(stream, response)
+            else
+                # Write the response directly
+                HTTP.setstatus(stream, 200)
+                HTTP.setheader(stream, "Content-Type" => "application/json")
+                HTTP.setheader(stream, "Cache-Control" => "no-cache")
+                HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
+                if !isnothing(transport.session_id)
+                    HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
+                end
+                write(stream, response)
+            end
             
         catch e
             if !(e isa InvalidStateException)
@@ -367,6 +675,73 @@ function write_message(transport::HttpTransport, message::String)::Nothing
     nothing
 end
 
+
+"""
+    send_notification(transport::HttpTransport, notification::String) -> Nothing
+
+Send a notification to all connected SSE streams.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+- `notification::String`: The notification message to send
+
+# Returns
+- `Nothing`
+"""
+function send_notification(transport::HttpTransport, notification::String)::Nothing
+    if !transport.connected
+        return nothing
+    end
+    
+    # Queue notification for SSE streams
+    try
+        put!(transport.notification_queue, notification)
+    catch e
+        @debug "Failed to queue notification" error=e
+    end
+    
+    nothing
+end
+
+"""
+    broadcast_to_sse(transport::HttpTransport, message::String; event::String="message") -> Nothing
+
+Broadcast a message immediately to all SSE streams.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+- `message::String`: The message to broadcast
+- `event::String`: The event type (default: "message")
+
+# Returns
+- `Nothing`
+"""
+function broadcast_to_sse(transport::HttpTransport, message::String; event::String="message")::Nothing
+    if isempty(transport.sse_streams)
+        return nothing
+    end
+    
+    transport.event_counter += 1
+    sse_event = format_sse_event(
+        message,
+        event=event,
+        id=transport.event_counter
+    )
+    
+    # Send to all SSE streams
+    for (stream_id, stream) in transport.sse_streams
+        try
+            write(stream, sse_event)
+            flush(stream)
+        catch e
+            @debug "Failed to write to SSE stream" stream_id=stream_id error=e
+            # Remove dead streams
+            delete!(transport.sse_streams, stream_id)
+        end
+    end
+    
+    nothing
+end
 
 """
     end_response(transport::HttpTransport) -> Nothing

@@ -135,6 +135,9 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
         ctx.server
     )
 
+    # Use provided protocol version or default to current version
+    protocol_version = isnothing(params.protocolVersion) ? "2025-03-26" : params.protocolVersion
+
     # Create initialization result
     result = InitializeResult(
         serverInfo=Dict(
@@ -142,7 +145,7 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
             "version" => ctx.server.config.version
         ),
         capabilities=current_capabilities,
-        protocolVersion=params.protocolVersion,
+        protocolVersion=protocol_version,
         instructions=ctx.server.config.instructions
     )
 
