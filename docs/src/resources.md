@@ -18,8 +18,10 @@ Every resource in ModelContextProtocol.jl is represented by the `MCPResource` st
 Here's how to create a basic resource:
 
 ```julia
+using URIs
+
 weather_resource = MCPResource(
-    uri = "mcp://weather/current",
+    uri = "weather://current",
     name = "Current Weather",
     description = "Current weather conditions",
     mime_type = "application/json",
@@ -31,13 +33,21 @@ weather_resource = MCPResource(
 )
 ```
 
+Note: The `uri` field accepts both strings and URI objects. Strings are automatically converted to URIs.
+
 ## Data Providers
 
-The `data_provider` function should return data in a format compatible with the specified MIME type:
+The `data_provider` function can return different types of data:
 
-- For JSON resources, return Julia objects that can be JSON-serialized
-- For text resources, return strings
-- For binary resources, return byte arrays
+1. **For simple data (automatically serialized to JSON)**:
+   - Return Julia objects (Dict, Array, etc.) that can be JSON-serialized
+   - These are wrapped in `TextResourceContents` with JSON serialization
+
+2. **For explicit control over content**:
+   - Return `TextResourceContents` for text data
+   - Return `BlobResourceContents` for binary data
+   
+The `data_provider` receives the requested URI as a parameter when using wildcards.
 
 ## Registering Resources
 
@@ -75,7 +85,7 @@ using ModelContextProtocol
 using Dates
 
 weather_resource = MCPResource(
-    uri = "mcp://weather/current",
+    uri = "weather://current",
     name = "Current Weather",
     description = "Current weather conditions",
     mime_type = "application/json",
@@ -93,5 +103,53 @@ Then auto-register from the directory:
 server = mcp_server(
     name = "my-server",
     auto_register_dir = "my_server"
+)
+```
+
+## Advanced Examples
+
+### Resource with Dynamic URI Patterns
+
+```julia
+# Support URIs like file://path/to/file.txt
+file_resource = MCPResource(
+    uri = "file://*",
+    name = "File System Access",
+    description = "Access local files",
+    mime_type = "text/plain",
+    data_provider = function(uri::String)
+        # Extract path from URI
+        path = replace(uri, "file://" => "")
+        
+        if isfile(path)
+            content = read(path, String)
+            return TextResourceContents(
+                uri = uri,
+                text = content,
+                mime_type = "text/plain"
+            )
+        else
+            error("File not found: $path")
+        end
+    end
+)
+```
+
+### Resource with Binary Data
+
+```julia
+image_resource = MCPResource(
+    uri = "images://logo",
+    name = "Logo Image",
+    description = "Company logo",
+    mime_type = "image/png",
+    data_provider = function(uri::String)
+        image_data = read("logo.png")  # Returns Vector{UInt8}
+        return BlobResourceContents(
+            uri = uri,
+            blob = image_data,
+            mime_type = "image/png"
+        )
+    end
 )
 ```

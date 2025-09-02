@@ -29,6 +29,11 @@ To register your MCP servers with Claude, modify the configuration file with ent
         "/path/to/ModelContextProtocol/examples/reg_dir.jl"
       ],
       "env": {}
+    },
+    "http_server": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://127.0.0.1:3000", "--allow-http"],
+      "env": {}
     }
   }
 }
@@ -37,9 +42,28 @@ To register your MCP servers with Claude, modify the configuration file with ent
 For each server entry:
 
 - `"time"`, `"mcp_tools_example"`: Unique identifiers for your servers
-- `"command"`: The command to run (should be `"julia"`)
-- `"args"`: Array of arguments, typically the path to your server script
+- `"command"`: The command to run (should be `"julia"` for STDIO servers, `"npx"` for HTTP servers via mcp-remote)
+- `"args"`: Array of arguments, typically the path to your server script or mcp-remote parameters
 - `"env"`: Optional environment variables (can be empty `{}`)
+
+### Using HTTP Servers
+
+For HTTP-based MCP servers, you need to:
+
+1. Start your HTTP server separately:
+   ```julia
+   julia /path/to/your/http_server.jl
+   ```
+
+2. Configure Claude to connect via mcp-remote:
+   ```json
+   "http_server": {
+     "command": "npx",
+     "args": ["mcp-remote", "http://127.0.0.1:3000", "--allow-http"]
+   }
+   ```
+
+Note: The `--allow-http` flag is required since ModelContextProtocol.jl currently supports HTTP only, not HTTPS.
 
 ## Applying Changes
 

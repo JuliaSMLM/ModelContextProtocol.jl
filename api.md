@@ -11,7 +11,7 @@ MCP follows a client-server architecture built on JSON-RPC 2.0, where:
 - **MCP Hosts**: AI applications (Claude Desktop, IDEs, chatbots) that want to access external capabilities
 - **MCP Clients**: Protocol clients embedded within hosts that maintain 1:1 connections with servers  
 - **MCP Servers**: Lightweight programs that expose specific capabilities (tools, resources, prompts) through the standardized protocol
-- **Transport Layer**: Communication mechanism using STDIO (local) or HTTP+SSE (remote)
+- **Transport Layer**: Communication mechanism using STDIO (local) or HTTP+SSE (remote/multi-client)
 
 ### Client-Server Interaction Flow
 
@@ -198,7 +198,7 @@ server = mcp_server(
     auto_register_dir = "mcp_components"  # Scans this directory structure
 )
 
-# Start the server (uses STDIO transport by default)
+# Start the server (uses STDIO transport by default, see Transport Options section for HTTP)
 println("Starting MCP Server...")
 start!(server)
 ```
@@ -463,8 +463,11 @@ server = mcp_server(
     prompts = [prompt1]
 )
 
-# Start the server (STDIO transport)
+# Start the server (default: STDIO transport)
 start!(server)
+
+# Or with HTTP transport
+start!(server; transport = HttpTransport(; port = 3000))
 ```
 
 ### Component Registration
@@ -499,6 +502,100 @@ results = [
     TextContent(text = "See chart above for details")
 ]
 ```
+
+## Transport Options
+
+ModelContextProtocol.jl abstracts the communication layer through transports. By default, servers use STDIO (standard input/output) for communication, which works perfectly for local integrations like Claude Desktop. However, the package also provides HTTP transport for scenarios requiring network access or multiple concurrent clients.
+
+### Why Different Transports?
+
+The transport layer determines how your MCP server communicates with clients:
+
+- **STDIO Transport**: Direct process communication via stdin/stdout. Simple, secure, and ideal for local tools
+- **HTTP Transport**: Network-based communication with support for multiple clients and Server-Sent Events (SSE) for real-time updates
+
+### Using HTTP Transport
+
+```julia
+# Default STDIO server
+server = mcp_server(name = "my-server")
+start!(server)  # Blocks on stdin
+
+# HTTP server on port 3000
+server = mcp_server(name = "my-http-server")
+start!(server; transport = HttpTransport(; port = 3000))
+
+# HTTP with specific host (important for Windows)
+start!(server; transport = HttpTransport(;
+    host = "127.0.0.1",  # Use IP instead of localhost on Windows
+    port = 3000,
+    endpoint = "/"  # Default endpoint
+))
+```
+
+### How HTTP Transport Works
+
+The HTTP transport implements the MCP protocol over HTTP with two key mechanisms:
+
+1. **Request/Response**: POST requests with JSON-RPC payloads for tool calls, resource access, etc.
+2. **Server-Sent Events**: GET requests with `Accept: text/event-stream` for server-initiated notifications
+
+This dual approach enables both traditional request/response patterns and real-time updates without polling.
+
+**Important**: ModelContextProtocol.jl currently supports HTTP only, not HTTPS. For production use with internet-facing deployments, you'll need either:
+- **mcp-remote**: A proxy adapter that provides HTTPS and OAuth support
+- **Reverse proxy**: nginx, Apache, or similar to handle TLS termination
+
+### Connecting to HTTP Servers
+
+Once your HTTP server is running, clients have several connection options:
+
+```julia
+# 1. Direct HTTP requests (for testing)
+# curl -X POST http://127.0.0.1:3000/ \
+#   -H "Content-Type: application/json" \
+#   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+
+# 2. Via mcp-remote bridge (for Claude Desktop and secure connections)
+# The --allow-http flag is required since we're using HTTP, not HTTPS
+# In your Claude Desktop config:
+{
+  "mcpServers": {
+    "my-http-server": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://127.0.0.1:3000", "--allow-http"]
+    }
+  }
+}
+
+# 3. MCP Inspector for debugging
+# npx @modelcontextprotocol/inspector stdio -- \
+#   npx mcp-remote http://127.0.0.1:3000 --allow-http
+```
+
+### Real-time Updates with SSE
+
+HTTP transport automatically handles Server-Sent Events for features like:
+- Progress notifications during long-running operations
+- Resource subscription updates
+- Server-initiated messages
+
+The server manages SSE streams internally - tools and resources work identically regardless of transport.
+
+### Transport Selection Guide
+
+Use STDIO when:
+- Building tools for local use (Claude Desktop, VS Code)
+- Security is paramount (no network exposure)
+- Single client access is sufficient
+
+Use HTTP when:
+- Server runs on a different machine than the client
+- Multiple clients need concurrent access
+- Building web-based integrations
+- Debugging with standard HTTP tools
+
+The transport abstraction ensures your tools, resources, and prompts work identically with either transport - only the server startup changes.
 
 ## Tool Creation Patterns
 

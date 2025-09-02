@@ -55,15 +55,26 @@ server = mcp_server(
     tools = time_tool
 )
 
-start!(server)
+start!(server)  # Default: STDIO transport
 ```
 
 This example:
 1. Creates a tool that returns the current time in a specified format
 2. Registers this tool with a new MCP server
-3. Starts the server process, listening for incoming connections
+3. Starts the server process, listening for incoming connections via STDIO
 
 When Claude connects to this server, it can discover and use the `get_time` tool to provide formatted time information.
+
+#### Using HTTP Transport
+
+For network-based or multi-client scenarios:
+
+```julia
+# Start server with HTTP transport
+start!(server; transport = HttpTransport(; port = 3000))
+```
+
+See the [API documentation](api.md#transport-options) for more transport options.
 
 ### Directory-Based Organization
 
@@ -110,7 +121,7 @@ server = mcp_server(
     auto_register_dir = "my_mcp_project"  # Directory to scan for components
 )
 
-start!(server)
+start!(server)  # Or with HTTP: start!(server; transport = HttpTransport(; port = 3000))
 ```
 
 The directory approach offers several advantages:
