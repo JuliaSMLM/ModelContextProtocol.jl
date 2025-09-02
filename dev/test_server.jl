@@ -46,7 +46,7 @@ get_time_tool = MCPTool(
 # Create Streamable HTTP transport without session requirement initially
 transport = HttpTransport(
     port = 8765,  # Using 8765 - less common than 8080, unlikely to conflict
-    protocol_version = "2025-03-26",
+    protocol_version = "2025-06-18",
     session_required = false  # Don't require session initially
 )
 

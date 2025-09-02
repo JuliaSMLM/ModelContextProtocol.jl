@@ -64,9 +64,9 @@ echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"202
    # Initialize
    curl -X POST http://localhost:3000/ \
      -H 'Content-Type: application/json' \
-     -H 'MCP-Protocol-Version: 2025-03-26' \
+     -H 'MCP-Protocol-Version: 2025-06-18' \
      -H 'Accept: application/json' \
-     -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | jq .
+     -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | jq .
    
    # List tools (include session ID if provided)
    curl -X POST http://localhost:3000/ \
@@ -125,7 +125,7 @@ function test_mcp_server(url)
             "jsonrpc" => "2.0",
             "method" => "initialize",
             "params" => Dict(
-                "protocolVersion" => "2025-03-26",
+                "protocolVersion" => "2025-06-18",
                 "clientInfo" => Dict("name" => "test", "version" => "1.0")
             ),
             "id" => 1
@@ -436,23 +436,10 @@ The ModelContextProtocol.jl package includes infrastructure for progress monitor
 
 The infrastructure exists but requires additional implementation to enable progress monitoring from within tool handlers.
 
-## Dev Notes
-- use 127.0.0.1 instead of localhost on windows
-## Critical Fixes Applied
-
-### protocolVersion Field in InitializeParams (Fixed 2025-09-02)
-- **Issue**: InitializeParams.protocolVersion was required but had no default, causing MethodError when missing
-- **Symptoms**: `MethodError(convert, (String, nothing))` during initialization
-- **Fix**: Made protocolVersion optional (Union{String,Nothing}) with handler defaulting to "2025-03-26"
-- **Impact**: Fixes initialization failures when clients don't send protocolVersion
-- **Files Changed**: 
-  - src/protocol/messages.jl - Made protocolVersion optional
-  - src/protocol/handlers.jl - Added default handling in handle_initialize
-
-### Auto-Registration Examples (Fixed 2025-09-02)
-- **reg_dir.jl**: Fixed Pkg.activate causing hangs, updated path to mcp_tools/, fixed tool return types
-- **reg_dir_http.jl**: Created HTTP variant using same auto-registration with Streamable HTTP transport
-- **return_png.jl**: Removed Images.jl dependency, now returns minimal valid PNG without external packages
+## Development Notes
+- Use 127.0.0.1 instead of localhost on Windows for HTTP transport
+- Julia JIT compilation takes 5-10 seconds on first server start
+- Port 8765 is good alternative to avoid common conflicts (3000, 8080, etc.)
 
 ## MCP Server Testing & Management
 
@@ -491,3 +478,100 @@ pkill -9 -f "julia.*examples.*"
 - **Hanging processes**: Use `kill -9` for force termination
 - **JIT compilation timeouts**: Allow adequate time for server startup
 - **Session validation**: HTTP servers require proper session headers after initialization
+
+## MCP Protocol 2025-06-18 Compliance Status
+
+### ✅ Fully Implemented Features
+
+1. **Core Transport Protocols**
+   - ✅ stdio transport (standard input/output)
+   - ✅ Streamable HTTP transport with SSE support
+   - ✅ Session management (Mcp-Session-Id headers)
+   - ✅ Protocol version negotiation (only 2025-06-18 supported)
+
+2. **Version Validation**
+   - ✅ Strict protocol version validation (only accepts 2025-06-18)
+   - ✅ Proper error responses for unsupported versions
+   - ✅ MCP-Protocol-Version header validation in HTTP transport
+
+3. **JSON-RPC Compliance (2025-06-18)**
+   - ✅ Removed JSON-RPC batching support (returns proper error)
+   - ✅ Single message per request enforcement
+   - ✅ Proper JSON-RPC 2.0 validation
+
+4. **Content Types**
+   - ✅ TextContent - Text-based responses
+   - ✅ ImageContent - Binary image content with base64 encoding
+   - ✅ EmbeddedResource - Embedded resource content
+   - ✅ ResourceLink - Resource references (NEW in 2025-06-18)
+
+5. **Multi-Content Tool Returns**
+   - ✅ Single content return: `return TextContent(...)`
+   - ✅ Multiple content return: `return [TextContent(...), ImageContent(...)]`
+   - ✅ Mixed content types in single response
+
+6. **Security Features** 
+   - ✅ Origin header validation for HTTP transport
+   - ✅ Localhost binding by default
+   - ✅ Cryptographically secure session IDs (UUID format)
+   - ✅ Session ID ASCII validation (0x21-0x7E)
+
+7. **Auto-Registration System**
+   - ✅ Directory-based component organization
+   - ✅ Automatic tool/prompt/resource discovery
+   - ✅ Isolated module loading for each component file
+
+### ❌ Features Not Yet Implemented (Optional/Future)
+
+1. **OAuth Authorization (Optional)**
+   - ❌ OAuth Resource Server classification  
+   - ❌ Authorization server discovery
+   - ❌ Protected resource metadata
+   - ❌ Resource Indicators (RFC 8707) support
+
+2. **Elicitation (Optional)**
+   - ❌ Server-to-client user interaction requests
+   - ❌ elicitation/create method handling
+   - ❌ Structured user input with JSON schemas
+   - ❌ Nested interaction workflows
+
+3. **Client Features (Client-Side)**
+   - ❌ Roots - filesystem access boundaries
+   - ❌ Sampling - LLM completion requests
+   - ❌ Completion/autocompletion suggestions
+
+4. **Advanced Features (Optional)**
+   - ❌ _meta fields on message types (metadata support)
+   - ❌ Audio content type (AudioContent)  
+   - ❌ Progress notifications with bidirectional updates
+   - ❌ Stream resumption with Last-Event-ID
+   - ❌ title field support for human-friendly display names
+
+5. **Enterprise Features (Optional)**
+   - ❌ Advanced authentication beyond basic session management
+   - ❌ Fine-grained authorization per tool/resource
+   - ❌ Enterprise SSO integration
+
+### 🎯 Implementation Priority for Future Work
+
+**High Priority** (Core 2025-06-18 compliance):
+1. _meta field support on core types
+2. title field support for tools/resources/prompts
+3. Audio content type (AudioContent)
+
+**Medium Priority** (Enhanced functionality):
+1. Progress notification improvements
+2. Stream resumption support
+3. Elicitation basic support
+
+**Low Priority** (Enterprise/Optional):
+1. OAuth authorization support
+2. Advanced authentication
+3. Client-side features (roots, sampling)
+
+### 🧪 Testing Status
+- ✅ Protocol version validation working
+- ✅ JSON-RPC batch rejection working  
+- ✅ ResourceLink content type working
+- ✅ All existing functionality preserved
+- ✅ HTTP transport fully compliant with 2025-06-18

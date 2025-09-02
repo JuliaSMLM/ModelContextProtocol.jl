@@ -10,7 +10,7 @@ This directory contains example implementations of MCP servers demonstrating var
   - Good starting point for local MCP servers
 
 ### Streamable HTTP Transport
-Following the MCP Streamable HTTP specification (protocol version 2025-03-26):
+Following the MCP Streamable HTTP specification (protocol version 2025-06-18):
 
 - **`simple_http_server.jl`** - Simplest Streamable HTTP server
   - Basic tools (echo, greet)
@@ -62,7 +62,7 @@ julia --project examples/simple_http_server.jl
 # In another terminal, test with curl:
 curl -X POST http://localhost:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-03-26' \
+  -H 'MCP-Protocol-Version: 2025-06-18' \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}'
 
 # Or use MCP Inspector:
@@ -88,7 +88,7 @@ curl -X POST http://localhost:3001/ \
 
 These examples implement the **Streamable HTTP** transport specification, which replaced the deprecated HTTP+SSE transport from protocol version 2024-11-05.
 
-Current protocol version: **2025-03-26**
+Current protocol version: **2025-06-18**
 
 Key features of Streamable HTTP:
 - Single endpoint for POST and GET

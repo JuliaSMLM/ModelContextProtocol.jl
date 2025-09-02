@@ -96,7 +96,7 @@ export
     RequestParams, ResponseResult,
     Content, ResourceContents,
     TextContent, ImageContent, TextResourceContents, BlobResourceContents,
-    EmbeddedResource,
+    EmbeddedResource, ResourceLink,
 
     # Server types
     Server, ServerConfig,

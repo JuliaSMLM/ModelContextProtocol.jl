@@ -1,7 +1,7 @@
 #!/usr/bin/env julia
 
 # Streamable HTTP MCP server demonstrating SSE streaming and sessions
-# Following MCP protocol version 2025-03-26
+# Following MCP protocol version 2025-06-18
 
 using ModelContextProtocol
 using ModelContextProtocol: HttpTransport, send_notification, broadcast_to_sse
@@ -143,7 +143,7 @@ transport = HttpTransport(
     port = 3001,
     endpoint = "/",
     allowed_origins = ["http://localhost:3000", "http://localhost:3001"],  # Restrict origins
-    protocol_version = "2025-03-26",  # Current MCP protocol version
+    protocol_version = "2025-06-18",  # Current MCP protocol version
     session_required = false  # Will be set to true after initialization
 )
 
@@ -162,7 +162,7 @@ server.transport = transport
 ModelContextProtocol.connect(transport)
 
 println("Starting Streamable HTTP MCP Server on port 3001...")
-println("Protocol Version: 2025-03-26")
+println("Protocol Version: 2025-06-18")
 println()
 println("Features demonstrated:")
 println("  - Streamable HTTP transport (replaces deprecated HTTP+SSE)")

@@ -43,6 +43,7 @@ The package provides three main types that can be registered with an MCP server:
 1. `MCPTool`: Represents callable functions that LLMs can use
    - Has a name, description, parameters, and handler function
    - LLMs can invoke tools to perform actions or computations
+   - Supports multiple content types in responses (text, images, embedded resources)
 
 2. `MCPResource`: Represents data sources that LLMs can read
    - Has a URI, name, MIME type, and data provider function
@@ -51,6 +52,47 @@ The package provides three main types that can be registered with an MCP server:
 3. `MCPPrompt`: Represents template-based prompts
    - Has a name, description, and parameterized message templates
    - Helps standardize interactions with LLMs
+
+## Transport Protocols
+
+ModelContextProtocol.jl supports two transport methods:
+
+### stdio Transport (Default)
+The simplest method - communicates via standard input/output streams:
+
+```julia
+# Default stdio transport
+server = mcp_server(name = "my-server", tools = [my_tool])
+start!(server)
+```
+
+### HTTP Transport with Server-Sent Events
+For web-based clients and real-time streaming:
+
+```julia
+using ModelContextProtocol: HttpTransport
+
+# Create HTTP transport
+transport = HttpTransport(
+    host = "127.0.0.1",
+    port = 3000,
+    protocol_version = "2025-06-18"
+)
+
+# Create server with HTTP transport
+server = mcp_server(name = "http-server", tools = [my_tool])
+server.transport = transport
+ModelContextProtocol.connect(transport)
+start!(server)
+```
+
+HTTP transport provides:
+- Session-based security with automatic session management
+- Server-Sent Events (SSE) for real-time streaming
+- CORS support and origin validation
+- Full MCP protocol 2025-06-18 compliance
+
+See [Transport Documentation](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/transports/) for detailed configuration options.
 
 ## Quick Start
 
@@ -102,9 +144,9 @@ start!(server)
 
 When Claude connects to this server, it will discover the `get_time` tool and be able to use it to provide formatted time information to users.
 
-### Directory-Based Organization
+### Auto-Registration from Directory Structure
 
-You can also organize your MCP components in a directory structure and auto-register them:
+For larger servers, organize components in directories and let the system auto-register them:
 
 ```
 my_mcp_server/
@@ -120,7 +162,7 @@ my_mcp_server/
 ```julia
 using ModelContextProtocol
 
-# Create and start server with all components
+# Create server with auto-registration
 server = mcp_server(
     name = "full-server",
     description = "MCP server with auto-registered components",
@@ -130,12 +172,27 @@ server = mcp_server(
 start!(server)
 ```
 
-The package will automatically scan the directory structure and register all components:
-- `tools/`: Contains tool definitions (MCPTool instances)
-- `resources/`: Contains resource definitions (MCPResource instances)
-- `prompts/`: Contains prompt definitions (MCPPrompt instances)
+The system automatically scans subdirectories:
+- `tools/`: Contains `MCPTool` definitions
+- `resources/`: Contains `MCPResource` definitions  
+- `prompts/`: Contains `MCPPrompt` definitions
 
-Each component file should export one or more instances of the appropriate type. They will be automatically discovered and registered with the server.
+Each `.jl` file should define one or more component instances. The auto-registration system will discover and register all components automatically.
+
+**Example tool file** (`tools/math_tool.jl`):
+```julia
+# No imports needed - ModelContextProtocol is automatically available
+calculator = MCPTool(
+    name = "calculate",
+    description = "Perform basic calculations",
+    parameters = [
+        ToolParameter(name = "expression", type = "string", required = true)
+    ],
+    handler = params -> TextContent(text = "Result: $(eval(Meta.parse(params["expression"])))")
+)
+```
+
+See [Auto-Registration Documentation](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/auto-registration/) for complete setup instructions and best practices.
 
 ## Using with Claude
 

@@ -129,23 +129,42 @@ Handle MCP protocol initialization requests by setting up the server and returni
 - `HandlerResult`: Contains the server's capabilities and configuration
 """
 function handle_initialize(ctx::RequestContext, params::InitializeParams)::HandlerResult
+    # We only support MCP protocol version 2025-06-18
+    supported_version = "2025-06-18"
+    
+    # Check if client requested a specific version
+    if !isnothing(params.protocolVersion) && params.protocolVersion != supported_version
+        # Return error for unsupported versions
+        error_info = ErrorInfo(
+            code = ErrorCodes.INVALID_PARAMS,
+            message = "Unsupported protocol version",
+            data = LittleDict{String,Any}(
+                "supported" => [supported_version],
+                "requested" => params.protocolVersion
+            )
+        )
+        return HandlerResult(
+            response=JSONRPCError(
+                id=ctx.request_id,
+                error=error_info
+            )
+        )
+    end
+
     # Get full capabilities including available tools and resources
     current_capabilities = capabilities_to_protocol(
         ctx.server.config.capabilities,
         ctx.server
     )
 
-    # Use provided protocol version or default to current version
-    protocol_version = isnothing(params.protocolVersion) ? "2025-03-26" : params.protocolVersion
-
-    # Create initialization result
+    # Create initialization result with our supported version
     result = InitializeResult(
         serverInfo=Dict(
             "name" => ctx.server.config.name,
             "version" => ctx.server.config.version
         ),
         capabilities=current_capabilities,
-        protocolVersion=protocol_version,
+        protocolVersion=supported_version,
         instructions=ctx.server.config.instructions
     )
 

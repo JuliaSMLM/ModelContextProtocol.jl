@@ -103,6 +103,24 @@ function content2dict(content::EmbeddedResource)
     )
 end
 
+# ResourceLink conversion (new in MCP protocol 2025-06-18)
+function content2dict(content::ResourceLink)
+    result = LittleDict{String,Any}(
+        "type" => "resource_link",
+        "uri" => content.uri,
+        "name" => content.name,
+        "annotations" => content.annotations
+    )
+    
+    # Add optional fields only if they're not nothing
+    !isnothing(content.description) && (result["description"] = content.description)
+    !isnothing(content.mime_type) && (result["mimeType"] = content.mime_type)
+    !isnothing(content.title) && (result["title"] = content.title)
+    !isnothing(content.size) && (result["size"] = content.size)
+    
+    return result
+end
+
 # Generic fallback for unknown content types
 function content2dict(content::Content)
     throw(ArgumentError("Unsupported content type: $(typeof(content))"))

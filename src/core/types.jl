@@ -214,6 +214,34 @@ Base.@kwdef struct EmbeddedResource <: Content
 end
 
 """
+    ResourceLink(; uri::String, name::String, description::Union{String,Nothing}=nothing, 
+                mime_type::Union{String,Nothing}=nothing, title::Union{String,Nothing}=nothing,
+                size::Union{Float64,Nothing}=nothing, annotations::AbstractDict{String,Any}=LittleDict{String,Any}()) <: Content
+
+Resource link content for MCP protocol 2025-06-18. References a resource that the server is capable of reading.
+
+# Fields
+- `type::String`: Content type identifier (always "resource_link")
+- `uri::String`: The URI of the resource being referenced
+- `name::String`: Programmatic identifier for the resource
+- `description::Union{String,Nothing}`: Optional description of the resource
+- `mime_type::Union{String,Nothing}`: Optional MIME type of the resource
+- `title::Union{String,Nothing}`: Optional human-friendly display name
+- `size::Union{Float64,Nothing}`: Optional size of the resource in bytes
+- `annotations::AbstractDict{String,Any}`: Optional metadata about the resource link
+"""
+Base.@kwdef struct ResourceLink <: Content
+    type::String = "resource_link"  # Schema requires this to be const "resource_link"
+    uri::String
+    name::String
+    description::Union{String,Nothing} = nothing
+    mime_type::Union{String,Nothing} = nothing
+    title::Union{String,Nothing} = nothing
+    size::Union{Float64,Nothing} = nothing
+    annotations::AbstractDict{String,Any} = LittleDict{String,Any}()
+end
+
+"""
     Progress(; token::Union{String,Int}, current::Float64, 
             total::Union{Float64,Nothing}=nothing, message::Union{String,Nothing}=nothing)
 

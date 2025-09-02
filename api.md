@@ -34,7 +34,22 @@ ModelContextProtocol.jl is built around several key architectural principles tha
 
 ### 1. **Auto-Registration System**
 
-The package's flagship feature automatically discovers and registers MCP components without explicit registration code. This leverages Julia's metaprogramming capabilities to scan modules or directories for tool definitions.
+The package's flagship feature automatically discovers and registers MCP components from directory structures without explicit registration code. This system scans organized directories (`tools/`, `prompts/`, `resources/`) and dynamically loads all component definitions:
+
+```julia
+# Automatically registers all components from directory structure
+server = mcp_server(
+    name = "large-server",
+    auto_register_dir = "components"  # Scans components/tools/, components/prompts/, etc.
+)
+```
+
+The auto-registration system:
+- Scans subdirectories for `.jl` files containing MCP components
+- Creates isolated modules for each file to prevent conflicts
+- Automatically imports ModelContextProtocol into each module
+- Discovers and registers all `MCPTool`, `MCPPrompt`, and `MCPResource` instances
+- Provides detailed logging of what gets registered
 
 ### 2. **Content-Centric Design**
 
@@ -63,24 +78,120 @@ Base.@kwdef struct EmbeddedResource <: Content
 end
 ```
 
-### 3. **Functional Handler Pattern**
+### 2. **Multi-Transport Support**
 
-Tools, prompts, and resources use consistent handler functions:
+ModelContextProtocol.jl supports both stdio and HTTP transports with the same API:
+
+```julia
+# stdio transport (default) - for command-line integration
+server = mcp_server(name = "stdio-server", tools = [my_tool])
+start!(server)
+
+# HTTP transport - for web-based clients and real-time streaming
+using ModelContextProtocol: HttpTransport
+transport = HttpTransport(port = 3000, protocol_version = "2025-06-18")
+server = mcp_server(name = "http-server", tools = [my_tool])
+server.transport = transport
+ModelContextProtocol.connect(transport)
+start!(server)
+```
+
+HTTP transport includes:
+- **Session Management**: Automatic session creation and validation
+- **Server-Sent Events (SSE)**: Real-time streaming capabilities
+- **CORS Support**: Origin validation and cross-origin resource sharing
+- **Protocol Version Negotiation**: Full MCP 2025-06-18 compliance
+
+### 3. **Multi-Content Tool Returns**
+
+Tools can return single content items or multiple items in one response:
+
+```julia
+# Single content return
+simple_tool = MCPTool(
+    name = "simple",
+    handler = params -> TextContent(text = "Single response"),
+    return_type = TextContent
+)
+
+# Multiple content return
+multi_tool = MCPTool(
+    name = "analysis",
+    handler = function(params)
+        return [
+            TextContent(text = "Analysis summary: ..."),
+            ImageContent(data = chart_data, mime_type = "image/png"),
+            EmbeddedResource(resource = TextResourceContents(uri = "data://results", text = "..."))
+        ]
+    end,
+    return_type = Vector{Content}  # Default - supports both single and multiple
+)
+```
+
+### 4. **Functional Handler Pattern**
+
+All components use consistent handler functions:
 
 ```julia
 # Tool handler: Dict -> Content or Vector{Content}
-handler = (params::Dict) -> TextContent(text = "Result: $(params["input"])")
+tool_handler = params -> TextContent(text = "Result: $(params["input"])")
 
-# Resource handler: String -> ResourceContents  
-resource_handler = (uri::String) -> TextResourceContents(uri = uri, text = read(uri, String))
+# Resource data provider: () -> Any (gets serialized)
+resource_provider = () -> Dict("config" => "values", "timestamp" => now())
 
-# Prompt handler: Dict -> MCPPromptMessage
-prompt_handler = (args::Dict) -> MCPPromptMessage(role = "user", content = TextContent(...))
+# Prompt messages: Static definitions with argument interpolation
+prompt_messages = [
+    PromptMessage(
+        role = ModelContextProtocol.user,
+        content = TextContent(text = "Analyze this code: {code}")
+    )
+]
+```
+
+## HTTP Transport Configuration
+
+The HTTP transport provides production-ready server capabilities with comprehensive configuration options:
+
+### Basic HTTP Configuration
+
+```julia
+using ModelContextProtocol: HttpTransport
+
+transport = HttpTransport(
+    host = "127.0.0.1",              # Bind address
+    port = 3000,                     # Port number  
+    endpoint = "/",                  # Base endpoint path
+    protocol_version = "2025-06-18", # MCP protocol version
+    session_required = true,         # Require session validation
+    allowed_origins = ["http://localhost:8080"],  # CORS origins
+    enable_sse = true               # Enable Server-Sent Events
+)
+```
+
+### Session Management
+
+HTTP transport automatically handles sessions for security:
+
+1. Client sends initialization request
+2. Server responds with `Mcp-Session-Id` header
+3. Client includes session ID in subsequent requests
+4. Server validates sessions for non-initialization requests
+
+### Server-Sent Events (SSE)
+
+Real-time streaming is built-in:
+
+```julia
+# SSE streams provide:
+# - Real-time notifications to clients  
+# - Progress updates for long operations
+# - Event-based communication patterns
+# - Automatic reconnection support
 ```
 
 ## Auto-Registration System Detailed
 
-The auto-registration system is the core innovation that eliminates boilerplate. Here's how it works:
+The auto-registration system eliminates boilerplate by automatically discovering components:
 
 ### Directory-Based Auto-Registration
 

@@ -7,7 +7,7 @@ using UUIDs: uuid4
 """
     HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
 
-Transport implementation following the MCP Streamable HTTP specification (2025-03-26).
+Transport implementation following the MCP Streamable HTTP specification (2025-06-18).
 Supports Server-Sent Events (SSE) for streaming and session management.
 
 # Fields
@@ -45,7 +45,7 @@ mutable struct HttpTransport <: Transport
         port::Int=8080, 
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
-        protocol_version::String="2025-03-26",
+        protocol_version::String="2025-06-18",
         session_required::Bool=false
     )
         new(
@@ -291,11 +291,26 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         return nothing
     end
     
-    # Check MCP-Protocol-Version header (optional, defaults to previous version if missing)
+    # Check MCP-Protocol-Version header - required for 2025-06-18 spec
     client_protocol_version = HTTP.header(request, "MCP-Protocol-Version", "")
     if !isempty(client_protocol_version) && client_protocol_version != transport.protocol_version
-        @debug "Protocol version mismatch" client=client_protocol_version server=transport.protocol_version
-        # Log but continue - protocol negotiation happens during initialization
+        @debug "Unsupported protocol version" client=client_protocol_version server=transport.protocol_version
+        HTTP.setstatus(stream, 400)
+        HTTP.setheader(stream, "Content-Type" => "application/json")
+        error_response = JSON3.write(Dict(
+            "jsonrpc" => "2.0",
+            "error" => Dict(
+                "code" => -32602,
+                "message" => "Unsupported protocol version", 
+                "data" => Dict(
+                    "supported" => [transport.protocol_version],
+                    "requested" => client_protocol_version
+                )
+            ),
+            "id" => nothing
+        ))
+        write(stream, error_response)
+        return nothing
     end
     
     # Security: Validate Origin header if configured
@@ -316,6 +331,15 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         HTTP.setstatus(stream, 415)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         write(stream, "Unsupported Media Type")
+        return nothing
+    end
+    
+    # Check Accept header per 2025-06-18 spec - MUST include both application/json and text/event-stream
+    accept_header = HTTP.header(request, "Accept", "")
+    if !contains(accept_header, "application/json") || !contains(accept_header, "text/event-stream")
+        HTTP.setstatus(stream, 406)
+        HTTP.setheader(stream, "Content-Type" => "text/plain")
+        write(stream, "Not Acceptable: Must accept both application/json and text/event-stream")
         return nothing
     end
     

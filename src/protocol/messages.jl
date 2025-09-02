@@ -53,13 +53,13 @@ Parameters for MCP protocol initialization requests.
 
 # Fields
 - `capabilities::ClientCapabilities`: Client capabilities being reported
-- `clientInfo::Implementation`: Information about the client implementation
-- `protocolVersion::Union{String,Nothing}`: Version of the MCP protocol being used (optional, defaults to "2025-03-26" if not provided)
+- `clientInfo::Implementation`: Information about the client implementation  
+- `protocolVersion::Union{String,Nothing}`: Version of the MCP protocol being used (must be "2025-06-18" - only supported version)
 """
 Base.@kwdef struct InitializeParams <: RequestParams
     capabilities::ClientCapabilities = ClientCapabilities()
     clientInfo::Implementation = Implementation()
-    protocolVersion::Union{String,Nothing} = nothing  # Optional, will default to "2025-03-26" in handler
+    protocolVersion::Union{String,Nothing} = nothing  # Must be "2025-06-18" if provided
 end
 
 """
