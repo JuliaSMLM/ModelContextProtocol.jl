@@ -77,24 +77,24 @@ function process_message(server::Server, state::ServerState, message::String)::U
             return nothing
         end
     catch e
-        id = if parsed isa JSONRPCRequest
-            parsed.id
+        # Only return error responses for requests, not notifications
+        if parsed isa JSONRPCRequest
+            error_info = ErrorInfo(
+                code = ErrorCodes.INTERNAL_ERROR,
+                message = "Internal server error: $(e)"
+            )
+            # Log the error
+            @error "JSON-RPC error" error_code=ErrorCodes.INTERNAL_ERROR error_message=error_info.message
+            # Return JSON-RPC error response
+            return serialize_message(JSONRPCError(
+                id = parsed.id,
+                error = error_info
+            ))
         else
-            nothing
+            # For notifications, just log the error and return nothing
+            @error "Notification processing error" error=e
+            return nothing
         end
-
-        error_info = ErrorInfo(
-            code = ErrorCodes.INTERNAL_ERROR,
-            message = "Internal server error: $(e)"
-        )
-        # Log the error
-        @error "JSON-RPC error" error_code=ErrorCodes.INTERNAL_ERROR error_message=error_info.message request=parsed
-
-        # Return JSON-RPC error response
-        return serialize_message(JSONRPCError(
-            id = id,
-            error = error_info
-        ))
     end
 end
 

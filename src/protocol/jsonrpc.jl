@@ -181,9 +181,9 @@ function parse_notification(raw::JSON3.Object)::Notification
     method = raw.method
     params = if haskey(raw, :params)
         # Handle empty params object case
-        isempty(raw.params) ? LittleDict{String,Any}() : raw.params
+        isempty(raw.params) ? Dict{String,Any}() : Dict{String,Any}(raw.params)
     else
-        LittleDict{String,Any}() 
+        Dict{String,Any}() 
     end
     
     # Parse method-specific parameters
