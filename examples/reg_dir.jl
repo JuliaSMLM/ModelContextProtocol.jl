@@ -16,15 +16,20 @@ if !isdefined(Main, :storage)
     Main.storage = Dict{String, Any}()  # Assign it to `Main`
 end
 
-# Create and start server with all components
-# The auto_register_dir parameter tells the server to automatically scan
-# mcp_tools/ for subdirectories (tools/, resources/, prompts/) and load
-# all .jl files from each subdirectory, registering the MCP components they define
+# Create server without auto-registration to avoid initialization delays
 server = mcp_server(
     name = "mcp_tools_directory",
-    description = "example mcp tools",
-    auto_register_dir=joinpath(@__DIR__, "mcp_tools")
+    description = "example mcp tools"
 )
+
+# Schedule async auto-registration to happen after server starts
+# This ensures initialize responds quickly while components are registered in background
+@async begin
+    sleep(0.1)  # Small delay to ensure server is ready
+    @info "Auto-registering components from $(joinpath(@__DIR__, "mcp_tools"))"
+    ModelContextProtocol.auto_register!(server, joinpath(@__DIR__, "mcp_tools"))
+    @info "Auto-registration completed"
+end
 
 # Start the server
 start!(server)
