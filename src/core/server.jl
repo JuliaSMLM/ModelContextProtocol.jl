@@ -53,19 +53,18 @@ function process_message(server::Server, state::ServerState, message::String)::U
             code = ErrorCodes.PARSE_ERROR,
             message = "Failed to parse message: $(e)"
         )
-        # Log the error but don't send response with null ID (causes Claude Desktop Zod validation failures)
-        @error "JSON-RPC parse error (not sending response due to null ID)" error_code=ErrorCodes.PARSE_ERROR error_message=error_info.message
-        return nothing
+        # Log the error
+        @error "JSON-RPC error" error_code=ErrorCodes.PARSE_ERROR error_message=error_info.message
+
+        # Return JSON-RPC error response
+        return serialize_message(JSONRPCError(
+            id = nothing,
+            error = error_info
+        ))
     end
   
     if parsed isa JSONRPCError
-        # Don't send error responses with null IDs to avoid Claude Desktop Zod validation failures
-        if isnothing(parsed.id)
-            @error "JSON-RPC parse error (not sending response due to null ID)" error_code=parsed.error.code error_message=parsed.error.message
-            return nothing
-        else
-            return serialize_message(parsed)
-        end
+        return serialize_message(parsed)
     end
     
     try
@@ -173,8 +172,23 @@ function run_server_loop(server::Server, state::ServerState)
             
             @error "Error processing message" exception=e
             
-            # Don't try to send error response with null ID (causes Claude Desktop Zod validation failures)
-            @error "Server loop error (not sending response due to null ID)" exception=e
+            # Try to send error response with pre-allocated template
+            try
+                error_info = get(error_templates, ErrorCodes.INTERNAL_ERROR, 
+                    ErrorInfo(
+                        code = ErrorCodes.INTERNAL_ERROR,
+                        message = "Internal server error: $(e)"
+                    )
+                )
+                
+                error_response = serialize_message(JSONRPCError(
+                    id = nothing,
+                    error = error_info
+                ))
+                write_message(transport, error_response)
+            catch response_error
+                @error "Failed to send error response" exception=response_error
+            end
         end
     end
     
