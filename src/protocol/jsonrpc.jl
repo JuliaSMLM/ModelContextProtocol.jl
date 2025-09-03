@@ -181,7 +181,17 @@ function parse_notification(raw::JSON3.Object)::Notification
     method = raw.method
     params = if haskey(raw, :params)
         # Handle empty params object case
-        isempty(raw.params) ? Dict{String,Any}() : Dict{String,Any}(raw.params)
+        if isempty(raw.params)
+            Dict{String,Any}()
+        else
+            # Convert JSON3.Object to Dict more carefully to avoid MethodError
+            try
+                Dict{String,Any}(raw.params)
+            catch e
+                # If conversion fails, convert manually to preserve all fields
+                Dict{String,Any}(string(k) => v for (k, v) in pairs(raw.params))
+            end
+        end
     else
         Dict{String,Any}() 
     end
