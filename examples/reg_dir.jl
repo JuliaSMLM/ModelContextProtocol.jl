@@ -25,7 +25,7 @@ server = mcp_server(
 # Schedule async auto-registration to happen after server starts
 # This ensures initialize responds quickly while components are registered in background
 @async begin
-    sleep(0.1)  # Small delay to ensure server is ready
+    sleep(2.0)  # Longer delay to ensure initialize response is sent first
     @info "Auto-registering components from $(joinpath(@__DIR__, "mcp_tools"))"
     ModelContextProtocol.auto_register!(server, joinpath(@__DIR__, "mcp_tools"))
     @info "Auto-registration completed"

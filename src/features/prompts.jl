@@ -86,6 +86,6 @@ function MCPPrompt(name::String, description::String, arguments::Vector{PromptAr
         name = name,
         description = description,
         arguments = arguments,
-        text = text
+        messages = [PromptMessage(content = TextContent(text = text), role = user)]
     )
 end
