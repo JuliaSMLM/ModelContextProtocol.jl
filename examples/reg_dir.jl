@@ -16,20 +16,13 @@ if !isdefined(Main, :storage)
     Main.storage = Dict{String, Any}()  # Assign it to `Main`
 end
 
-# Create server without auto-registration to avoid initialization delays
+# Create server with synchronous auto-registration
+# Components are registered during server creation
 server = mcp_server(
     name = "mcp_tools_directory",
-    description = "example mcp tools"
+    description = "example mcp tools",
+    auto_register_dir = joinpath(@__DIR__, "mcp_tools")
 )
-
-# Schedule async auto-registration to happen after server starts
-# This ensures initialize responds quickly while components are registered in background
-@async begin
-    sleep(2.0)  # Longer delay to ensure initialize response is sent first
-    @info "Auto-registering components from $(joinpath(@__DIR__, "mcp_tools"))"
-    ModelContextProtocol.auto_register!(server, joinpath(@__DIR__, "mcp_tools"))
-    @info "Auto-registration completed"
-end
 
 # Start the server
 start!(server)

@@ -38,14 +38,22 @@ function read_message(transport::StdioTransport)::Union{String,Nothing}
     end
     
     try
-        message = readline(transport.input)
-        # Check for EOF (readline returns empty string at EOF)
-        if eof(transport.input) && isempty(message)
+        # Use readline() directly when input is stdin for better compatibility
+        message = if transport.input === stdin
+            readline()
+        else
+            readline(transport.input)
+        end
+        
+        # Only check EOF after reading, and only if we get empty string
+        # This matches the behavior of the main branch more closely
+        if isempty(message) && eof(transport.input)
             transport.connected = false
             return nothing
         end
-        # Return nothing for empty messages to skip processing
-        return isempty(message) ? nothing : message
+        
+        # Return the message as-is (server loop will skip empty messages)
+        return message
     catch e
         if e isa EOFError
             transport.connected = false
