@@ -84,65 +84,35 @@ include("utils/serialization.jl")
 # 9. API documentation
 include("api.jl")
 
-# Export all public interfaces
+# Export only the essential public API
 export 
 
     # Primary interface function 
     mcp_server,
     
-    # Core types & enums
-    Role, RequestId, ProgressToken,
-    MCPMessage, Request, Response, Notification,
-    RequestParams, ResponseResult,
-    Content, ResourceContents,
-    TextContent, ImageContent, TextResourceContents, BlobResourceContents,
-    EmbeddedResource, ResourceLink,
-
-    # Server types
-    Server, ServerConfig,
-    Tool, Resource, Capability,
-    
-    # Transport types
-    Transport, TransportError, StdioTransport, HttpTransport,
-    send_notification, broadcast_to_sse, format_sse_event,
-    
-    # Feature types
-    ToolParameter, MCPTool, MCPResource, 
-    ResourceTemplate,
-    
-    # Prompt types
-    PromptArgument, MCPPrompt, PromptMessage,
-    
     # Server operations
     start!, stop!, register!,
     
-    # Capabilities
-    ResourceCapability, ToolCapability, PromptCapability,
+    # Component types for defining MCP components
+    MCPTool, ToolParameter,
+    MCPResource, ResourceTemplate,
+    MCPPrompt, PromptArgument, PromptMessage,
     
-    # Server management
-    subscribe!, unsubscribe!,
+    # Content types for tool/resource responses
+    Content, ResourceContents,  # Abstract types for type annotations
+    TextContent, ImageContent,
+    TextResourceContents, BlobResourceContents,
+    EmbeddedResource, ResourceLink,
+    CallToolResult,  # For explicit error handling in tools
     
-    # Protocol message types
-    RequestMeta, ClientCapabilities, Implementation,
-    InitializeParams, InitializeResult,
-    ListResourcesParams, ListResourcesResult,
-    ReadResourceParams, ReadResourceResult,
-    ListToolsParams, ListToolsResult,
-    CallToolParams, CallToolResult,
-    ListPromptsParams, ListPromptsResult,
-    GetPromptParams, GetPromptResult,
-    ProgressParams, ErrorInfo,
-    JSONRPCRequest, JSONRPCResponse, JSONRPCError, JSONRPCNotification,
+    # Transport types for server configuration
+    Transport,  # Abstract type for type annotations
+    StdioTransport, HttpTransport,
+    connect,  # For HTTP transport initialization
     
-    # Protocol functions
-    parse_message, serialize_message,
-    
-    # Utils
-    MCPLogger, init_logging,
-    ErrorCodes,  # Export error codes module
-    content2dict,  # Export content serialization function
-
-    # Handlers
-    HandlerResult, RequestContext
+    # Advanced features
+    Server,  # For type annotations in user code
+    subscribe!, unsubscribe!,  # Resource subscription management
+    content2dict  # Utility for debugging/testing
 
 end # module
