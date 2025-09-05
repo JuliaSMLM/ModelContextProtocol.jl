@@ -1,4 +1,4 @@
-# ModelContextProtocol.jl Development Guide
+# ModelContextProtocol.jl Guide
 
 ## HTTP Transport Usage
 
@@ -436,7 +436,7 @@ The ModelContextProtocol.jl package includes infrastructure for progress monitor
 
 The infrastructure exists but requires additional implementation to enable progress monitoring from within tool handlers.
 
-## Development Notes
+## Technical Notes
 - Use 127.0.0.1 instead of localhost on Windows for HTTP transport
 - Julia JIT compilation takes 5-10 seconds on first server start
 - Port 8765 is good alternative to avoid common conflicts (3000, 8080, etc.)
