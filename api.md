@@ -4,21 +4,34 @@
 
 ModelContextProtocol.jl provides a Julia implementation of the Model Context Protocol (MCP) version 2025-06-18, enabling standardized communication between AI applications and external tools, resources, and data sources.
 
-**Protocol Support:** This implementation exclusively supports MCP protocol version `2025-06-18`. No other protocol versions are supported.
+**Protocol Version:** This implementation exclusively supports MCP protocol version `2025-06-18`. No other versions are accepted.
 
-## API Design Philosophy
+## Design Philosophy
 
-### Why These Design Choices?
+### Core Principles
 
-1. **CallToolResult uses Dict instead of Content objects**: This is a low-level API for direct JSON-RPC responses. When returning CallToolResult, you're taking full control of the response structure, bypassing automatic Content serialization.
+1. **Protocol-First Design**: Strict compliance with MCP 2025-06-18 specification. No version negotiation complexity, no legacy support.
 
-2. **Role as an enum with default 'user'**: The Role enum provides type safety while defaulting to the most common case (user). The enum values are intentionally not exported to keep the API surface clean - 99% of use cases just need the default.
+2. **Layered Architecture**: 
+   - **Transport Layer**: Abstract interface with stdio and HTTP implementations
+   - **Protocol Layer**: JSON-RPC message handling and routing
+   - **Features Layer**: Tools, resources, and prompts implementation
+   - **Core Layer**: Server state management and initialization
 
-3. **Separate connect() for HttpTransport**: HTTP servers need explicit startup to bind ports and initialize SSE streams, while stdio transport uses existing file descriptors. This separation allows for better error handling and resource management.
+3. **Type System Design**:
+   - Abstract types (`Content`, `Transport`, `Resource`) for extensibility and type annotations
+   - Concrete types with `@kwdef` for ergonomic construction with defaults
+   - Module isolation for safe dynamic component loading
+   - Small maps use `LittleDict` for performance
 
-4. **Abstract types in exports**: Types like `Content`, `Transport`, and `ResourceContents` are exported for type annotations in user code, enabling better documentation and type checking.
+4. **Handler Design**:
+   - Tool handlers receive `Dict{String,Any}` parameters for JSON flexibility
+   - Support multiple return types with automatic conversion
+   - `CallToolResult` for explicit control when needed
 
-### Quick Start
+5. **Minimal Public API**: Only essential types and functions are exported. Internal complexity remains internal.
+
+## Quick Start
 
 ```julia
 using ModelContextProtocol
@@ -28,7 +41,7 @@ my_tool = MCPTool(
     name = "hello",
     description = "Say hello",
     parameters = [],
-    handler = (p) -> TextContent(text = "Hello, world!")
+    handler = (params) -> TextContent(text = "Hello, world!")
 )
 
 # Create and start a server
@@ -40,6 +53,34 @@ server = mcp_server(
 start!(server)  # Uses stdio transport by default
 ```
 
+## Core Architecture
+
+### Transport Hierarchy
+
+```julia
+abstract type Transport end
+├── StdioTransport    # Standard input/output
+└── HttpTransport     # HTTP with SSE support
+```
+
+### Content Type Hierarchy
+
+```julia
+abstract type Content end
+├── TextContent       # Text-based content
+├── ImageContent      # Binary image data
+├── EmbeddedResource  # Embedded resource content
+└── ResourceLink      # Reference to a resource
+```
+
+### Resource Contents Hierarchy
+
+```julia
+abstract type ResourceContents end
+├── TextResourceContents  # Text-based resource data
+└── BlobResourceContents  # Binary resource data
+```
+
 ## Core Functions
 
 ### `mcp_server`
@@ -48,25 +89,30 @@ Create an MCP server instance with tools, resources, and prompts.
 
 ```julia
 mcp_server(;
-    name::String,                    # Required: Server name
-    version::String = "2024-11-05",  # Server implementation version (NOT protocol version)
-    description::String = "",        # Server description
-    tools = nothing,                 # Single tool or Vector{MCPTool}
-    resources = nothing,             # Single resource or Vector{MCPResource}
-    prompts = nothing,               # Single prompt or Vector{MCPPrompt}
-    auto_register_dir = nothing     # Directory for auto-registration
+    name::String,                        # Required: Server name
+    version::String = "2024-11-05",      # Server implementation version (NOT protocol)
+    description::String = "",            # Server description
+    tools = nothing,                     # Single tool or Vector{MCPTool}
+    resources = nothing,                 # Single resource or Vector{MCPResource}
+    prompts = nothing,                   # Single prompt or Vector{MCPPrompt}
+    auto_register_dir = nothing         # Directory for auto-registration
 ) -> Server
 ```
+
+**Important Version Clarification:**
+- `version` parameter: Your server's implementation version (any string, defaults to "2024-11-05")
+- Protocol version: Always "2025-06-18" (hardcoded, only supported version)
 
 **Examples:**
 
 ```julia
 # Simple server
-server = mcp_server(name = "simple-server")
+server = mcp_server(name = "simple")
 
 # Server with components
 server = mcp_server(
     name = "full-server",
+    version = "1.0.0",  # Your server's version
     tools = [tool1, tool2],
     resources = my_resource,
     prompts = [prompt1, prompt2]
@@ -75,7 +121,7 @@ server = mcp_server(
 # Auto-registration from directory
 server = mcp_server(
     name = "auto-server",
-    auto_register_dir = "mcp_components"  # Scans tools/, resources/, prompts/ subdirs
+    auto_register_dir = "mcp_components"
 )
 ```
 
@@ -89,17 +135,15 @@ Start the MCP server and begin processing requests.
 # Default stdio transport
 start!(server)
 
-# Override transport at start time
-start!(server, transport = HttpTransport(port = 3000))
-
-# Or set transport beforehand
+# Custom transport
 transport = HttpTransport(port = 3000)
-server.transport = transport
-# For HTTP, connect first:
-using ModelContextProtocol: connect
-connect(transport)
-start!(server)
+connect(transport)  # Required for HTTP only
+start!(server, transport = transport)
 ```
+
+**Behavior:**
+- For stdio: Processes messages from stdin, responds to stdout
+- For HTTP: Blocks and runs server until interrupted
 
 #### `stop!(server::Server)`
 
@@ -110,31 +154,28 @@ stop!(server)
 ```
 
 **Behavior:**
-- Closes all active connections
-- Releases bound ports (for HTTP transport)
+- Closes active connections
+- Releases bound ports (HTTP)
 - Sets server.active to false
 - Safe to call multiple times
-- Server can be restarted with start! after stopping
 
 #### `connect(transport::HttpTransport)`
 
-Initialize and start the HTTP server for an HttpTransport.
+Initialize HTTP server and bind to port. **Required before `start!` for HTTP transport only.**
 
 ```julia
 transport = HttpTransport(port = 3000)
-connect(transport)  # Starts HTTP server on port 3000
+connect(transport)  # Binds port, starts HTTP server
 ```
-
-**Note:** Only required for HttpTransport. StdioTransport doesn't need connect.
 
 #### `register!(server::Server, component)`
 
-Register a component with the server after creation.
+Register components after server creation.
 
 ```julia
-register!(server, my_tool)
-register!(server, my_resource)
-register!(server, my_prompt)
+register!(server, my_tool)      # Add tool
+register!(server, my_resource)  # Add resource
+register!(server, my_prompt)    # Add prompt
 ```
 
 ## Component Types
@@ -147,39 +188,46 @@ Define a tool that can be invoked by clients.
 
 ```julia
 MCPTool(;
-    name::String,                              # Unique identifier
-    description::String,                       # Human-readable description
-    parameters::Vector{ToolParameter},        # Input parameters
-    handler::Function,                         # (Dict -> Content) handler
-    return_type::Type = Vector{Content}       # Expected return type
+    name::String,                          # Unique identifier
+    description::String,                   # Human-readable description
+    parameters::Vector{ToolParameter},    # Input parameters
+    handler::Function,                     # (Dict -> Content) handler
+    return_type::Type = Vector{Content}   # Expected return type
 )
 ```
 
+**Handler Return Types:**
+- Single `Content` subtype (auto-wrapped in vector if return_type is Vector{Content})
+- `Vector{<:Content}` for multiple items
+- `CallToolResult` for explicit control (ignores return_type)
+- `String` (auto-wrapped in TextContent)
+- `Dict` (converted to JSON and wrapped in TextContent)
+
 #### `ToolParameter`
 
-Define tool parameters.
+Define tool parameters with optional defaults.
 
 ```julia
 ToolParameter(;
     name::String,                    # Parameter name
-    type::String,                    # JSON Schema type ("string", "number", "boolean", etc.)
-    description::String = "",        # Parameter description
+    type::String,                    # JSON Schema type
+    description::String = "",        # Description
     required::Bool = false,          # Whether required
-    default::Any = nothing           # Default value
+    default::Any = nothing          # Default value if not provided
 )
 ```
 
 **Example:**
 
 ```julia
-calculator = MCPTool(
+calc_tool = MCPTool(
     name = "calculate",
-    description = "Perform calculations",
+    description = "Evaluate math expressions",
     parameters = [
         ToolParameter(
             name = "expression",
             type = "string",
-            description = "Math expression",
+            description = "Math expression to evaluate",
             required = true
         ),
         ToolParameter(
@@ -191,8 +239,8 @@ calculator = MCPTool(
     ],
     handler = function(params)
         result = eval(Meta.parse(params["expression"]))
-        precision = params["precision"]
-        TextContent(text = "Result: $(round(result, digits=Int(precision)))")
+        precision = get(params, "precision", 2)  # Uses default
+        TextContent(text = string(round(result, digits=Int(precision))))
     end
 )
 ```
@@ -205,20 +253,20 @@ Define a resource that provides data.
 
 ```julia
 MCPResource(;
-    uri::Union{String, URI},              # Resource URI (auto-converts strings)
+    uri::Union{String, URI},              # Resource identifier
     name::String,                         # Human-readable name
-    description::String = "",             # Resource description
+    description::String = "",             # Description
     mime_type::String = "application/json", # MIME type
     data_provider::Function,              # () -> data function
     annotations::Dict = Dict()            # Metadata
 )
 ```
 
-Note: The `uri` field is stored internally as a `URI` object, but the constructor accepts either strings or URI objects for convenience.
+**Note:** The `uri` is stored internally as a `URI` object but accepts strings for convenience.
 
 #### `ResourceTemplate`
 
-Define templates for dynamic resources.
+Templates for dynamic resources.
 
 ```julia
 ResourceTemplate(;
@@ -232,14 +280,14 @@ ResourceTemplate(;
 **Example:**
 
 ```julia
-config_resource = MCPResource(
-    uri = "config://app",
-    name = "Application Config",
-    description = "App configuration data",
+data_resource = MCPResource(
+    uri = "data://metrics",
+    name = "System Metrics",
     mime_type = "application/json",
     data_provider = () -> Dict(
-        "version" => "1.0",
-        "settings" => Dict("debug" => false)
+        "cpu" => 45.2,
+        "memory" => 8192,
+        "timestamp" => now()
     )
 )
 ```
@@ -252,53 +300,54 @@ Define prompt templates.
 
 ```julia
 MCPPrompt(;
-    name::String,                              # Prompt identifier
-    description::String = "",                  # Prompt description
-    arguments::Vector{PromptArgument} = [],   # Input arguments
-    messages::Vector{PromptMessage} = []      # Template messages
+    name::String,                              # Identifier
+    description::String = "",                  # Description
+    arguments::Vector{PromptArgument} = [],   # Arguments
+    messages::Vector{PromptMessage} = []      # Messages
 )
 ```
 
 #### `PromptArgument`
 
-Define prompt arguments.
+Prompt input arguments.
 
 ```julia
 PromptArgument(;
     name::String,                    # Argument name
-    description::String = "",        # Argument description
+    description::String = "",        # Description
     required::Bool = false           # Whether required
 )
 ```
 
 #### `PromptMessage`
 
-Define prompt messages.
+Messages in prompts.
 
 ```julia
 PromptMessage(;
     content::Content,                # Message content
-    role::Role = user                # Message role (defaults to user)
+    role::Role = user                # Role (user or assistant)
 )
 ```
+
+**Note:** The `Role` enum has values `user` and `assistant`. The default is `user` for most cases.
 
 **Example:**
 
 ```julia
-code_review = MCPPrompt(
-    name = "review_code",
-    description = "Review code for issues",
+analysis_prompt = MCPPrompt(
+    name = "analyze_code",
+    description = "Code review prompt",
     arguments = [
         PromptArgument(
             name = "language",
-            description = "Programming language",
-            required = true
+            required = true,
+            description = "Programming language"
         )
     ],
     messages = [
         PromptMessage(
-            content = TextContent(text = "Review this {language} code for issues")
-            # role defaults to 'user'
+            content = TextContent(text = "Review this {language} code:")
         )
     ]
 )
@@ -310,43 +359,37 @@ code_review = MCPPrompt(
 
 #### `TextContent`
 
-Text-based content.
-
 ```julia
 TextContent(;
     text::String,                          # Text content
-    annotations::Dict = Dict()             # Optional metadata
+    annotations::Dict = Dict()             # Metadata
 )
 ```
 
 #### `ImageContent`
 
-Image content with binary data.
-
 ```julia
 ImageContent(;
-    data::Vector{UInt8},                   # Binary image data (NOT base64)
-    mime_type::String,                     # MIME type (e.g., "image/png")
+    data::Vector{UInt8},                   # Raw binary data (NOT base64)
+    mime_type::String,                     # e.g., "image/png"
     annotations::Dict = Dict()
 )
 ```
+
+**Important:** Pass raw bytes, not base64. Encoding happens automatically during serialization.
 
 ### Advanced Content
 
 #### `EmbeddedResource`
 
-Embed resource content in responses.
-
 ```julia
 EmbeddedResource(;
-    resource::Union{TextResourceContents, BlobResourceContents},
+    resource::ResourceContents,            # Text or Blob resource contents
     annotations::Dict = Dict()
 )
 ```
 
 #### `ResourceLink`
-
-Reference to a resource.
 
 ```julia
 ResourceLink(;
@@ -364,8 +407,6 @@ ResourceLink(;
 
 #### `TextResourceContents`
 
-Text resource data.
-
 ```julia
 TextResourceContents(;
     uri::String,                          # Resource URI
@@ -376,8 +417,6 @@ TextResourceContents(;
 
 #### `BlobResourceContents`
 
-Binary resource data.
-
 ```julia
 BlobResourceContents(;
     uri::String,                          # Resource URI
@@ -386,34 +425,44 @@ BlobResourceContents(;
 )
 ```
 
-### Error Handling
+## Control Types
 
-#### `CallToolResult`
+### `CallToolResult`
 
-Return explicit errors from tools. When using CallToolResult, you must provide content as serialized dictionaries, not Content objects.
+Return explicit results or errors from tool handlers.
 
 ```julia
 CallToolResult(;
-    content::Vector{Dict{String,Any}},    # Serialized content dictionaries
+    content::Vector{Dict{String,Any}},    # Serialized content dicts
     is_error::Bool = false                # Whether this is an error
 )
 ```
 
-**Important:** The `content` field requires dictionaries with the proper content structure (e.g., `Dict("type" => "text", "text" => "message")`), not Content objects.
+**Important:** Content must be pre-serialized dictionaries, not Content objects.
 
 **Example:**
 
 ```julia
 file_tool = MCPTool(
     name = "read_file",
+    description = "Read file contents",
+    parameters = [
+        ToolParameter(name = "path", type = "string", required = true)
+    ],
     handler = function(params)
-        if !isfile(params["path"])
+        path = params["path"]
+        if !isfile(path)
+            # Return error result
             return CallToolResult(
-                content = [Dict("type" => "text", "text" => "File not found")],
+                content = [Dict(
+                    "type" => "text",
+                    "text" => "File not found: $path"
+                )],
                 is_error = true
             )
         end
-        TextContent(text = read(params["path"], String))
+        # Normal return
+        TextContent(text = read(path, String))
     end
 )
 ```
@@ -440,135 +489,59 @@ HttpTransport(;
     host::String = "127.0.0.1",          # Bind address
     port::Int = 8080,                    # Port number
     endpoint::String = "/",              # Endpoint path
-    protocol_version::String = "2025-06-18",  # MCP protocol version (only supported value)
+    protocol_version::String = "2025-06-18",  # Must be this value
     session_required::Bool = false,      # Require session validation
-    allowed_origins::Vector{String} = []  # CORS origins
+    allowed_origins::Vector{String} = [] # CORS origins
 )
 ```
 
-**Important:** For HTTP transport, the server runs as a long-running process. The `start!(server)` call will block and keep the server running until interrupted (Ctrl+C) or `stop!(server)` is called from another thread/task.
+**Critical HTTP Transport Notes:**
+1. Always call `connect(transport)` before `start!(server)`
+2. Server blocks on `start!` and runs until interrupted
+3. Use `127.0.0.1` instead of `localhost` on Windows
 
-**Usage with HTTP:**
+**Example:**
 
 ```julia
-using ModelContextProtocol
-
-# Create HTTP transport
-transport = HttpTransport(
-    host = "127.0.0.1",  # Use IP on Windows, not "localhost"
-    port = 3000
-)
-
-# Create server and set transport
-server = mcp_server(name = "http-server", tools = my_tool)
-server.transport = transport
-
-# Connect transport (starts HTTP server, binds to port)
-connect(transport)
-
-# Start processing (blocks until server is stopped)
-println("Server running on http://127.0.0.1:3000")
-start!(server)  # This blocks! Server runs until Ctrl+C
-
-# Alternative: Set transport in start!
-server = mcp_server(name = "http-server", tools = my_tool)
+# Create transport and server
 transport = HttpTransport(port = 3000)
+server = mcp_server(name = "http-server", tools = my_tools)
+
+# Connect first (binds port)
 connect(transport)
-start!(server, transport = transport)  # Also blocks
+
+# Set transport and start (blocks here)
+server.transport = transport
+start!(server)  # Server runs until Ctrl+C
 ```
-
-**Running as a Script:**
-```bash
-# Start the server (it will run continuously)
-julia --project my_http_server.jl
-
-# In another terminal, connect your MCP client
-# The server stays running, handling multiple client connections
-```
-
-## Advanced Features
-
-### Resource Subscriptions
-
-Subscribe to resource updates.
-
-```julia
-# Subscribe to updates
-subscribe!(server, "resource://path", callback_function)
-
-# Unsubscribe
-unsubscribe!(server, "resource://path", callback_function)
-```
-
-### Type Annotations
-
-Use abstract types for type annotations:
-
-```julia
-function process_content(content::Content)
-    # Works with any Content subtype
-end
-
-function setup_transport() :: Transport
-    # Can return any Transport subtype
-    return StdioTransport()
-end
-```
-
-### Utility Functions
-
-#### `content2dict(content::Content) -> Dict{String,Any}`
-
-Convert any Content object to its dictionary representation for debugging or custom serialization.
-
-```julia
-# Text content
-text = TextContent(text = "Hello")
-dict = content2dict(text)
-# Returns: Dict("type" => "text", "text" => "Hello")
-
-# Image content (automatically base64 encodes)
-image = ImageContent(data = [0x89, 0x50, 0x4E], mime_type = "image/png")
-dict = content2dict(image)
-# Returns: Dict("type" => "image", "data" => "iVBO", "mimeType" => "image/png")
-
-# Embedded resource
-resource = EmbeddedResource(
-    resource = TextResourceContents(uri = "test", text = "data")
-)
-dict = content2dict(resource)
-# Returns nested dictionary structure
-```
-
-**When to use:**
-- Debugging content objects
-- Custom serialization logic
-- Testing tool outputs
-- Inspecting multi-content responses
 
 ## Auto-Registration System
 
-The auto-registration system discovers components from a directory structure:
+Automatically discover and load components from a directory structure:
 
 ```
-my_project/
-└── components/
-    ├── tools/
-    │   ├── calculator.jl    # Contains MCPTool definitions
-    │   └── file_ops.jl
-    ├── resources/
-    │   └── data.jl          # Contains MCPResource definitions
-    └── prompts/
-        └── templates.jl      # Contains MCPPrompt definitions
+components/
+├── tools/
+│   ├── calculator.jl    # Define MCPTool objects
+│   └── file_ops.jl
+├── resources/
+│   └── data.jl         # Define MCPResource objects
+└── prompts/
+    └── templates.jl     # Define MCPPrompt objects
 ```
 
-Each `.jl` file should define component variables (no exports needed):
+**Component File Requirements:**
+- Each `.jl` file is loaded in an isolated module
+- Define component variables (no exports needed)
+- Components are auto-discovered by type
+
+**Example component file:**
 
 ```julia
-# tools/calculator.jl
+# tools/math.jl
 add = MCPTool(
     name = "add",
-    description = "Add numbers",
+    description = "Add two numbers",
     parameters = [
         ToolParameter(name = "a", type = "number", required = true),
         ToolParameter(name = "b", type = "number", required = true)
@@ -578,20 +551,20 @@ add = MCPTool(
 
 multiply = MCPTool(
     name = "multiply",
-    description = "Multiply numbers",
+    description = "Multiply two numbers",
     parameters = [
-        ToolParameter(name = "a", type = "number", required = true),
-        ToolParameter(name = "b", type = "number", required = true)
+        ToolParameter(name = "x", type = "number", required = true),
+        ToolParameter(name = "y", type = "number", required = true)
     ],
-    handler = (p) -> TextContent(text = string(p["a"] * p["b"]))
+    handler = (p) -> TextContent(text = string(p["x"] * p["y"]))
 )
 ```
 
-Then use with:
+**Usage:**
 
 ```julia
 server = mcp_server(
-    name = "math-server",
+    name = "auto-server",
     auto_register_dir = "components"
 )
 start!(server)
@@ -599,226 +572,164 @@ start!(server)
 
 ## Multi-Content Responses
 
-Tools can return multiple content items:
+Tools can return multiple content items of different types:
 
 ```julia
 analysis_tool = MCPTool(
     name = "analyze",
-    description = "Analyze data",
+    description = "Analyze with text and visuals",
     handler = function(params)
-        # Return multiple content items
+        # Return multiple content types
         return [
             TextContent(text = "Analysis complete"),
             ImageContent(
                 data = generate_chart(),  # Returns Vector{UInt8}
                 mime_type = "image/png"
             ),
-            TextContent(text = "Chart shows trends")
+            TextContent(text = "See chart above")
         ]
-    end,
-    return_type = Vector{Content}  # Default
+    end
 )
 ```
+
+## Utility Functions
+
+### `content2dict(content::Content) -> Dict{String,Any}`
+
+Convert Content objects to dictionary representation.
+
+```julia
+# Text content
+text = TextContent(text = "Hello")
+dict = content2dict(text)
+# Returns: Dict("type" => "text", "text" => "Hello")
+
+# Image (automatically base64 encodes)
+image = ImageContent(data = [0x89, 0x50], mime_type = "image/png")
+dict = content2dict(image)
+# Returns: Dict("type" => "image", "data" => "iVA=", "mimeType" => "image/png")
+```
+
+**Use cases:**
+- Debugging content objects
+- Custom serialization
+- Building CallToolResult content
+
+## Known Limitations
+
+### Progress Monitoring
+
+The codebase includes progress monitoring infrastructure (`Progress`, `ProgressToken` types) but **cannot send progress notifications** because:
+- No bidirectional notification mechanism implemented
+- Tool handlers execute synchronously
+- Server can only respond to requests, not push updates
+
+### Subscriptions
+
+Resource subscription methods (`subscribe!`, `unsubscribe!`) are exported but functionality is incomplete:
+- No mechanism to notify subscribers of updates
+- Subscription registry exists but unused
+
+### Session Management
+
+HTTP transport supports session IDs but with limited functionality:
+- Session validation after initialization
+- No session persistence
+- No session timeout handling
 
 ## Common Patterns
 
-### Working with Prompt Messages
+### HTTP Server Setup
 
 ```julia
 using ModelContextProtocol
 
-# Most common: role defaults to 'user'
-prompt = MCPPrompt(
-    name = "example",
-    messages = [
-        PromptMessage(content = TextContent(text = "Question?"))  # defaults to user role
-    ]
-)
-
-# If you need assistant role (rare):
-# using ModelContextProtocol: assistant
-# PromptMessage(role = assistant, content = ...)
-```
-
-### HTTP Server Pattern
-
-```julia
-using ModelContextProtocol
-
-# Standard HTTP server setup
-server = mcp_server(name = "my-server", tools = my_tools)
-transport = HttpTransport(port = 3000)
-connect(transport)  # Must connect first - binds port
-server.transport = transport
-
-println("Starting server on http://127.0.0.1:3000")
-start!(server)  # Blocks here - server runs continuously
-
-# Code after start! won't execute until server stops
-println("Server stopped")  # Only prints after Ctrl+C
-```
-
-### Error Handling Pattern
-
-```julia
-tool = MCPTool(
-    name = "safe_operation",
-    handler = function(params)
-        try
-            # Risky operation
-            result = process_data(params["input"])
-            return TextContent(text = result)
-        catch e
-            # Return error using CallToolResult
-            return CallToolResult(
-                content = [Dict("type" => "text", "text" => "Error: $e")],
-                is_error = true
-            )
-        end
-    end
-)
-```
-
-## Complete Examples
-
-### Simple Echo Server
-
-```julia
-using ModelContextProtocol
-
-echo = MCPTool(
+# Define your tools
+my_tool = MCPTool(
     name = "echo",
-    description = "Echo the message",
+    description = "Echo message",
     parameters = [
-        ToolParameter(
-            name = "message",
-            type = "string",
-            description = "Message to echo",
-            required = true
-        )
+        ToolParameter(name = "msg", type = "string", required = true)
     ],
-    handler = (p) -> TextContent(text = p["message"])
+    handler = (p) -> TextContent(text = p["msg"])
 )
-
-server = mcp_server(
-    name = "echo-server",
-    tools = echo
-)
-
-start!(server)
-```
-
-### HTTP Server with Multiple Tools
-
-```julia
-using ModelContextProtocol
-
-# Define tools
-time_tool = MCPTool(
-    name = "get_time",
-    description = "Get current time",
-    parameters = [],
-    handler = (p) -> TextContent(text = string(now()))
-)
-
-calc_tool = MCPTool(
-    name = "calculate",
-    description = "Calculate expression",
-    parameters = [
-        ToolParameter(name = "expr", type = "string", description = "Math expression", required = true)
-    ],
-    handler = (p) -> TextContent(
-        text = string(eval(Meta.parse(p["expr"])))
-    )
-)
-
-# Create HTTP transport
-transport = HttpTransport(port = 3000)
 
 # Create server
 server = mcp_server(
-    name = "http-tools",
-    tools = [time_tool, calc_tool]
+    name = "http-example",
+    tools = my_tool
 )
 
-# Configure transport
-server.transport = transport
-connect(transport)
+# Setup HTTP transport
+transport = HttpTransport(
+    host = "127.0.0.1",  # Use IP on Windows
+    port = 3000
+)
 
+# Connect and start
+connect(transport)  # Must come first
+server.transport = transport
 println("Server running on http://127.0.0.1:3000")
-start!(server)
+start!(server)  # Blocks until interrupted
 ```
 
-### File Management Server with Error Handling
+### Error Handling
 
 ```julia
-using ModelContextProtocol
-
-read_file = MCPTool(
-    name = "read_file",
-    description = "Read file contents",
+safe_tool = MCPTool(
+    name = "safe_op",
+    description = "Perform operation with error handling",
     parameters = [
-        ToolParameter(name = "path", type = "string", description = "File path", required = true),
-        ToolParameter(name = "encoding", type = "string", description = "File encoding", default = "utf-8")
+        ToolParameter(name = "input", type = "string", required = true)
     ],
     handler = function(params)
-        path = params["path"]
-        
-        if !isfile(path)
-            return CallToolResult(
-                content = [Dict("type" => "text", "text" => "Error: File not found")],
-                is_error = true
-            )
-        end
-        
         try
-            content = read(path, String)
-            return [
-                TextContent(text = "File: $path"),
-                TextContent(text = content)
-            ]
+            result = risky_operation(params["input"])
+            return TextContent(text = result)
         catch e
             return CallToolResult(
-                content = [Dict("type" => "text", "text" => "Error: $(string(e))")],
+                content = [Dict(
+                    "type" => "text",
+                    "text" => "Error: $(string(e))"
+                )],
                 is_error = true
             )
         end
     end
 )
+```
 
-list_dir = MCPTool(
-    name = "list_directory",
-    description = "List directory contents",
+### Working with Defaults
+
+```julia
+config_tool = MCPTool(
+    name = "configure",
     parameters = [
-        ToolParameter(name = "path", type = "string", description = "Directory path", required = true)
+        ToolParameter(
+            name = "timeout",
+            type = "number",
+            default = 30.0  # Applied when not provided
+        ),
+        ToolParameter(
+            name = "retries",
+            type = "integer",
+            default = 3
+        )
     ],
     handler = function(params)
-        path = params["path"]
-        
-        if !isdir(path)
-            return TextContent(text = "Error: Not a directory")
-        end
-        
-        files = readdir(path)
-        TextContent(text = "Contents:\n" * join(files, "\n"))
+        # Defaults are automatically applied
+        timeout = params["timeout"]  # Will be 30.0 if not provided
+        retries = params["retries"]  # Will be 3 if not provided
+        TextContent(text = "Config: timeout=$timeout, retries=$retries")
     end
 )
-
-server = mcp_server(
-    name = "file-server",
-    tools = [read_file, list_dir]
-)
-
-start!(server)
 ```
 
 ## Integration with Claude Desktop
 
-Configure Claude Desktop to use your MCP server:
+### stdio Transport
 
-### For stdio servers (default):
-1. Go to Settings → Developer → Edit Config
-2. Add your server configuration:
+Edit Claude Desktop config:
 
 ```json
 {
@@ -831,14 +742,14 @@ Configure Claude Desktop to use your MCP server:
 }
 ```
 
-### For HTTP servers:
-1. **First, start your HTTP server** (it needs to be running):
+### HTTP Transport
+
+1. Start your HTTP server:
    ```bash
    julia --project my_http_server.jl
-   # Server will run continuously, listening on the specified port
    ```
 
-2. **Then configure Claude Desktop** to connect to the running server:
+2. Configure Claude Desktop to connect:
    ```json
    {
      "mcpServers": {
@@ -850,24 +761,99 @@ Configure Claude Desktop to use your MCP server:
    }
    ```
 
-**Note:** The HTTP server must be started and running before Claude Desktop can connect to it. The server will continue running and can handle multiple client connections.
+**Note:** HTTP server must be running before Claude Desktop connects.
 
-## Protocol Support
+## Protocol Compliance
 
-**Important:** ModelContextProtocol.jl **only supports MCP protocol version 2025-06-18**. This is the only protocol version accepted during initialization.
+ModelContextProtocol.jl **only supports MCP protocol version 2025-06-18**.
 
-### Version Clarification
-- **Protocol Version**: Always `"2025-06-18"` (hardcoded, only supported version)
-- **Server Version** (`mcp_server` parameter): Your server's implementation version (defaults to `"2024-11-05"`, can be any string)
-- **HttpTransport `protocol_version`**: Must be `"2025-06-18"` (the default)
+- Attempting to initialize with any other version results in an error
+- No version negotiation performed
+- Strict compliance with 2025-06-18 specification
 
-Attempting to initialize with any protocol version other than `"2025-06-18"` will result in an error
+## Complete Example
+
+```julia
+#!/usr/bin/env julia
+using ModelContextProtocol
+using Dates
+
+# Tool with defaults
+time_tool = MCPTool(
+    name = "get_time",
+    description = "Get formatted time",
+    parameters = [
+        ToolParameter(
+            name = "format",
+            type = "string",
+            description = "Time format",
+            default = "HH:MM:SS"
+        )
+    ],
+    handler = function(params)
+        fmt = get(params, "format", "HH:MM:SS")
+        TextContent(text = Dates.format(now(), fmt))
+    end
+)
+
+# Tool with error handling
+calc_tool = MCPTool(
+    name = "calculate",
+    description = "Safe calculator",
+    parameters = [
+        ToolParameter(
+            name = "expr",
+            type = "string",
+            description = "Expression to calculate",
+            required = true
+        )
+    ],
+    handler = function(params)
+        try
+            result = eval(Meta.parse(params["expr"]))
+            TextContent(text = "Result: $result")
+        catch e
+            CallToolResult(
+                content = [Dict(
+                    "type" => "text",
+                    "text" => "Invalid expression: $(string(e))"
+                )],
+                is_error = true
+            )
+        end
+    end
+)
+
+# Resource
+stats_resource = MCPResource(
+    uri = "stats://server",
+    name = "Server Statistics",
+    mime_type = "application/json",
+    data_provider = () -> Dict(
+        "uptime" => time() - start_time,
+        "requests" => request_count
+    )
+)
+
+# Create and start server
+server = mcp_server(
+    name = "example-server",
+    version = "1.0.0",
+    tools = [time_tool, calc_tool],
+    resources = stats_resource
+)
+
+global start_time = time()
+global request_count = 0
+
+start!(server)
+```
 
 ## Notes
 
-- Tools handlers receive parameters as `Dict{String,Any}`
-- Resource data providers are zero-argument functions
-- Content is automatically serialized to JSON
-- Binary data in ImageContent should be raw bytes (Vector{UInt8}), not base64
-- HTTP transport requires explicit `connect()` before `start!()`
-- Use `127.0.0.1` instead of `localhost` on Windows for HTTP transport
+- Tool handlers receive `Dict{String,Any}` parameters
+- Binary data in ImageContent must be raw bytes (`Vector{UInt8}`)
+- HTTP transport requires `connect()` before `start!()`
+- Use `127.0.0.1` instead of `localhost` on Windows
+- Auto-registration loads each file in isolated module
+- CallToolResult requires pre-serialized content dictionaries
