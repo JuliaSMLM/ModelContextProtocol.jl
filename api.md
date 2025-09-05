@@ -190,7 +190,7 @@ Define a tool that can be invoked by clients.
 MCPTool(;
     name::String,                          # Unique identifier
     description::String,                   # Human-readable description
-    parameters::Vector{ToolParameter},    # Input parameters
+    parameters::Vector{ToolParameter},    # Input parameters (required, use [] for none)
     handler::Function,                     # (Dict -> Content) handler
     return_type::Type = Vector{Content}   # Expected return type
 )
@@ -210,8 +210,8 @@ Define tool parameters with optional defaults.
 ```julia
 ToolParameter(;
     name::String,                    # Parameter name
-    type::String,                    # JSON Schema type
-    description::String = "",        # Description
+    description::String,             # Description
+    type::String,                    # JSON Schema type (e.g., "string", "number", "boolean")
     required::Bool = false,          # Whether required
     default::Any = nothing          # Default value if not provided
 )
@@ -280,6 +280,8 @@ ResourceTemplate(;
 **Example:**
 
 ```julia
+using Dates  # Required for now()
+
 data_resource = MCPResource(
     uri = "data://metrics",
     name = "System Metrics",
@@ -578,6 +580,7 @@ Tools can return multiple content items of different types:
 analysis_tool = MCPTool(
     name = "analyze",
     description = "Analyze with text and visuals",
+    parameters = [],  # Required field, use empty array for no parameters
     handler = function(params)
         # Return multiple content types
         return [
@@ -776,7 +779,7 @@ ModelContextProtocol.jl **only supports MCP protocol version 2025-06-18**.
 ```julia
 #!/usr/bin/env julia
 using ModelContextProtocol
-using Dates
+using Dates  # Required for now() function
 
 # Tool with defaults
 time_tool = MCPTool(
