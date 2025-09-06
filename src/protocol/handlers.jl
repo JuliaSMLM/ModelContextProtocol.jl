@@ -87,8 +87,7 @@ function convert_to_content_type(result::Any, return_type::Type)
     if result isa Dict && return_type == TextContent
         return TextContent(
             type = "text",
-            text = JSON3.write(result),
-            annotations = LittleDict{String,Any}()
+            text = JSON3.write(result)
         )
     end
     
@@ -96,8 +95,7 @@ function convert_to_content_type(result::Any, return_type::Type)
     if result isa String && return_type == TextContent
         return TextContent(
             type = "text",
-            text = result,
-            annotations = LittleDict{String,Any}()
+            text = result
         )
     end
     
@@ -107,8 +105,7 @@ function convert_to_content_type(result::Any, return_type::Type)
         return ImageContent(
             type = "image",
             data = data,
-            mime_type = mime_type,
-            annotations = LittleDict{String,Any}()
+            mime_type = mime_type
         )
     end
     

@@ -134,21 +134,29 @@ abstract type Resource end
 ==============================================================================#
 
 """
-    TextContent(; type::String="text", text::String) <: Content
+    TextContent(; type::String="text", text::String, 
+                annotations::Union{Nothing,Dict{String,Any}}=nothing,
+                _meta::Union{Nothing,Dict{String,Any}}=nothing) <: Content
 
 Text-based content for messages and tool responses.
 
 # Fields
 - `type::String`: Content type identifier (always "text")
 - `text::String`: The actual text content
+- `annotations::Union{Nothing,Dict{String,Any}}`: Optional annotations for the client
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions
 """
 Base.@kwdef struct TextContent <: Content
     type::String = "text"
     text::String
+    annotations::Union{Nothing,Dict{String,Any}} = nothing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing
 end
 
 """
-    ImageContent(; type::String="image", data::Vector{UInt8}, mime_type::String) <: Content
+    ImageContent(; type::String="image", data::Vector{UInt8}, mime_type::String,
+                 annotations::Union{Nothing,Dict{String,Any}}=nothing,
+                 _meta::Union{Nothing,Dict{String,Any}}=nothing) <: Content
 
 Image content for messages and tool responses.
 
@@ -156,11 +164,15 @@ Image content for messages and tool responses.
 - `type::String`: Content type identifier (always "image")
 - `data::Vector{UInt8}`: Raw image data (automatically base64-encoded when serialized)
 - `mime_type::String`: MIME type of the image (e.g., "image/png")
+- `annotations::Union{Nothing,Dict{String,Any}}`: Optional annotations for the client
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions
 """
 Base.@kwdef struct ImageContent <: Content
     type::String = "image"
     data::Vector{UInt8}
     mime_type::String
+    annotations::Union{Nothing,Dict{String,Any}} = nothing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing
 end
 
 """
@@ -197,22 +209,30 @@ Base.@kwdef struct BlobResourceContents <: ResourceContents
 end
 
 """
-    EmbeddedResource(; type::String="resource", resource::Dict{String,Any}) <: Content
+    EmbeddedResource(; type::String="resource", resource::Dict{String,Any},
+                     annotations::Union{Nothing,Dict{String,Any}}=nothing,
+                     _meta::Union{Nothing,Dict{String,Any}}=nothing) <: Content
 
 Embedded resource content for inline resource data.
 
 # Fields
 - `type::String`: Content type identifier (always "resource")
 - `resource::Dict{String,Any}`: The embedded resource data
+- `annotations::Union{Nothing,Dict{String,Any}}`: Optional annotations for the client
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions
 """
 Base.@kwdef struct EmbeddedResource <: Content
     type::String = "resource"
     resource::Dict{String,Any}
+    annotations::Union{Nothing,Dict{String,Any}} = nothing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing
 end
 
 """
     ResourceLink(; type::String="link", href::String, 
-                 title::Union{String,Nothing}=nothing) <: Content
+                 title::Union{String,Nothing}=nothing,
+                 annotations::Union{Nothing,Dict{String,Any}}=nothing,
+                 _meta::Union{Nothing,Dict{String,Any}}=nothing) <: Content
 
 Link to an external resource (NEW in protocol 2025-06-18).
 
@@ -220,11 +240,15 @@ Link to an external resource (NEW in protocol 2025-06-18).
 - `type::String`: Content type identifier (always "link")
 - `href::String`: URL or URI of the linked resource
 - `title::Union{String,Nothing}`: Optional human-readable title for the link
+- `annotations::Union{Nothing,Dict{String,Any}}`: Optional annotations for the client
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions
 """
 Base.@kwdef struct ResourceLink <: Content
     type::String = "link"
     href::String
     title::Union{String,Nothing} = nothing
+    annotations::Union{Nothing,Dict{String,Any}} = nothing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing
 end
 
 #==============================================================================
