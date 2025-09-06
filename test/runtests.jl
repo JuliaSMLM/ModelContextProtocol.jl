@@ -1,6 +1,11 @@
 using Test
 using ModelContextProtocol
 using ModelContextProtocol: handle_initialize, handle_read_resource, handle_list_resources, handle_get_prompt, handle_ping, handle_call_tool, RequestContext, CallToolParams, CallToolResult, content2dict
+using ModelContextProtocol: ServerConfig, Server, ResourceCapability, ToolCapability, PromptCapability, ServerState, process_message
+using ModelContextProtocol: InitializeParams, InitializeResult, ClientCapabilities, Implementation, HandlerResult
+using ModelContextProtocol: JSONRPCRequest, ReadResourceParams, ReadResourceResult, GetPromptParams, ListResourcesParams
+using ModelContextProtocol: Tool, Resource, Prompt
+using ModelContextProtocol: user, assistant, client
 using JSON3, URIs, DataStructures, Logging, Base64, HTTP
 using OrderedCollections: LittleDict
 
@@ -10,6 +15,7 @@ using OrderedCollections: LittleDict
     include("features/tools.jl") 
     include("features/resources.jl")
     include("features/prompts.jl")
+    include("features/auto_register.jl")
     include("protocol/jsonrpc.jl")
     include("protocol/handlers.jl")
     include("protocol/parameters.jl")

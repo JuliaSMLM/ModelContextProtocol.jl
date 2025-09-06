@@ -76,10 +76,7 @@ include("protocol/handlers.jl")
 # 6. Serialization (needs all types)
 include("utils/serialization.jl")
 
-# 7. Features (now just for any additional logic, types are in types.jl)
-include("features/tools.jl")
-include("features/resources.jl") 
-include("features/prompts.jl")
+# 7. Features (types are now in types.jl, no separate feature files needed)
 
 # 9. API documentation
 include("api.jl")

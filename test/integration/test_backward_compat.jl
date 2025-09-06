@@ -2,7 +2,7 @@ using Test
 using ModelContextProtocol
 using JSON3
 
-@testset "Backward Compatibility" begin
+@testset "Transport Defaults and Protocol Validation" begin
     @testset "Server defaults to StdioTransport" begin
         # Create a simple server
         config = ServerConfig(
@@ -17,8 +17,8 @@ using JSON3
         # After start! is called (in a controlled way), it should use StdioTransport
         # We'll mock this by checking the behavior without actually starting the loop
         
-        # Create custom IO for testing
-        input = IOBuffer("""{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}""")
+        # Create custom IO for testing with CORRECT protocol version
+        input = IOBuffer("""{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}""")
         output = IOBuffer()
         
         # Create server with custom transport
@@ -66,8 +66,8 @@ using JSON3
         # Test message processing
         state = ModelContextProtocol.ServerState()
         
-        # Initialize request
-        init_msg = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        # Initialize request with correct protocol version
+        init_msg = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
         response = ModelContextProtocol.process_message(server, state, init_msg)
         
         @test !isnothing(response)
@@ -75,6 +75,25 @@ using JSON3
         @test parsed.jsonrpc == "2.0"
         @test parsed.id == 1
         @test haskey(parsed, :result)
-        @test parsed.result.protocolVersion == "2024-11-05"
+        @test parsed.result.protocolVersion == "2025-06-18"
+    end
+    
+    @testset "Protocol Version Rejection" begin
+        # Test that old protocol versions are rejected
+        config = ServerConfig(name = "test-server")
+        server = Server(config)
+        state = ModelContextProtocol.ServerState()
+        
+        # Test with old protocol version
+        old_protocol_msg = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        response = ModelContextProtocol.process_message(server, state, old_protocol_msg)
+        
+        @test !isnothing(response)
+        parsed = JSON3.read(response)
+        @test parsed.jsonrpc == "2.0"
+        @test parsed.id == 1
+        @test haskey(parsed, :error)
+        @test parsed.error.code == -32602  # Invalid params
+        @test occursin("Unsupported protocol version", parsed.error.message)
     end
 end
