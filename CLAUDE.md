@@ -43,13 +43,13 @@ Test stdio servers using pipe communication:
 
 ```bash
 # Single request
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | julia --project examples/time_server.jl 2>/dev/null | jq .
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | julia --project examples/time_server.jl 2>/dev/null | jq .
 
 # Multiple requests (initialize, then list tools)
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
 
 # Call a tool
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_time","arguments":{"format":"HH:MM:SS"}},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_time","arguments":{"format":"HH:MM:SS"}},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
 ```
 
 ### Streamable HTTP Transport Testing

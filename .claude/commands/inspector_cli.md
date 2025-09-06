@@ -161,21 +161,56 @@ For HTTP-based MCP servers:
 ### 1. Start HTTP Server
 ```bash
 julia --project examples/simple_http_server.jl
+# Wait 5-10 seconds for Julia JIT compilation on first start
 ```
 
 ### 2. Test with curl
+
+#### IMPORTANT: HTTP Accept Header Requirements
+HTTP servers **require BOTH** Accept headers:
+- `application/json` - For JSON-RPC responses
+- `text/event-stream` - For SSE notifications
+
+Missing either header will result in `406 Not Acceptable` error.
+
 ```bash
 # Initialize (save session ID from response)
 curl -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
   -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | jq .
+
+# Extract and save session ID
+SESSION_ID=$(curl -X POST http://127.0.0.1:3000/ \
+  -H 'Content-Type: application/json' \
+  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
+  -s -D - | grep -i "mcp-session-id" | cut -d' ' -f2 | tr -d '\r')
 
 # List tools (use session ID from init)
 curl -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'Mcp-Session-Id: <session-id-from-init>' \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | jq .
+```
+
+### 3. Test HTTP Servers with MCP Inspector CLI
+
+HTTP servers cannot be tested directly with Inspector CLI. Use the `mcp-remote` bridge:
+
+```bash
+# Test HTTP server via mcp-remote
+npx @modelcontextprotocol/inspector --cli \
+  npx mcp-remote http://127.0.0.1:3000 --allow-http \
+  --method tools/list
+
+# For servers on different ports
+npx @modelcontextprotocol/inspector --cli \
+  npx mcp-remote http://127.0.0.1:3004 --allow-http \
+  --method tools/list
 ```
 
 ## Test Script for Julia Servers
@@ -262,6 +297,37 @@ The Inspector CLI sends this sequence:
 ### Issue: Session Management (HTTP)
 **Error**: 400 Bad Request
 **Solution**: Include `Mcp-Session-Id` header from init response
+
+### Issue: JSON Special Characters in Shell
+**Error**: `ArgumentError("encountered invalid escape character in json string")`
+**Cause**: Shell escaping of special characters like `!` in JSON strings
+**Solutions**:
+1. Avoid special characters in test data when possible
+2. Use proper quoting:
+   ```bash
+   # Problem: Shell may escape the exclamation mark
+   curl -d '{"message":"Hello MCP!"}'  # May send "Hello MCP\!"
+   
+   # Solution 1: Avoid special characters
+   curl -d '{"message":"Hello MCP"}'
+   
+   # Solution 2: Use printf to construct JSON
+   JSON=$(printf '{"message":"Hello MCP!"}')
+   curl -d "$JSON"
+   
+   # Solution 3: Use a heredoc for complex JSON
+   curl -d @- <<EOF
+   {"message":"Hello MCP!"}
+   EOF
+   ```
+
+### Issue: HTTP Accept Headers Missing
+**Error**: `406 Not Acceptable: Must accept both application/json and text/event-stream`
+**Cause**: HTTP transport requires both Accept headers for proper content negotiation
+**Solution**: Always include both headers:
+```bash
+-H 'Accept: application/json, text/event-stream'
+```
 
 ## Best Practices
 
