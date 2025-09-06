@@ -41,7 +41,7 @@ jobs:
           cat tools_output.json | jq .
           
           # Verify we got tools
-          jq -e '.result.tools | length > 0' tools_output.json
+          jq -e '.tools | length > 0' tools_output.json
           
           # Call the current_time tool
           npx @modelcontextprotocol/inspector --cli \
@@ -54,7 +54,7 @@ jobs:
           cat tool_call.json | jq .
           
           # Verify tool returned content
-          jq -e '.result.content[0].text | test("Current time")' tool_call.json
+          jq -e '.content[0].text | test("Current time")' tool_call.json
       
       - name: Test resources with Inspector CLI
         run: |

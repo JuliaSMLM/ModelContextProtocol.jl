@@ -179,7 +179,7 @@ function handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream
         id=transport.event_counter
     )
     write(stream, connection_event)
-    flush(stream)
+    Base.flush(stream)
     
     # Store the SSE stream
     transport.sse_streams[stream_id] = stream
@@ -756,7 +756,7 @@ function broadcast_to_sse(transport::HttpTransport, message::String; event::Stri
     for (stream_id, stream) in transport.sse_streams
         try
             write(stream, sse_event)
-            flush(stream)
+            Base.flush(stream)
         catch e
             @debug "Failed to write to SSE stream" stream_id=stream_id error=e
             # Remove dead streams
