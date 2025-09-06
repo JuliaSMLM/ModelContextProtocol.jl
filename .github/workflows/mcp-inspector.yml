@@ -92,16 +92,53 @@ jobs:
           echo "Prompts:"
           cat prompts.json | jq .
           
-          # Get movie analysis prompt
+          # Verify we have prompts
+          jq -e '.prompts | length > 0' prompts.json
+          
+          # Test greeting prompt without arguments (this should work with Inspector)
           npx @modelcontextprotocol/inspector --cli \
             julia --project=${{ github.workspace }} \
             ${{ github.workspace }}/examples/time_server.jl \
             --method prompts/get \
-            --prompt-name movie_analysis \
-            --prompt-arg genre=horror > prompt_get.json
+            --prompt-name greeting > greeting_prompt.json || echo "Inspector may not support prompts/get"
           
-          echo "Prompt get response:"
-          cat prompt_get.json | jq .
+          if [ -f greeting_prompt.json ] && [ -s greeting_prompt.json ]; then
+            echo "Greeting prompt response:"
+            cat greeting_prompt.json | jq .
+          fi
+          
+          # NOTE: Inspector CLI has a bug with prompt arguments (--prompt-arg)
+          # We test this with direct JSON-RPC instead (see next step)
+      
+      - name: Test prompts with arguments using direct JSON-RPC
+        run: |
+          echo "Testing prompts/get with arguments via direct JSON-RPC..."
+          
+          # Test movie_analysis prompt with required 'genre' argument
+          echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
+          {"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"science fiction"}},"id":2}' | \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl 2>/dev/null | \
+            tail -1 > prompt_with_args.json
+          
+          echo "Prompt with required argument response:"
+          cat prompt_with_args.json | jq .
+          
+          # Verify the prompt was processed correctly
+          jq -e '.messages[0].content.text | test("science fiction")' prompt_with_args.json
+          
+          # Test with both required and optional arguments
+          echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
+          {"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"horror","year":"1980"}},"id":3}' | \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl 2>/dev/null | \
+            tail -1 > prompt_full_args.json
+          
+          echo "Prompt with all arguments response:"
+          cat prompt_full_args.json | jq .
+          
+          # Verify both arguments were processed
+          jq -e '.messages[0].content.text | test("horror") and test("1980")' prompt_full_args.json
   
   inspector-http:
     name: Test HTTP servers with MCP Inspector

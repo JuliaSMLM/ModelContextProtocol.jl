@@ -83,15 +83,9 @@ npx @modelcontextprotocol/inspector --cli \
   --method resources/read \
   --tool-arg uri="character-info://harry-potter/birthday"
 
-# Test prompts/get
-npx @modelcontextprotocol/inspector --cli \
-  julia \
-  --project=/home/kalidke/julia_shared_dev/ModelContextProtocol \
-  /home/kalidke/julia_shared_dev/ModelContextProtocol/examples/time_server.jl \
-  --method prompts/get \
-  --tool-arg name=movie_analysis \
-  --tool-arg genre=horror \
-  --tool-arg year=1980
+# Test prompts/get 
+# WARNING: Inspector CLI has a bug with prompt arguments - they are not passed correctly
+# Use direct JSON-RPC testing instead (see below)
 ```
 
 **Note**: Currently Julia servers may hang with Inspector CLI due to stdio communication issues. The processes start correctly but communication may not complete. Use direct JSON-RPC testing for debugging.
@@ -149,9 +143,12 @@ echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"202
 echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"prompts/list","params":{},"id":2}' | \
   julia --project examples/test_inspector.jl 2>/dev/null | tail -1 | jq .
 
-# Get a prompt
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"greeting","arguments":{"name":"World"}},"id":2}' | \
-  julia --project examples/test_inspector.jl 2>/dev/null | tail -1 | jq .
+# Get a prompt (with arguments)
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"horror"}},"id":2}' | \
+  julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
+
+# Note: The Inspector CLI currently has a bug with prompt arguments. 
+# Use direct JSON-RPC testing as shown above for prompts with arguments.
 ```
 
 ## HTTP Transport Testing

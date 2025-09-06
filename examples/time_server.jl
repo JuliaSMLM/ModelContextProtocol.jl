@@ -21,7 +21,7 @@ birthday_resource = MCPResource(
     data_provider = () -> Dict("birthday" => "July 31")
 )
 
-# Define a prompt
+# Define prompts
 movie_info_prompt = MCPPrompt(
     name = "movie_analysis",
     description = "Get information about movies by genre",
@@ -47,6 +47,21 @@ movie_info_prompt = MCPPrompt(
     ]
 )
 
+# Simple prompt without required arguments
+greeting_prompt = MCPPrompt(
+    name = "greeting",
+    description = "Generate a friendly greeting",
+    arguments = [],
+    messages = [
+        PromptMessage(
+            content = TextContent(
+                type = "text",
+                text = "Generate a friendly and welcoming greeting message."
+            )
+        )
+    ]
+)
+
 # Create and start server with all components
 server = mcp_server(
     name = "time-movie-server",
@@ -54,7 +69,7 @@ server = mcp_server(
     description = "Time formatting and movie analysis service",
     tools = time_tool,
     resources = birthday_resource,
-    prompts = movie_info_prompt
+    prompts = [movie_info_prompt, greeting_prompt]
 )
 
 # Start the server
