@@ -180,24 +180,30 @@ curl -X POST http://127.0.0.1:3000/ \
 
 ## Test Script for Julia Servers
 
-Create a reusable test script:
+Create a reusable test script in the project's tmp/ folder:
 
 ```bash
 #!/bin/bash
-# test_julia_mcp.sh
+# tmp/test_julia_mcp.sh
+
+# Ensure we're in the project directory
+cd "$(dirname "$0")/.."
 
 SERVER="julia --project examples/test_inspector.jl"
 PROTOCOL="2025-06-18"
 
-# Create request file
-cat > /tmp/mcp_test.json << EOF
+# Create request file in tmp/
+cat > tmp/mcp_test.json << EOF
 {"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"$PROTOCOL","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
 {"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}
 {"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"test"}},"id":3}
 EOF
 
 # Run tests
-cat /tmp/mcp_test.json | $SERVER 2>/dev/null | jq -s .
+cat tmp/mcp_test.json | $SERVER 2>/dev/null | jq -s .
+
+# Clean up
+rm -f tmp/mcp_test.json
 ```
 
 ## Debugging Tips
@@ -210,19 +216,26 @@ echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-0
 ```
 
 ### 2. Log Inspector Messages
-Create a debug server to see what Inspector sends:
+Create a debug server in tmp/ to see what Inspector sends:
 
 ```julia
-# debug_server.jl
+# tmp/debug_server.jl
 using JSON3
 
-log = open("/tmp/mcp_debug.log", "w")
+# Use project tmp/ folder for logs
+log = open("tmp/mcp_debug.log", "w")
 while !eof(stdin)
     line = readline(stdin)
     println(log, "Received: ", line)
     flush(log)
     # Process and respond...
 end
+close(log)
+```
+
+Remember to clean up debug logs:
+```bash
+rm -f tmp/mcp_debug.log tmp/debug_server.jl
 ```
 
 ### 3. Test Inspector Protocol Sequence
@@ -271,6 +284,135 @@ brew tap f/McpTools
 brew install mcp
 ```
 
+## Server Cleanup After Testing
+
+### IMPORTANT: Always Clean Up Test Servers
+
+MCP test servers can continue running in the background after testing. Always check for and clean up running servers:
+
+```bash
+# Check for running Julia MCP servers
+ps aux | grep -E "julia.*(examples|mcp|server)" | grep -v grep
+
+# Check for specific example servers
+ps aux | grep -E "julia.*(time_server|minimal_debug|reg_dir|simple_http)" | grep -v grep
+
+# Check for MCP Inspector processes
+ps aux | grep -E "mcp-inspector|@modelcontextprotocol/inspector" | grep -v grep
+
+# Check for servers on common MCP ports
+netstat -tlnp | grep -E ":(3000|3004|8765)"
+lsof -i :3000  # Check specific port
+```
+
+### Kill Running Servers
+
+```bash
+# Kill specific process by PID
+kill <PID>
+
+# Kill multiple PIDs at once
+kill PID1 PID2 PID3
+
+# Force kill if process won't stop
+kill -9 <PID>
+
+# Kill all Julia example servers (use carefully!)
+pkill -f "julia.*examples.*"
+
+# Kill all MCP inspector processes
+pkill -f "mcp-inspector"
+pkill -f "@modelcontextprotocol/inspector"
+```
+
+### Best Practices for Server Management
+
+1. **Use Project tmp/ Folder for Test Scripts**: Keep test artifacts organized
+   ```bash
+   # Create tmp folder if it doesn't exist (gitignored)
+   mkdir -p tmp/
+   
+   # Put test scripts in tmp/
+   cat > tmp/test_mcp.sh << 'EOF'
+   #!/bin/bash
+   echo "Testing MCP server..."
+   # test commands here
+   EOF
+   
+   # Clean up after testing
+   rm -f tmp/test_*.sh tmp/*.json tmp/*.log
+   ```
+
+2. **Before Testing**: Check for existing servers to avoid port conflicts
+   ```bash
+   ps aux | grep julia.*examples | grep -v grep
+   ```
+
+3. **After Testing**: Always clean up servers AND test files
+   ```bash
+   # Save PIDs when starting servers for easy cleanup
+   julia --project examples/time_server.jl & 
+   SERVER_PID=$!
+   # ... do testing ...
+   kill $SERVER_PID
+   
+   # Clean up test artifacts
+   rm -f tmp/test_* tmp/*.json tmp/*.log
+   ```
+
+4. **Use Different Ports**: When testing multiple servers concurrently
+   - Default: 3000
+   - Alternatives: 3001-3009, 8765, 8080
+
+5. **Create Cleanup Script**: For frequent testing
+   ```bash
+   #!/bin/bash
+   # tmp/cleanup_mcp.sh
+   echo "Cleaning up MCP servers..."
+   pkill -f "julia.*examples.*time_server"
+   pkill -f "julia.*examples.*reg_dir"
+   pkill -f "mcp-inspector"
+   echo "Cleaning up test files..."
+   rm -f tmp/test_*.sh tmp/*.json tmp/*.log tmp/mcp_*
+   echo "Done!"
+   ```
+
+6. **Monitor Long-Running Tests**: Set timeouts
+   ```bash
+   timeout 30s julia --project examples/test_server.jl
+   ```
+
+### Test File Organization
+
+Always use the `tmp/` folder for test artifacts:
+
+```bash
+# Project structure for testing
+ModelContextProtocol/
+├── tmp/                    # Gitignored folder for test artifacts
+│   ├── test_*.sh          # Test scripts
+│   ├── mcp_*.json         # Test JSON files
+│   ├── *.log              # Debug logs
+│   └── cleanup_mcp.sh     # Cleanup script
+├── examples/              # Example servers (don't modify)
+└── .gitignore            # Should include tmp/
+```
+
+**Ensure tmp/ is in .gitignore:**
+```bash
+# Check if tmp/ is gitignored
+grep "^tmp/" .gitignore || echo "tmp/" >> .gitignore
+```
+
+### Common Leftover Processes
+
+These processes are commonly left running after testing:
+- `julia ... examples/time_server.jl` - Basic example server
+- `julia ... examples/minimal_debug.jl` - Debug server
+- `julia ... examples/reg_dir_http.jl` - HTTP server (keeps port open)
+- `npm exec @modelcontextprotocol/inspector` - Inspector UI
+- `node ... mcp-inspector` - Inspector backend
+
 ## Summary
 
-The MCP Inspector CLI is the standard tool for testing MCP servers. Servers must work with the Inspector CLI to be compatible with Claude Desktop. For debugging servers that aren't working properly with the Inspector, direct JSON-RPC testing can help identify issues.
+The MCP Inspector CLI is the standard tool for testing MCP servers. Servers must work with the Inspector CLI to be compatible with Claude Desktop. For debugging servers that aren't working properly with the Inspector, direct JSON-RPC testing can help identify issues. **Always remember to clean up test servers after testing to avoid port conflicts and resource usage.**
