@@ -50,6 +50,7 @@ movie_info_prompt = MCPPrompt(
 # Create and start server with all components
 server = mcp_server(
     name = "time-movie-server",
+    version = "1.0.0",  # Example server version
     description = "Time formatting and movie analysis service",
     tools = time_tool,
     resources = birthday_resource,

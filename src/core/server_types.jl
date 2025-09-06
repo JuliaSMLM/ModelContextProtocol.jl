@@ -39,14 +39,14 @@ Define configuration settings for an MCP server instance.
 
 # Fields
 - `name::String`: The server name shown to clients
-- `version::String`: Server version string
+- `version::String`: Server implementation version (e.g., "1.0.0", "2.3.1") - YOUR server's version, not the protocol version
 - `description::String`: Human-readable server description
 - `capabilities::Vector{Capability}`: Protocol capabilities supported by the server
 - `instructions::String`: Usage instructions for clients
 """
 Base.@kwdef struct ServerConfig
     name::String
-    version::String = "2024-11-05"
+    version::String = "1.0.0"  # Default server version for convenience
     description::String = ""
     capabilities::Vector{Capability} = Capability[]
     instructions::String = ""

@@ -20,6 +20,7 @@ end
 # Components are registered during server creation
 server = mcp_server(
     name = "mcp_tools_directory",
+    version = "1.0.0",  # Example server version
     description = "example mcp tools",
     auto_register_dir = joinpath(@__DIR__, "mcp_tools")
 )

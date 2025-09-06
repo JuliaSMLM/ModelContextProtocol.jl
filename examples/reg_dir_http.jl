@@ -27,6 +27,7 @@ end
 # all .jl files from each subdirectory, registering the MCP components they define
 server = mcp_server(
     name = "mcp_tools_directory_http",
+    version = "1.0.0",  # Example server version
     description = "Auto-registered MCP tools via HTTP",
     auto_register_dir=joinpath(@__DIR__, "mcp_tools")
 )

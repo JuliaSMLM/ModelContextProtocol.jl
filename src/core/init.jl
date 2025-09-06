@@ -157,7 +157,7 @@ function default_capabilities()
 end
 
 """
-    mcp_server(; name::String, version::String="2024-11-05", 
+    mcp_server(; name::String, version::String="1.0.0", 
              tools::Union{Vector{MCPTool},MCPTool,Nothing}=nothing,
              resources::Union{Vector{MCPResource},MCPResource,Nothing}=nothing, 
              prompts::Union{Vector{MCPPrompt},MCPPrompt,Nothing}=nothing,
@@ -169,7 +169,7 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 
 # Arguments
 - `name::String`: Unique identifier for the server instance 
-- `version::String`: Server implementation version
+- `version::String`: Your server implementation version (defaults to "1.0.0") - YOUR server's version, not the MCP protocol version
 - `tools`: Tools to expose to the model
 - `resources`: Resources available to the model
 - `prompts`: Predefined prompts for the model
@@ -184,6 +184,7 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 ```julia
 server = mcp_server(
     name = "my-server",
+    version = "1.0.0",  # Your server version
     description = "Demo server with time tool",
     tools = MCPTool(
         name = "get_time",
@@ -197,7 +198,7 @@ start!(server)
 """
 function mcp_server(;
     name::String,
-    version::String = "2024-11-05", 
+    version::String = "1.0.0",  # Default server version for convenience 
     tools::Union{Vector{MCPTool}, MCPTool, Nothing} = nothing,
     resources::Union{Vector{MCPResource}, MCPResource, Nothing} = nothing,
     prompts::Union{Vector{MCPPrompt}, MCPPrompt, Nothing} = nothing,  # Added prompts parameter

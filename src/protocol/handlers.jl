@@ -129,8 +129,10 @@ Handle MCP protocol initialization requests by setting up the server and returni
 - `HandlerResult`: Contains the server's capabilities and configuration
 """
 function handle_initialize(ctx::RequestContext, params::InitializeParams)::HandlerResult
-    # We only support MCP protocol version 2025-06-18
-    supported_version = "2025-06-18"
+    # Currently we only support MCP protocol version 2025-06-18
+    # In the future, this could be extended to support multiple versions
+    SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18"]
+    supported_version = SUPPORTED_PROTOCOL_VERSIONS[1]  # Use the only supported version for now
     
     # Check if client requested a specific version
     if !isnothing(params.protocolVersion) && params.protocolVersion != supported_version
