@@ -73,7 +73,7 @@ start!(server)  # Uses stdio by default
    - Abstract types (`Content`, `Transport`, `Resource`) for extensibility and type annotations
    - Concrete types with `@kwdef` for ergonomic construction with defaults
    - Module isolation for safe dynamic component loading
-   - Small maps use `LittleDict` for performance
+   - Small maps use `LittleDict` for performance (automatically imported from DataStructures.jl)
 
 4. **Handler Design**:
    - Tool handlers receive `Dict{String,Any}` parameters for JSON flexibility
@@ -293,12 +293,12 @@ MCPTool(;
     description::String,                   # Human-readable description
     parameters::Vector{ToolParameter},    # Input parameters (required, use [] for none)
     handler::Function,                     # (Dict -> Content) handler
-    return_type::Type = Vector{Content}   # Expected return type
+    return_type::Type = Content            # Expected return type (default: Content, not Vector{Content})
 )
 ```
 
 **Handler Return Types:**
-- Single `Content` subtype (auto-wrapped in vector if return_type is Vector{Content})
+- Single `Content` subtype (auto-wrapped in vector)
 - `Vector{<:Content}` for multiple items
 - `CallToolResult` for explicit control (ignores return_type)
 - `String` (auto-wrapped in TextContent)
@@ -311,8 +311,8 @@ Define tool parameters with optional defaults.
 ```julia
 ToolParameter(;
     name::String,                    # Parameter name
-    description::String,             # Description
     type::String,                    # JSON Schema type (e.g., "string", "number", "boolean")
+    description::String = "",        # Description (optional)
     required::Bool = false,          # Whether required
     default::Any = nothing          # Default value if not provided
 )
@@ -359,7 +359,7 @@ MCPResource(;
     description::String = "",             # Description
     mime_type::String = "application/json", # MIME type
     data_provider::Function,              # () -> data function
-    annotations::Dict = Dict()            # Metadata
+    annotations::AbstractDict = LittleDict{String,Any}()  # Metadata (uses LittleDict for performance)
 )
 ```
 
@@ -428,8 +428,8 @@ Messages in prompts.
 
 ```julia
 PromptMessage(;
-    content::Content,                # Message content
-    role::Role = user                # Role (user or assistant)
+    content::Union{TextContent, ImageContent},  # Message content (text or image only)
+    role::Role = user                           # Role (user or assistant)
 )
 ```
 
@@ -465,7 +465,7 @@ analysis_prompt = MCPPrompt(
 ```julia
 TextContent(;
     text::String,                          # Text content
-    annotations::Dict = Dict()             # Metadata
+    annotations::AbstractDict = LittleDict{String,Any}()  # Metadata
 )
 ```
 
@@ -475,7 +475,7 @@ TextContent(;
 ImageContent(;
     data::Vector{UInt8},                   # Raw binary data (NOT base64)
     mime_type::String,                     # e.g., "image/png"
-    annotations::Dict = Dict()
+    annotations::AbstractDict = LittleDict{String,Any}()
 )
 ```
 
@@ -488,7 +488,7 @@ ImageContent(;
 ```julia
 EmbeddedResource(;
     resource::ResourceContents,            # Text or Blob resource contents
-    annotations::Dict = Dict()
+    annotations::AbstractDict = LittleDict{String,Any}()
 )
 ```
 
@@ -502,7 +502,7 @@ ResourceLink(;
     mime_type::Union{String,Nothing} = nothing,
     title::Union{String,Nothing} = nothing,
     size::Union{Float64,Nothing} = nothing,
-    annotations::Dict = Dict()
+    annotations::AbstractDict = LittleDict{String,Any}()
 )
 ```
 

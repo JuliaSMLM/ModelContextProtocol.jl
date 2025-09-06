@@ -7,3 +7,4 @@
 *.log
 *.vscode
 examples/Manifest.toml
+tmp/

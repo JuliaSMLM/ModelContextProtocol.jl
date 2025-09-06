@@ -312,8 +312,5 @@ function unsubscribe!(server::Server, uri::String, callback::Function)
     server
 end
 
-# Pretty printing
-Base.show(io::IO, config::ServerConfig) = print(io, "ServerConfig($(config.name) v$(config.version))")
-Base.show(io::IO, server::Server) = print(io, "MCP Server($(server.config.name), $(server.active ? "active" : "inactive"))")
 
 

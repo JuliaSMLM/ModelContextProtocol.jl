@@ -48,38 +48,38 @@ module ModelContextProtocol
 
 using JSON3, URIs, DataStructures, OrderedCollections, Logging, Dates, StructTypes, MacroTools, Base64
 
-# 1. Foundation
-include("core/types.jl")
+# 1. All Types (consolidated in dependency order)
+include("types.jl")
 
-# 2. Features
-include("features/tools.jl")
-include("features/resources.jl") 
-include("features/prompts.jl")
-
-# 3. Protocol Types
+# 2. Protocol Messages
 include("protocol/messages.jl")
 
-# 4. Transport Layer
+# 3. Transport Layer
 include("transports/base.jl")
 include("transports/stdio.jl")
 include("transports/http.jl")
 
-# 5. Server Types
-include("core/server_types.jl")  
+# 4. Server Type (depends on Transport)
+include("server_types.jl")
 
-# 6. Utils
+# 5. Utils
 include("utils/errors.jl")
 include("utils/logging.jl")
 
-# 7. Implementation
+# 5. Implementation
 include("protocol/jsonrpc.jl")
 include("core/capabilities.jl")
 include("core/server.jl")
 include("core/init.jl")
 include("protocol/handlers.jl")
 
-# 8. Serialization (needs all types)
+# 6. Serialization (needs all types)
 include("utils/serialization.jl")
+
+# 7. Features (now just for any additional logic, types are in types.jl)
+include("features/tools.jl")
+include("features/resources.jl") 
+include("features/prompts.jl")
 
 # 9. API documentation
 include("api.jl")

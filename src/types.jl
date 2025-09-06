@@ -1,19 +1,122 @@
-# src/types.jl
+# src/types_consolidated.jl
+# Consolidated type definitions in dependency order
 
-#= Base Abstract Types =#
+#==============================================================================
+# 1. Core Enums and Type Aliases
+==============================================================================#
+
+"""
+    Role
+
+Enum representing roles in the MCP protocol.
+
+# Values
+- `user`: Content or messages from the user
+- `assistant`: Content or messages from the assistant
+"""
+@enum Role user assistant
+
+"""
+    RequestId
+
+Type alias for JSON-RPC request identifiers.
+
+# Type
+Union{String,Int} - Can be either a string or integer identifier
+"""
+const RequestId = Union{String,Int}
+
+"""
+    ProgressToken
+
+Type alias for tokens used to track long-running operations.
+
+# Type
+Union{String,Int} - Can be either a string or integer identifier
+"""
+const ProgressToken = Union{String,Int}
+
+#==============================================================================
+# 2. Abstract Base Types
+==============================================================================#
+
+"""
+    MCPMessage
+
+Abstract base type for all message types in the MCP protocol.
+Serves as the root type for requests, responses, and notifications.
+"""
+abstract type MCPMessage end
+
+"""
+    Request <: MCPMessage
+
+Abstract base type for client-to-server requests in the MCP protocol.
+Request messages expect a corresponding response from the server.
+"""
+abstract type Request <: MCPMessage end
+
+"""
+    Response <: MCPMessage
+
+Abstract base type for server-to-client responses in the MCP protocol.
+Response messages are sent from the server in reply to client requests.
+"""
+abstract type Response <: MCPMessage end
+
+"""
+    Notification <: MCPMessage
+
+Abstract base type for one-way notifications in the MCP protocol.
+Notification messages don't expect a corresponding response.
+"""
+abstract type Notification <: MCPMessage end
+
+"""
+    RequestParams
+
+Abstract base type for all parameter structures in MCP protocol requests.
+Concrete subtypes define parameters for specific request methods.
+"""
+abstract type RequestParams end
+
+"""
+    ResponseResult
+
+Abstract base type for all result structures in MCP protocol responses.
+Concrete subtypes define result formats for specific response methods.
+"""
+abstract type ResponseResult end
+
+"""
+    Content
+
+Abstract base type for all content formats in the MCP protocol.
+Content can be exchanged between clients and servers in various formats.
+"""
+abstract type Content end
+
+"""
+    ResourceContents
+
+Abstract base type for resource content formats in the MCP protocol.
+Resources can contain different types of content based on their MIME type.
+"""
+abstract type ResourceContents end
 
 """
     Capability
 
-Define base type for all MCP protocol capabilities.
-Implementations should include configuration for specific protocol features.
+Abstract base type for all MCP protocol capabilities.
+Capabilities represent protocol features that servers can support.
+Concrete implementations define configuration for specific feature sets.
 """
 abstract type Capability end
 
 """
     Tool
 
-Define base type for all MCP tools.
+Abstract base type for all MCP tools.
 Tools represent operations that can be invoked by clients.
 """
 abstract type Tool end
@@ -21,60 +124,136 @@ abstract type Tool end
 """
     Resource
 
-Define base type for all MCP resources.
+Abstract base type for all MCP resources.
 Resources represent data that can be read by clients.
 """
 abstract type Resource end
 
-#= Server Configuration Types =#
+#==============================================================================
+# 3. Content Types (needed by tools, prompts, resources)
+==============================================================================#
 
 """
-    ServerConfig(; name::String, version::String="1.0.0", description::String="", 
-                capabilities::Vector{Capability}=Capability[], instructions::String="")
+    TextContent(; type::String="text", text::String) <: Content
 
-Define configuration settings for an MCP server instance.
+Text-based content for messages and tool responses.
 
 # Fields
-- `name::String`: The server name shown to clients
-- `version::String`: Server version string
-- `description::String`: Human-readable server description
-- `capabilities::Vector{Capability}`: Protocol capabilities supported by the server
-- `instructions::String`: Usage instructions for clients
+- `type::String`: Content type identifier (always "text")
+- `text::String`: The actual text content
 """
-Base.@kwdef struct ServerConfig
-    name::String
-    version::String = "1.0.0"
-    description::String = ""
-    capabilities::Vector{Capability} = Capability[]
-    instructions::String = ""
+Base.@kwdef struct TextContent <: Content
+    type::String = "text"
+    text::String
 end
 
-#= Tool Implementation Types =#
+"""
+    ImageContent(; type::String="image", data::Vector{UInt8}, mime_type::String) <: Content
+
+Image content for messages and tool responses.
+
+# Fields
+- `type::String`: Content type identifier (always "image")
+- `data::Vector{UInt8}`: Raw image data (automatically base64-encoded when serialized)
+- `mime_type::String`: MIME type of the image (e.g., "image/png")
+"""
+Base.@kwdef struct ImageContent <: Content
+    type::String = "image"
+    data::Vector{UInt8}
+    mime_type::String
+end
 
 """
-    ToolParameter(; name::String, type::String, description::String="", 
-                 required::Bool=false, constraints::AbstractDict{String,Any}=LittleDict{String,Any}())
+    TextResourceContents(; uri::URI, mime_type::String="text/plain", text::String) <: ResourceContents
+
+Text content for resources in the MCP protocol.
+
+# Fields
+- `uri::URI`: Resource identifier
+- `mime_type::String`: MIME type of the text content
+- `text::String`: The actual text content
+"""
+Base.@kwdef struct TextResourceContents <: ResourceContents
+    uri::URI
+    mime_type::String = "text/plain"
+    text::String
+end
+
+"""
+    BlobResourceContents(; uri::URI, mime_type::String="application/octet-stream", 
+                        blob::Vector{UInt8}) <: ResourceContents
+
+Binary content for resources.
+
+# Fields
+- `uri::URI`: Resource identifier
+- `mime_type::String`: MIME type of the binary content
+- `blob::Vector{UInt8}`: Raw binary data (automatically base64-encoded when serialized)
+"""
+Base.@kwdef struct BlobResourceContents <: ResourceContents
+    uri::URI
+    mime_type::String = "application/octet-stream"
+    blob::Vector{UInt8}
+end
+
+"""
+    EmbeddedResource(; type::String="resource", resource::Dict{String,Any}) <: Content
+
+Embedded resource content for inline resource data.
+
+# Fields
+- `type::String`: Content type identifier (always "resource")
+- `resource::Dict{String,Any}`: The embedded resource data
+"""
+Base.@kwdef struct EmbeddedResource <: Content
+    type::String = "resource"
+    resource::Dict{String,Any}
+end
+
+"""
+    ResourceLink(; type::String="link", href::String, 
+                 title::Union{String,Nothing}=nothing) <: Content
+
+Link to an external resource (NEW in protocol 2025-06-18).
+
+# Fields
+- `type::String`: Content type identifier (always "link")
+- `href::String`: URL or URI of the linked resource
+- `title::Union{String,Nothing}`: Optional human-readable title for the link
+"""
+Base.@kwdef struct ResourceLink <: Content
+    type::String = "link"
+    href::String
+    title::Union{String,Nothing} = nothing
+end
+
+#==============================================================================
+# 4. Tool Types
+==============================================================================#
+
+"""
+    ToolParameter(; name::String, description::String, type::String, required::Bool=false, default::Any=nothing)
 
 Define a parameter for an MCP tool.
 
 # Fields
 - `name::String`: The parameter name (used as the key in the params dictionary)
-- `type::String`: Type of the parameter as specified in the MCP schema
 - `description::String`: Human-readable description of the parameter
+- `type::String`: Type of the parameter as specified in the MCP schema (e.g., "string", "number", "boolean")
 - `required::Bool`: Whether the parameter is required for tool invocation
-- `constraints::AbstractDict{String,Any}`: Optional constraints on parameter values
+- `default::Any`: Default value for the parameter if not provided (nothing means no default)
 """
 Base.@kwdef struct ToolParameter
     name::String
-    type::String
-    description::String = ""
+    description::String
+    type::String 
     required::Bool = false
-    constraints::AbstractDict{String,Any} = LittleDict{String,Any}()
+    default::Any = nothing
 end
 
 """
     MCPTool(; name::String, description::String, parameters::Vector{ToolParameter},
-           handler::Function, return_type::Type=Any) <: Tool
+          handler::Function, return_type::Type=Vector{Content}) <: Tool
 
 Implement a tool that can be invoked by clients in the MCP protocol.
 
@@ -83,21 +262,80 @@ Implement a tool that can be invoked by clients in the MCP protocol.
 - `description::String`: Human-readable description of the tool's purpose
 - `parameters::Vector{ToolParameter}`: Parameters that the tool accepts
 - `handler::Function`: Function that implements the tool's functionality
-- `return_type::Type`: Expected return type of the handler
+- `return_type::Type`: Expected return type of the handler (defaults to Vector{Content})
+
+# Handler Return Types
+The tool handler can return various types which are automatically converted:
+- An instance of the specified Content type (TextContent, ImageContent, etc.)
+- A Vector{<:Content} for multiple content items (can mix TextContent, ImageContent, etc.)
+- A Dict (automatically converted to JSON and wrapped in TextContent)
+- A String (automatically wrapped in TextContent)
+- A Tuple{Vector{UInt8}, String} (automatically wrapped in ImageContent)
+- A CallToolResult object for full control over the response (including error handling)
+
+When return_type is Vector{Content} (default), single Content items are automatically wrapped in a vector.
+Note: When returning CallToolResult directly, the return_type field is ignored.
 """
 Base.@kwdef struct MCPTool <: Tool
     name::String
     description::String
     parameters::Vector{ToolParameter}
     handler::Function
-    return_type::Type = Any
+    return_type::Type = Vector{Content}  # Can be Content subtype or Vector{<:Content}
 end
 
-#= Prompt Types =#
+#==============================================================================
+# 5. Prompt Types
+==============================================================================#
+
+"""
+    PromptArgument(; name::String, description::String="", required::Bool=false)
+
+Define an argument that a prompt template can accept.
+
+# Fields
+- `name::String`: The argument name (used in template placeholders)
+- `description::String`: Human-readable description of the argument
+- `required::Bool`: Whether the argument is required when using the prompt
+"""
+Base.@kwdef struct PromptArgument
+    name::String
+    description::String = ""
+    required::Bool = false
+end
+
+"""
+    PromptMessage(; content::Union{TextContent, ImageContent, EmbeddedResource}, role::Role=user)
+
+Represent a single message in a prompt template.
+
+# Fields
+- `content::Union{TextContent, ImageContent, EmbeddedResource}`: The content of the message
+- `role::Role`: Whether this message is from the user or assistant (defaults to user)
+"""
+Base.@kwdef struct PromptMessage
+    content::Union{TextContent, ImageContent, EmbeddedResource}
+    role::Role = user  # Set default in the kwdef constructor
+end
+
+"""
+    PromptMessage(content::Union{TextContent, ImageContent, EmbeddedResource}) -> PromptMessage
+
+Create a prompt message with only content (role defaults to user).
+
+# Arguments
+- `content::Union{TextContent, ImageContent, EmbeddedResource}`: The message content
+
+# Returns
+- `PromptMessage`: A new prompt message with the default user role
+"""
+function PromptMessage(content::Union{TextContent, ImageContent, EmbeddedResource})
+    PromptMessage(content = content)
+end
 
 """
     MCPPrompt(; name::String, description::String="", 
-            arguments::Vector{PromptArgument}=PromptArgument[],
+            arguments::Vector{PromptArgument}=PromptArgument[], 
             messages::Vector{PromptMessage}=PromptMessage[])
 
 Implement a prompt or prompt template as defined in the MCP schema.
@@ -115,8 +353,6 @@ Base.@kwdef struct MCPPrompt
     arguments::Vector{PromptArgument} = PromptArgument[]
     messages::Vector{PromptMessage} = PromptMessage[]
 end
-
-
 
 """
     MCPPrompt(name::String, description::String, arguments::Vector{PromptArgument}, text::String) -> MCPPrompt
@@ -137,17 +373,16 @@ function MCPPrompt(name::String, description::String, arguments::Vector{PromptAr
         name = name,
         description = description,
         arguments = arguments,
-        text = text
+        messages = [PromptMessage(content = TextContent(text = text), role = user)]
     )
 end
 
-
-#= Resource Implementation Types =#
+#==============================================================================
+# 6. Resource Types
+==============================================================================#
 
 """
-    MCPResource(; uri::URI, name::String, description::String="",
-              mime_type::String="application/json", data_provider::Function,
-              annotations::AbstractDict{String,Any}=LittleDict{String,Any}()) <: Resource
+    MCPResource <: Resource
 
 Implement a resource that clients can access in the MCP protocol.
 Resources represent data that can be read by models and tools.
@@ -160,24 +395,24 @@ Resources represent data that can be read by models and tools.
 - `data_provider::Function`: Function that provides the resource data when called
 - `annotations::AbstractDict{String,Any}`: Additional metadata for the resource
 """
-Base.@kwdef struct MCPResource <: Resource
+struct MCPResource <: Resource
     uri::URI
     name::String
-    description::String = ""
-    mime_type::String = "application/json"
+    description::String
+    mime_type::String
     data_provider::Function
-    annotations::AbstractDict{String,Any} = LittleDict{String,Any}()
+    annotations::AbstractDict{String,Any}
 end
 
 """
-    MCPResource(; uri::String, name::String="", description::String="",
+    MCPResource(; uri, name::String="", description::String="",
               mime_type::String="application/json", data_provider::Function,
               annotations::AbstractDict{String,Any}=LittleDict{String,Any}()) -> MCPResource
 
-Create a resource with automatic URI conversion from strings.
+Create a resource with automatic URI conversion from strings or URIs.
 
 # Arguments
-- `uri::String`: String identifier for the resource
+- `uri`: String or URI identifier for the resource
 - `name::String`: Human-readable name for the resource
 - `description::String`: Detailed description
 - `mime_type::String`: MIME type of the resource
@@ -187,15 +422,15 @@ Create a resource with automatic URI conversion from strings.
 # Returns
 - `MCPResource`: A new resource with the provided configuration
 """
-function MCPResource(; uri::String, 
+function MCPResource(; uri, 
     name::String = "", 
     description::String = "", 
     mime_type::String = "application/json", 
     data_provider::Function, 
     annotations::AbstractDict{String,Any} = LittleDict{String,Any}())
-    MCPResource(URI(uri), name, description, mime_type, data_provider, annotations)
+    uri_obj = uri isa URI ? uri : URI(uri)
+    MCPResource(uri_obj, name, description, mime_type, data_provider, annotations)
 end
-
 
 """
     ResourceTemplate(; name::String, uri_template::String,
@@ -216,7 +451,9 @@ Base.@kwdef struct ResourceTemplate
     description::String = ""
 end
 
-#= Subscription and Progress Types =#
+#==============================================================================
+# 7. Subscription and Progress Types
+==============================================================================#
 
 """
     Subscription(; uri::String, callback::Function, created_at::DateTime=now())
@@ -253,47 +490,82 @@ Base.@kwdef struct Progress
     message::Union{String,Nothing} = nothing
 end
 
-#= Server Implementation Types =#
+#==============================================================================
+# 8. Server Configuration Types
+==============================================================================#
 
 """
-    Server(config::ServerConfig)
+    ServerConfig(; name::String, version::String="1.0.0", 
+               description::String="", capabilities::Vector{Capability}=Capability[],
+               instructions::String="")
 
-Represent a running MCP server instance that manages resources, tools, and prompts.
+Define configuration settings for an MCP server instance.
 
 # Fields
-- `config::ServerConfig`: Server configuration settings
-- `resources::Vector{Resource}`: Available resources
-- `tools::Vector{Tool}`: Available tools
-- `prompts::Vector{MCPPrompt}`: Available prompts
-- `resource_templates::Vector{ResourceTemplate}`: Available resource templates
-- `subscriptions::DefaultDict{String,Vector{Subscription}}`: Resource subscription registry
-- `progress_trackers::Dict{Union{String,Int},Progress}`: Progress tracking for operations
-- `active::Bool`: Whether the server is currently active
+- `name::String`: The server name shown to clients
+- `version::String`: Server implementation version (e.g., "1.0.0", "2.3.1") - YOUR server's version, not the protocol version
+- `description::String`: Human-readable server description
+- `capabilities::Vector{Capability}`: Protocol capabilities supported by the server
+- `instructions::String`: Usage instructions for clients
 """
-mutable struct Server
-    config::ServerConfig
-    resources::Vector{Resource}
-    tools::Vector{Tool}
-    prompts::Vector{MCPPrompt}
-    resource_templates::Vector{ResourceTemplate}
-    subscriptions::DefaultDict{String,Vector{Subscription}}
-    progress_trackers::Dict{Union{String,Int}, Progress}
-    active::Bool
-    
-    function Server(config::ServerConfig)
-        new(
-            config,
-            Resource[],
-            Tool[],
-            MCPPrompt[],
-            ResourceTemplate[],
-            DefaultDict{String,Vector{Subscription}}(() -> Subscription[]),
-            Dict{Union{String,Int}, Progress}(),
-            false
-        )
-    end
+Base.@kwdef struct ServerConfig
+    name::String
+    version::String = "1.0.0"  # Default server version for convenience
+    description::String = ""
+    capabilities::Vector{Capability} = Capability[]
+    instructions::String = ""
 end
+
+"""
+    ServerState()
+
+Track the internal state of an MCP server during operation.
+
+# Fields
+- `initialized::Bool`: Whether the server has been initialized by a client
+- `running::Bool`: Whether the server main loop is active
+- `last_request_id::Int`: Last used request ID for server-initiated requests
+- `pending_requests::Dict{RequestId,String}`: Map of request IDs to method names
+"""
+mutable struct ServerState
+    initialized::Bool
+    running::Bool
+    last_request_id::Int
+    pending_requests::Dict{RequestId, String}  # method name for each pending request
+    
+    ServerState() = new(false, false, 0, Dict())
+end
+
+# Server type moved to server_types.jl to resolve Transport dependency
+
+"""
+    ServerError(message::String) <: Exception
+
+Exception type for MCP server-specific errors.
+
+# Fields
+- `message::String`: The error message describing what went wrong
+"""
+struct ServerError <: Exception
+    message::String
+end
+
+#==============================================================================
+# 9. Utility Functions and Type Conversions
+==============================================================================#
+
+"""
+    convert(::Type{URI}, s::String) -> URI
+
+Convert a string to a URI object.
+
+# Arguments
+- `s::String`: The string to convert
+
+# Returns
+- `URI`: The resulting URI object
+"""
+Base.convert(::Type{URI}, s::String) = URI(s)
 
 # Pretty printing
 Base.show(io::IO, config::ServerConfig) = print(io, "ServerConfig($(config.name) v$(config.version))")
-Base.show(io::IO, server::Server) = print(io, "MCP Server($(server.config.name), $(server.active ? "active" : "inactive"))")
