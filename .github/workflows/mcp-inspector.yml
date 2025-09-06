@@ -97,7 +97,7 @@ jobs:
             julia --project=${{ github.workspace }} \
             ${{ github.workspace }}/examples/time_server.jl \
             --method prompts/get \
-            --tool-arg name=movie_analysis \
+            --prompt-name movie_analysis \
             --tool-arg genre=horror > prompt_get.json
           
           echo "Prompt get response:"
