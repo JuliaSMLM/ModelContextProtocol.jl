@@ -98,7 +98,7 @@ jobs:
             ${{ github.workspace }}/examples/time_server.jl \
             --method prompts/get \
             --prompt-name movie_analysis \
-            --tool-arg genre=horror > prompt_get.json
+            --prompt-arg genre=horror > prompt_get.json
           
           echo "Prompt get response:"
           cat prompt_get.json | jq .
