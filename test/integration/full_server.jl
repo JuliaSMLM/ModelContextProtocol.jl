@@ -3,11 +3,11 @@
     server = Server(ServerConfig(name="test"))
     ctx = RequestContext(server=server)
     result = handle_read_resource(ctx, ReadResourceParams(uri="invalid://uri"))
-    @test result.error.code == ErrorCodes.RESOURCE_NOT_FOUND
+    @test result.error.code == -32000  # RESOURCE_NOT_FOUND
 
     # Test invalid params error
     result = handle_get_prompt(ctx, GetPromptParams(name="non-existent"))
-    @test result.error.code == ErrorCodes.PROMPT_NOT_FOUND
+    @test result.error.code == -32003  # PROMPT_NOT_FOUND
 end
 
 @testset "Integration Tests" begin
@@ -60,7 +60,7 @@ end
         params=InitializeParams(
             capabilities=ClientCapabilities(),
             clientInfo=Implementation(name="test-client"),
-            protocolVersion="1.0"
+            protocolVersion="2025-06-18"
         )
     )
 

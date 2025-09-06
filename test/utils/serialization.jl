@@ -45,10 +45,10 @@
     
     @testset "EmbeddedResource conversion" begin
         # Create a test resource
-        text_resource = TextResourceContents(
-            uri = "test://example.txt",
-            text = "Resource content",
-            mime_type = "text/plain"
+        text_resource = Dict{String,Any}(
+            "uri" => "test://example.txt",
+            "text" => "Resource content",
+            "mimeType" => "text/plain"
         )
         
         embedded = EmbeddedResource(
@@ -67,10 +67,10 @@
         @test dict["annotations"] == LittleDict{String,Any}("source" => "test")
         
         # Test with blob resource
-        blob_resource = BlobResourceContents(
-            uri = "test://example.bin",
-            blob = [0x01, 0x02, 0x03, 0x04],
-            mime_type = "application/octet-stream"
+        blob_resource = Dict{String,Any}(
+            "uri" => "test://example.bin",
+            "blob" => base64encode([0x01, 0x02, 0x03, 0x04]),
+            "mimeType" => "application/octet-stream"
         )
         
         embedded_blob = EmbeddedResource(

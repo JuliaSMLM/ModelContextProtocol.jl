@@ -15,7 +15,7 @@
             tool_content = """
             using ModelContextProtocol
             
-            MCPTool(
+            test_auto_tool = MCPTool(
                 name = "test_auto_tool",
                 description = "Auto-registered test tool",
                 handler = function(params)
@@ -30,7 +30,7 @@
             resource_content = """
             using ModelContextProtocol
             
-            MCPResource(
+            test_auto_resource = MCPResource(
                 uri = "auto://test-resource",
                 name = "test_auto_resource",
                 description = "Auto-registered test resource",
@@ -44,7 +44,7 @@
             prompt_content = """
             using ModelContextProtocol
             
-            MCPPrompt(
+            test_auto_prompt = MCPPrompt(
                 name = "test_auto_prompt",
                 description = "Auto-registered test prompt",
                 arguments = [
@@ -64,9 +64,11 @@
             """
             write(joinpath(prompts_dir, "test_prompt.jl"), prompt_content)
             
-            # Create server and auto-register
-            server = mcp_server(name = "auto-test")
-            ModelContextProtocol.auto_register!(server, tmpdir)
+            # Create server and auto-register using the auto_register_dir parameter
+            server = mcp_server(
+                name = "auto-test",
+                auto_register_dir = tmpdir
+            )
             
             # Verify registration
             @test length(server.tools) == 1
@@ -78,13 +80,13 @@
             @test length(server.prompts) == 1
             @test server.prompts[1].name == "test_auto_prompt"
             
-            # Test tool execution
-            tool_result = server.tools[1].handler(Dict())
+            # Test tool execution (use invokelatest due to world age from dynamic loading)
+            tool_result = Base.invokelatest(server.tools[1].handler, Dict())
             @test tool_result isa TextContent
             @test tool_result.text == "Auto tool response"
             
-            # Test resource data provider
-            resource_data = server.resources[1].data_provider()
+            # Test resource data provider (use invokelatest due to world age from dynamic loading)
+            resource_data = Base.invokelatest(server.resources[1].data_provider)
             @test resource_data == "Auto resource data"
         end
     end
@@ -121,7 +123,7 @@
             tool_content = """
             using ModelContextProtocol
             
-            MCPTool(
+            nested_tool = MCPTool(
                 name = "nested_tool",
                 description = "Tool in nested directory",
                 handler = params -> TextContent(text = "Nested response"),
@@ -130,8 +132,10 @@
             """
             write(joinpath(tools_dir, "nested.jl"), tool_content)
             
-            server = mcp_server(name = "test")
-            ModelContextProtocol.auto_register!(server, nested_dir)
+            server = mcp_server(
+                name = "test",
+                auto_register_dir = nested_dir
+            )
             
             @test length(server.tools) == 1
             @test server.tools[1].name == "nested_tool"
@@ -145,8 +149,10 @@
             mkpath(joinpath(tmpdir, "resources"))
             mkpath(joinpath(tmpdir, "prompts"))
             
-            server = mcp_server(name = "test")
-            ModelContextProtocol.auto_register!(server, tmpdir)
+            server = mcp_server(
+                name = "test",
+                auto_register_dir = tmpdir
+            )
             
             # Should handle empty directories gracefully
             @test length(server.tools) == 0
@@ -156,11 +162,13 @@
     end
     
     @testset "Non-existent directory" begin
-        server = mcp_server(name = "test")
         non_existent = "/tmp/definitely_does_not_exist_$(rand(1:10000))"
         
         # Should handle gracefully without error
-        ModelContextProtocol.auto_register!(server, non_existent)
+        server = mcp_server(
+            name = "test",
+            auto_register_dir = non_existent
+        )
         @test length(server.tools) == 0
     end
 end

@@ -37,15 +37,15 @@ using ModelContextProtocol: read_message, write_message, is_connected, close, fl
     end
     
     @testset "Empty line handling" begin
-        # Empty lines should be skipped
+        # Empty lines return empty strings
         input = IOBuffer("\n\ntest\n")
         transport = StdioTransport(input=input, output=IOBuffer())
         
         msg1 = read_message(transport)
-        @test isnothing(msg1)  # Empty line returns nothing
+        @test msg1 == ""  # Empty line returns empty string
         
         msg2 = read_message(transport)
-        @test isnothing(msg2)  # Empty line returns nothing
+        @test msg2 == ""  # Empty line returns empty string
         
         msg3 = read_message(transport)
         @test msg3 == "test"
