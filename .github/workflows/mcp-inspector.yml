@@ -74,7 +74,7 @@ jobs:
             julia --project=${{ github.workspace }} \
             ${{ github.workspace }}/examples/time_server.jl \
             --method resources/read \
-            --tool-arg uri="character-info://harry-potter/birthday" > resource_read.json
+            --uri "character-info://harry-potter/birthday" > resource_read.json
           
           echo "Resource read response:"
           cat resource_read.json | jq .
