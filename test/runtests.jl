@@ -1,13 +1,18 @@
 using Test
 using ModelContextProtocol
-using ModelContextProtocol: handle_initialize, handle_read_resource, handle_list_resources, handle_get_prompt, handle_ping, handle_call_tool, RequestContext, CallToolParams, CallToolResult, content2dict
-using ModelContextProtocol: ServerConfig, Server, ResourceCapability, ToolCapability, PromptCapability, ServerState, process_message
-using ModelContextProtocol: InitializeParams, InitializeResult, ClientCapabilities, Implementation, HandlerResult
-using ModelContextProtocol: JSONRPCRequest, ReadResourceParams, ReadResourceResult, GetPromptParams, ListResourcesParams
-using ModelContextProtocol: Tool, Resource, Prompt
-using ModelContextProtocol: user, assistant, client
 using JSON3, URIs, DataStructures, Logging, Base64, HTTP
 using OrderedCollections: LittleDict
+
+# Only import internals that are actually needed for specific tests
+using ModelContextProtocol: ServerState, process_message  # For backward compat tests
+using ModelContextProtocol: ServerConfig, ResourceCapability, ToolCapability  # For server config tests
+using ModelContextProtocol: handle_initialize, handle_read_resource, handle_list_resources, handle_get_prompt, handle_call_tool  # For handler tests
+using ModelContextProtocol: RequestContext, CallToolResult, content2dict  # For handler tests
+using ModelContextProtocol: InitializeParams, InitializeResult, ClientCapabilities, Implementation  # For integration tests
+using ModelContextProtocol: JSONRPCRequest, ReadResourceParams, ReadResourceResult, GetPromptParams  # For integration tests
+using ModelContextProtocol: HandlerResult, CallToolParams, ListResourcesParams  # For integration tests
+using ModelContextProtocol: user, assistant  # For role constants
+using ModelContextProtocol: PromptCapability  # For server tests
 
 @testset "ModelContextProtocol.jl" begin
     include("core/types.jl")
