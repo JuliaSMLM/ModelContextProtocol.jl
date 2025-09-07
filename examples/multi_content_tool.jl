@@ -96,6 +96,6 @@ server = mcp_server(
     tools = [analysis_tool, flexible_tool]
 )
 
-# Start the server
-println("Starting Multi-Content MCP Server...")
+# Start the server (stdio transport by default)
+# Note: Don't print to stdout in stdio mode as it interferes with JSON-RPC communication
 start!(server)

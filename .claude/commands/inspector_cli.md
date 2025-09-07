@@ -296,8 +296,8 @@ The Inspector CLI sends this sequence:
 **Solution**: Include `Mcp-Session-Id` header from init response
 
 ### Issue: JSON Special Characters in Shell
-**Error**: `ArgumentError("encountered invalid escape character in json string")`
-**Cause**: Shell escaping of special characters like `!` in JSON strings
+**Error**: ArgumentError - encountered invalid escape character in json string
+**Cause**: Shell escaping of special characters like exclamation marks in JSON strings
 **Solutions**:
 1. Avoid special characters in test data when possible
 2. Use proper quoting:
