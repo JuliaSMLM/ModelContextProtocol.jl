@@ -82,6 +82,11 @@ Validate that a session ID contains only visible ASCII characters (0x21 to 0x7E)
 - `Bool`: true if valid, false otherwise
 """
 function is_valid_session_id(session_id::String)::Bool
+    # Empty session IDs are invalid
+    if isempty(session_id)
+        return false
+    end
+    
     for char in session_id
         code = Int(char)
         if code < 0x21 || code > 0x7E
@@ -278,7 +283,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         else
             HTTP.setstatus(stream, 406)
             HTTP.setheader(stream, "Content-Type" => "text/plain")
-            write(stream, "Not Acceptable - GET requests must Accept: text/event-stream")
+            error_msg = "Not Acceptable - GET requests must Accept: text/event-stream"
+            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+            HTTP.startwrite(stream)
+            write(stream, error_msg)
         end
         return nothing
     end
@@ -287,7 +295,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     if method != "POST"
         HTTP.setstatus(stream, 405)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
-        write(stream, "Method Not Allowed")
+        error_msg = "Method Not Allowed"
+        HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+        HTTP.startwrite(stream)
+        write(stream, error_msg)
         return nothing
     end
     
@@ -309,6 +320,8 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             ),
             "id" => nothing
         ))
+        HTTP.setheader(stream, "Content-Length" => string(length(error_response)))
+        HTTP.startwrite(stream)  # Ensure headers are sent
         write(stream, error_response)
         return nothing
     end
@@ -320,7 +333,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             @debug "Rejected request from unauthorized origin" origin=origin
             HTTP.setstatus(stream, 403)
             HTTP.setheader(stream, "Content-Type" => "text/plain")
-            write(stream, "Forbidden: Invalid Origin")
+            error_msg = "Forbidden: Invalid Origin"
+            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+            HTTP.startwrite(stream)  # Ensure headers are sent
+            write(stream, error_msg)
             return nothing
         end
     end
@@ -330,7 +346,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     if !startswith(content_type, "application/json")
         HTTP.setstatus(stream, 415)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
-        write(stream, "Unsupported Media Type")
+        error_msg = "Unsupported Media Type"
+        HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+        HTTP.startwrite(stream)
+        write(stream, error_msg)
         return nothing
     end
     
@@ -339,7 +358,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     if !contains(accept_header, "application/json") || !contains(accept_header, "text/event-stream")
         HTTP.setstatus(stream, 406)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
-        write(stream, "Not Acceptable: Must accept both application/json and text/event-stream")
+        error_msg = "Not Acceptable: Must accept both application/json and text/event-stream"
+        HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+        HTTP.startwrite(stream)
+        write(stream, error_msg)
         return nothing
     end
     
@@ -383,7 +405,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             # Validate provided session ID
             if !isempty(session_id) && !isnothing(transport.session_id) && session_id != transport.session_id
                 @debug "Invalid session ID" provided=session_id expected=transport.session_id
-                HTTP.setstatus(stream, 400)  # 400 Bad Request per spec (not 401)
+                HTTP.setstatus(stream, 401)  # 401 Unauthorized for invalid authentication
                 HTTP.setheader(stream, "Content-Type" => "application/json")
                 error_response = JSON3.write(Dict(
                     "jsonrpc" => "2.0",

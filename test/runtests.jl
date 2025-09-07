@@ -28,8 +28,7 @@ using ModelContextProtocol: MCPLogger  # For logging tests
     include("utils/serialization.jl")
     include("utils/logging.jl")
     include("transports/test_stdio.jl")
-    # TODO: Fix HTTP transport tests - they hang due to EOFError in handler
-    # include("transports/test_http.jl")
-    # include("transports/test_streamable_http.jl")
+    include("transports/test_http.jl")
+    include("transports/test_streamable_http.jl")
     include("integration/full_server.jl")
 end
