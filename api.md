@@ -398,7 +398,7 @@ Define tool parameters with optional defaults.
 ToolParameter(;
     name::String,                    # Parameter name
     type::String,                    # JSON Schema type (e.g., "string", "number", "boolean")
-    description::String = "",        # Description (optional)
+    description::String,             # Description (required)
     required::Bool = false,          # Whether required
     default::Any = nothing          # Default value if not provided
 )
@@ -574,8 +574,8 @@ PromptMessage(;
 **Note:** The `Role` enum has values `user` and `assistant`. When creating a `PromptMessage`, the role defaults to `user` if not specified.
 
 ```julia
-# Using the Role enum
-using ModelContextProtocol: user, assistant  # Import role constants
+# Using the Role enum (requires explicit import)
+using ModelContextProtocol: user, assistant  # Import role constants explicitly
 
 message_user = PromptMessage(
     content = TextContent(text = "User message"),
@@ -668,6 +668,7 @@ ResourceLink(;
 #### `TextResourceContents`
 
 ```julia
+# Note: URI field accepts strings which auto-convert to URI internally
 TextResourceContents(;
     uri::URI,                             # Resource URI (accepts strings, stored as URI)
     mime_type::String = "text/plain",     # MIME type of the text content
@@ -678,6 +679,7 @@ TextResourceContents(;
 #### `BlobResourceContents`
 
 ```julia
+# Note: URI field accepts strings which auto-convert to URI internally
 BlobResourceContents(;
     uri::URI,                             # Resource URI (accepts strings, stored as URI)
     mime_type::String = "application/octet-stream",  # MIME type of the binary content
@@ -925,7 +927,7 @@ dict = content2dict(embedded)
 Progress(;
     token::Union{String,Int},      # Operation identifier
     current::Float64,              # Current progress value
-    total::Float64,                # Total expected value
+    total::Union{Float64,Nothing}, # Total expected value (optional)
     message::Union{String,Nothing} = nothing  # Optional status message
 )
 ```
