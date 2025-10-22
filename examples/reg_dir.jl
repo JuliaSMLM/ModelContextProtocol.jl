@@ -1,5 +1,5 @@
 # examples/reg_dir.jl
-# 
+#
 # Demonstrates auto-registration of MCP components from a directory structure
 # This example automatically loads components from mcp_tools/ subdirectories:
 #   - mcp_tools/tools/     - .jl files defining MCPTool instances

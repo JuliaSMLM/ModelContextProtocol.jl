@@ -86,13 +86,26 @@ Automatically register MCP components found in the specified directory structure
 - `server::Server`: The server to register components with
 - `dir::AbstractString`: Root directory containing component subdirectories
 
-
 # Directory Structure
 - `dir/tools/`: Contains tool definition files
 - `dir/resources/`: Contains resource definition files
 - `dir/prompts/`: Contains prompt definition files
 
 Each subdirectory is optional. Files should be .jl files containing component definitions.
+
+# Component File Format
+Component files must have the tool/resource/prompt as the **last expression** in the file.
+The return value of `include()` is used to obtain the component.
+
+Example:
+```julia
+# tools/my_tool.jl
+julia_version_tool = MCPTool(
+    name = "julia_version",
+    description = "Get Julia version",
+    handler = params -> Dict("version" => string(VERSION))
+)  # ← This must be the last expression
+```
 
 # Returns
 - `Server`: The updated server instance for method chaining
@@ -113,20 +126,17 @@ function auto_register!(server::Server, dir::AbstractString)
                         # Create a new module with ModelContextProtocol already imported
                         mod = Module()
                         Core.eval(mod, :(using ModelContextProtocol))
-                        
-                        # Simply include the file in this module's namespace
-                        Base.include(mod, file)
-                        
-                        # Look for ANY variables that are of our target type
-                        # No need for exports!
-                        for name in names(mod, all=true)
-                            if isdefined(mod, name)
-                                component = getfield(mod, name)
-                                if component isa type
-                                    register!(server, component)
-                                    @info "Registered $type from $file: $name"
-                                end
-                            end
+
+                        # Include returns the last expression in the file
+                        # Component files should have the tool/resource/prompt as the last expression
+                        component = Base.include(mod, file)
+
+                        # Register if it's the expected type
+                        if component isa type
+                            register!(server, component)
+                            @info "Registered $type from $file"
+                        else
+                            @warn "File $file did not return a $type (got $(typeof(component)))"
                         end
                     catch e
                         @warn "Error processing $file" exception=e stack=stacktrace(catch_backtrace())
