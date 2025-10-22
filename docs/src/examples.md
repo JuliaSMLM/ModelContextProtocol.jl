@@ -36,7 +36,7 @@ server = mcp_server(
 )
 
 # Display server configuration
-println("Server created: $(server.name) v$(server.version)")
+println("Server created: $(server.config.name) v$(server.config.version)")
 println("Available tools: ", [t.name for t in server.tools])
 ```
 
@@ -127,15 +127,15 @@ server = mcp_server(
 println("Multi-content tool configured: $(server.tools[1].name)")
 ```
 
-### Resource Server with Subscriptions
+### Resource Server with Custom Data
 
-Implementing resources with subscription support:
+Implementing resources with custom data providers:
 
 ```@example resources
 using ModelContextProtocol
 using URIs  # For URI construction
 
-# Create a resource that can be subscribed to
+# Create a resource with a custom data provider
 config_resource = MCPResource(
     uri = URI("config://app/settings"),
     name = "Application Settings",
@@ -159,34 +159,30 @@ config_resource = MCPResource(
     annotations = Dict{String,Any}()
 )
 
-# Create a templated resource for accessing specific files
-file_template = ResourceTemplate(
-    uri_template = "file:///{path}",
-    name = "File Access",
-    description = "Access files by path",
+# Create another resource for file access
+file_resource = MCPResource(
+    uri = URI("file:///readme.txt"),
+    name = "README File",
+    description = "Project readme file",
     mime_type = "text/plain",
     data_provider = function(uri)
-        # Extract path from URI
-        path = replace(uri, "file:///" => "")
-        # In real implementation, read the file
-        content = "File content for: $path"
+        # In real implementation, read the actual file
+        content = "# Project README\n\nThis is the readme content."
         return TextResourceContents(
             uri = uri,
             text = content,
             mime_type = "text/plain"
         )
-    end,
-    annotations = Dict{String,Any}()
+    end
 )
 
 server = mcp_server(
     name = "resource-server",
     version = "1.0.0",
-    resources = [config_resource],
-    resource_templates = [file_template]
+    resources = [config_resource, file_resource]
 )
 
-println("Server configured with $(length(server.resources)) resources and $(length(server.resource_templates)) templates")
+println("Server configured with $(length(server.resources)) resources")
 ```
 
 ### Prompt Templates Server
@@ -285,7 +281,7 @@ server = mcp_server(
     ]
 )
 
-println("Server configured: $(server.name)")
+println("Server configured: $(server.config.name)")
 ```
 
 ## Common Patterns
@@ -301,8 +297,8 @@ safe_division_tool = MCPTool(
     name = "safe_divide",
     description = "Divide two numbers with error handling",
     parameters = [
-        ToolParameter(name = "dividend", type = "number", required = true),
-        ToolParameter(name = "divisor", type = "number", required = true)
+        ToolParameter(name = "dividend", description = "Number to be divided", type = "number", required = true),
+        ToolParameter(name = "divisor", description = "Number to divide by", type = "number", required = true)
     ],
     handler = function(params)
         dividend = params["dividend"]
