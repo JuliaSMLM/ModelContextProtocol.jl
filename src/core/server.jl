@@ -99,7 +99,7 @@ function process_message(server::Server, state::ServerState, message::String)::U
 end
 
 """
-    run_server_loop(server::Server, state::ServerState) -> Nothing
+    run_server_loop(server::Server, state::ServerState; log_file::Union{String,Nothing}=nothing) -> Nothing
 
 Execute the main server loop that reads JSON-RPC messages from stdin and writes responses to stdout.
 Implements optimized CPU usage by blocking on input rather than active polling.
@@ -107,13 +107,21 @@ Implements optimized CPU usage by blocking on input rather than active polling.
 # Arguments
 - `server::Server`: The MCP server instance
 - `state::ServerState`: The server state object to track running status
+- `log_file::Union{String,Nothing}`: Optional file path for logging all stdio communication
 
 # Returns
 - `Nothing`: The function runs until interrupted or state.running becomes false
 """
-function run_server_loop(server::Server, state::ServerState)
+function run_server_loop(server::Server, state::ServerState; log_file::Union{String,Nothing}=nothing)
     state.running = true
-    
+
+    # Open log file if specified
+    log_io = if !isnothing(log_file)
+        open(log_file, "w")
+    else
+        nothing
+    end
+
     @debug "Server loop starting"
     flush(stdout)
     flush(stderr)
@@ -134,16 +142,35 @@ function run_server_loop(server::Server, state::ServerState)
         try
             # readline() is already blocking, so it doesn't consume CPU while waiting
             message = readline()
-            
+
             # Skip empty messages to avoid unnecessary processing
             isempty(message) && continue
-            
+
+            # Log incoming message
+            if !isnothing(log_io)
+                timestamp = Dates.format(now(), "yyyy-mm-ddTHH:MM:SS.sss")
+                println(log_io, "[$timestamp] REQUEST:")
+                println(log_io, message)
+                println(log_io, "---")
+                flush(log_io)
+            end
+
             # Process the message only if non-empty
             @debug "Processing message" raw=message
             response = process_message(server, state, message)
-            
+
             if !isnothing(response)
                 @debug "Sending response" response=response
+
+                # Log outgoing response
+                if !isnothing(log_io)
+                    timestamp = Dates.format(now(), "yyyy-mm-ddTHH:MM:SS.sss")
+                    println(log_io, "[$timestamp] RESPONSE:")
+                    println(log_io, response)
+                    println(log_io, "---")
+                    flush(log_io)
+                end
+
                 println(response)
                 flush(stdout)
             end
@@ -171,6 +198,16 @@ function run_server_loop(server::Server, state::ServerState)
                     id = nothing,
                     error = error_info
                 ))
+
+                # Log error response
+                if !isnothing(log_io)
+                    timestamp = Dates.format(now(), "yyyy-mm-ddTHH:MM:SS.sss")
+                    println(log_io, "[$timestamp] ERROR RESPONSE:")
+                    println(log_io, error_response)
+                    println(log_io, "---")
+                    flush(log_io)
+                end
+
                 println(error_response)
                 flush(stdout)
             catch response_error
@@ -178,15 +215,21 @@ function run_server_loop(server::Server, state::ServerState)
             end
         end
     end
+
+    # Close log file if it was opened
+    if !isnothing(log_io)
+        close(log_io)
+    end
 end
 
 """
-    start!(server::Server) -> Nothing
+    start!(server::Server; log_file::Union{String,Nothing}=nothing) -> Nothing
 
 Start the MCP server, setting up logging and entering the main server loop.
 
 # Arguments
 - `server::Server`: The server instance to start
+- `log_file::Union{String,Nothing}`: Optional file path for logging all stdio communication
 
 # Returns
 - `Nothing`: The function returns after the server stops
@@ -194,23 +237,26 @@ Start the MCP server, setting up logging and entering the main server loop.
 # Throws
 - `ServerError`: If the server is already running
 """
-function start!(server::Server)::Nothing
+function start!(server::Server; log_file::Union{String,Nothing}=nothing)::Nothing
     if server.active
         # Use MCPLogger format for errors
         @error "Server already running"
         throw(ServerError("Server already running"))
     end
-    
+
     state = ServerState()
-    
+
     # Set up MCP-compliant logging
     logger = MCPLogger(stderr, Logging.Info)
     global_logger(logger)
-    
+
     @info "Starting MCP server: $(server.config.name)"
-    
+    if !isnothing(log_file)
+        @info "Logging stdio to: $log_file"
+    end
+
     try
-        run_server_loop(server, state)
+        run_server_loop(server, state; log_file=log_file)
     catch e
         server.active = false
         @error "Server error" exception=e
@@ -219,7 +265,7 @@ function start!(server::Server)::Nothing
         server.active = false
         @info "Server stopped"
     end
-    
+
     nothing
 end
 

@@ -159,24 +159,26 @@ function parse_notification(raw::JSON3.Object)::Notification
     method = raw.method
     params = if haskey(raw, :params)
         # Handle empty params object case
-        isempty(raw.params) ? LittleDict{String,Any}() : raw.params
+        isempty(raw.params) ? Dict{String,Any}() : raw.params
     else
-        LittleDict{String,Any}() 
+        Dict{String,Any}()
     end
-    
+
     # Parse method-specific parameters
     typed_params = try
         params_type = get_params_type(method)
         if params_type === nothing || isempty(params)
-            params
+            # Convert to Dict if it's a LittleDict to match the expected type
+            params isa Dict ? params : Dict{String,Any}(params)
         else
             JSON3.read(JSON3.write(params), params_type)
         end
     catch e
         # Notifications can't return errors, so just use raw params
-        params
+        # Convert to Dict if needed
+        params isa Dict ? params : Dict{String,Any}(params)
     end
-    
+
     JSONRPCNotification(
         method = method,
         params = typed_params
