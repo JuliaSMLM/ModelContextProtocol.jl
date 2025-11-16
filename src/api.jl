@@ -8,8 +8,8 @@ function _package_root()
     return abspath(joinpath(src_dir, ".."))
 end
 
-# Path to the api.md file
-const _API_PATH = joinpath(_package_root(), "api.md")
+# Path to the api_overview.md file
+const _API_PATH = joinpath(_package_root(), "api_overview.md")
 
 # Load the content of the api.md file if it exists
 const _API_CONTENT = if isfile(_API_PATH)
