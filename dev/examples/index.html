@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Examples · ModelContextProtocol.jl</title><meta name="title" content="Examples · ModelContextProtocol.jl"/><meta property="og:title" content="Examples · ModelContextProtocol.jl"/><meta property="twitter:title" content="Examples · ModelContextProtocol.jl"/><meta name="description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:description" content="Documentation for ModelContextProtocol.jl."/><meta property="twitter:description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/examples/"/><meta property="twitter:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/examples/"/><link rel="canonical" href="https://JuliaSMLM.github.io/ModelContextProtocol.jl/examples/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">ModelContextProtocol.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li class="is-active"><a class="tocitem" href>Examples</a><ul class="internal"><li><a class="tocitem" href="#Basic-Usage"><span>Basic Usage</span></a></li><li><a class="tocitem" href="#Advanced-Examples"><span>Advanced Examples</span></a></li><li><a class="tocitem" href="#Transport-Configuration"><span>Transport Configuration</span></a></li><li><a class="tocitem" href="#Common-Patterns"><span>Common Patterns</span></a></li><li><a class="tocitem" href="#Testing-Your-Implementation"><span>Testing Your Implementation</span></a></li><li><a class="tocitem" href="#Best-Practices"><span>Best Practices</span></a></li><li><a class="tocitem" href="#See-Also"><span>See Also</span></a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../tools/">Tools</a></li><li><a class="tocitem" href="../resources/">Resources</a></li><li><a class="tocitem" href="../prompts/">Prompts</a></li><li><a class="tocitem" href="../transports/">Transports</a></li><li><a class="tocitem" href="../auto-registration/">Auto-Registration</a></li></ul></li><li><span class="tocitem">Integration</span><ul><li><a class="tocitem" href="../claude/">Claude Desktop</a></li></ul></li><li><a class="tocitem" href="../api/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Examples</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Examples</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/JuliaSMLM/ModelContextProtocol.jl/blob/main/docs/src/examples.md#" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Examples"><a class="docs-heading-anchor" href="#Examples">Examples</a><a id="Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Examples" title="Permalink"></a></h1><p>This page provides comprehensive examples of using ModelContextProtocol.jl to create MCP servers with various features and configurations.</p><h2 id="Basic-Usage"><a class="docs-heading-anchor" href="#Basic-Usage">Basic Usage</a><a id="Basic-Usage-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Usage" title="Permalink"></a></h2><h3 id="Simple-Echo-Server"><a class="docs-heading-anchor" href="#Simple-Echo-Server">Simple Echo Server</a><a id="Simple-Echo-Server-1"></a><a class="docs-heading-anchor-permalink" href="#Simple-Echo-Server" title="Permalink"></a></h3><p>A minimal MCP server with a single tool:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+
+# Create a simple echo tool
+echo_tool = MCPTool(
+    name = &quot;echo&quot;,
+    description = &quot;Echo back the provided message&quot;,
+    parameters = [
+        ToolParameter(
+            name = &quot;message&quot;,
+            type = &quot;string&quot;,
+            description = &quot;Message to echo back&quot;,
+            required = true
+        )
+    ],
+    handler = function(params)
+        return TextContent(text = &quot;Echo: $(params[&quot;message&quot;])&quot;)
+    end
+)
+
+# Create and configure server
+server = mcp_server(
+    name = &quot;echo-server&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [echo_tool]
+)
+
+# Display server configuration
+println(&quot;Server created: $(server.config.name) v$(server.config.version)&quot;)
+println(&quot;Available tools: &quot;, [t.name for t in server.tools])</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Server created: echo-server v1.0.0
+Available tools: [&quot;echo&quot;]</code></pre><h3 id="Calculator-Server"><a class="docs-heading-anchor" href="#Calculator-Server">Calculator Server</a><a id="Calculator-Server-1"></a><a class="docs-heading-anchor-permalink" href="#Calculator-Server" title="Permalink"></a></h3><p>A server with multiple arithmetic operations:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+
+# Create calculator tool with multiple operations
+calc_tool = MCPTool(
+    name = &quot;calculate&quot;,
+    description = &quot;Perform arithmetic calculations&quot;,
+    parameters = [
+        ToolParameter(name = &quot;a&quot;, type = &quot;number&quot;, description = &quot;First number&quot;, required = true),
+        ToolParameter(name = &quot;b&quot;, type = &quot;number&quot;, description = &quot;Second number&quot;, required = true),
+        ToolParameter(name = &quot;operation&quot;, type = &quot;string&quot;,
+                     description = &quot;Operation: add, subtract, multiply, divide&quot;, required = true)
+    ],
+    handler = function(params)
+        a = params[&quot;a&quot;]
+        b = params[&quot;b&quot;]
+        op = params[&quot;operation&quot;]
+
+        result = if op == &quot;add&quot;
+            a + b
+        elseif op == &quot;subtract&quot;
+            a - b
+        elseif op == &quot;multiply&quot;
+            a * b
+        elseif op == &quot;divide&quot;
+            b != 0 ? a / b : &quot;Error: Division by zero&quot;
+        else
+            &quot;Error: Unknown operation&quot;
+        end
+
+        return TextContent(text = &quot;Result: $result&quot;)
+    end
+)
+
+server = mcp_server(
+    name = &quot;calculator&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [calc_tool]
+)
+
+println(&quot;Calculator server configured with tool: $(server.tools[1].name)&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Calculator server configured with tool: calculate</code></pre><h2 id="Advanced-Examples"><a class="docs-heading-anchor" href="#Advanced-Examples">Advanced Examples</a><a id="Advanced-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Advanced-Examples" title="Permalink"></a></h2><h3 id="Multi-Content-Tool-Returns"><a class="docs-heading-anchor" href="#Multi-Content-Tool-Returns">Multi-Content Tool Returns</a><a id="Multi-Content-Tool-Returns-1"></a><a class="docs-heading-anchor-permalink" href="#Multi-Content-Tool-Returns" title="Permalink"></a></h3><p>Tools can return multiple content items of different types:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+using Base64
+
+# Tool that returns multiple content types
+analysis_tool = MCPTool(
+    name = &quot;analyze_data&quot;,
+    description = &quot;Analyze data and return multiple results&quot;,
+    parameters = [
+        ToolParameter(name = &quot;data&quot;, type = &quot;string&quot;, description = &quot;Data to analyze&quot;, required = true)
+    ],
+    handler = function(params)
+        data = params[&quot;data&quot;]
+
+        # Return multiple content items
+        space_char = &#39; &#39;
+        return [
+            TextContent(text = &quot;Analysis Summary: Processed $(length(data)) characters&quot;),
+            TextContent(text = &quot;Data contains $(count(==(space_char), data)) spaces&quot;),
+            # Could also include ImageContent with base64 data
+            # ImageContent(data = base64_encoded_image, mime_type = &quot;image/png&quot;)
+        ]
+    end,
+    return_type = Vector{Content}  # Explicitly specify multi-content return
+)
+
+server = mcp_server(
+    name = &quot;analyzer&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [analysis_tool]
+)
+
+println(&quot;Multi-content tool configured: $(server.tools[1].name)&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Multi-content tool configured: analyze_data</code></pre><h3 id="Resource-Server-with-Custom-Data"><a class="docs-heading-anchor" href="#Resource-Server-with-Custom-Data">Resource Server with Custom Data</a><a id="Resource-Server-with-Custom-Data-1"></a><a class="docs-heading-anchor-permalink" href="#Resource-Server-with-Custom-Data" title="Permalink"></a></h3><p>Implementing resources with custom data providers:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+using URIs  # For URI construction
+
+# Create a resource with a custom data provider
+config_resource = MCPResource(
+    uri = URI(&quot;config://app/settings&quot;),
+    name = &quot;Application Settings&quot;,
+    description = &quot;Current application configuration&quot;,
+    mime_type = &quot;application/json&quot;,
+    data_provider = function(uri)
+        # In real implementation, read from actual config
+        config_json = &quot;&quot;&quot;
+        {
+            &quot;theme&quot;: &quot;dark&quot;,
+            &quot;language&quot;: &quot;en&quot;,
+            &quot;debug&quot;: false
+        }
+        &quot;&quot;&quot;
+        return TextResourceContents(
+            uri = uri,
+            text = config_json,
+            mime_type = &quot;application/json&quot;
+        )
+    end,
+    annotations = Dict{String,Any}()
+)
+
+# Create another resource for file access
+file_resource = MCPResource(
+    uri = URI(&quot;file:///readme.txt&quot;),
+    name = &quot;README File&quot;,
+    description = &quot;Project readme file&quot;,
+    mime_type = &quot;text/plain&quot;,
+    data_provider = function(uri)
+        # In real implementation, read the actual file
+        content = &quot;# Project README\n\nThis is the readme content.&quot;
+        return TextResourceContents(
+            uri = uri,
+            text = content,
+            mime_type = &quot;text/plain&quot;
+        )
+    end
+)
+
+server = mcp_server(
+    name = &quot;resource-server&quot;,
+    version = &quot;1.0.0&quot;,
+    resources = [config_resource, file_resource]
+)
+
+println(&quot;Server configured with $(length(server.resources)) resources&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Server configured with 2 resources</code></pre><h3 id="Prompt-Templates-Server"><a class="docs-heading-anchor" href="#Prompt-Templates-Server">Prompt Templates Server</a><a id="Prompt-Templates-Server-1"></a><a class="docs-heading-anchor-permalink" href="#Prompt-Templates-Server" title="Permalink"></a></h3><p>Creating reusable prompt templates:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+
+# Import Role enum values
+user_role = ModelContextProtocol.user
+assistant_role = ModelContextProtocol.assistant
+
+# Function to generate messages for code review
+function generate_code_review_messages(args)
+    lang = args[&quot;language&quot;]
+    focus = get(args, &quot;focus&quot;, &quot;general quality&quot;)
+    return [
+        PromptMessage(
+            role = user_role,
+            content = TextContent(
+                text = &quot;Please review this $lang code focusing on $focus. &quot; *
+                      &quot;Look for bugs, performance issues, and adherence to best practices.&quot;
+            )
+        ),
+        PromptMessage(
+            role = assistant_role,
+            content = TextContent(
+                text = &quot;I&#39;ll review your $lang code with a focus on $focus. &quot; *
+                      &quot;Please share the code you&#39;d like me to examine.&quot;
+            )
+        )
+    ]
+end
+
+# Create a code review prompt template
+code_review_prompt = MCPPrompt(
+    name = &quot;code_review&quot;,
+    description = &quot;Generate a code review request&quot;,
+    arguments = [
+        PromptArgument(name = &quot;language&quot;, description = &quot;Programming language&quot;, required = true),
+        PromptArgument(name = &quot;focus&quot;, description = &quot;Review focus area&quot;, required = false)
+    ],
+    messages = generate_code_review_messages(Dict(&quot;language&quot; =&gt; &quot;Julia&quot;, &quot;focus&quot; =&gt; &quot;performance&quot;))
+)
+
+# Create a data analysis prompt with static messages
+analysis_prompt = MCPPrompt(
+    name = &quot;data_analysis&quot;,
+    description = &quot;Request data analysis&quot;,
+    arguments = [
+        PromptArgument(name = &quot;dataset&quot;, description = &quot;Dataset description&quot;, required = true)
+    ],
+    messages = [
+        PromptMessage(
+            role = user_role,
+            content = TextContent(
+                text = &quot;Analyze the dataset. &quot; *
+                      &quot;Provide insights on patterns, anomalies, and recommendations.&quot;
+            )
+        )
+    ]
+)
+
+server = mcp_server(
+    name = &quot;prompt-server&quot;,
+    version = &quot;1.0.0&quot;,
+    prompts = [code_review_prompt, analysis_prompt]
+)
+
+println(&quot;Server configured with prompts: &quot;, [p.name for p in server.prompts])</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Server configured with prompts: [&quot;code_review&quot;, &quot;data_analysis&quot;]</code></pre><h2 id="Transport-Configuration"><a class="docs-heading-anchor" href="#Transport-Configuration">Transport Configuration</a><a id="Transport-Configuration-1"></a><a class="docs-heading-anchor-permalink" href="#Transport-Configuration" title="Permalink"></a></h2><h3 id="HTTP-Transport-with-Custom-Settings"><a class="docs-heading-anchor" href="#HTTP-Transport-with-Custom-Settings">HTTP Transport with Custom Settings</a><a id="HTTP-Transport-with-Custom-Settings-1"></a><a class="docs-heading-anchor-permalink" href="#HTTP-Transport-with-Custom-Settings" title="Permalink"></a></h3><pre><code class="language-julia hljs">using ModelContextProtocol
+
+# Note: HttpTransport is an internal type not exported
+# Use stdio transport (default) or specify transport in mcp_server
+# For HTTP servers, the transport is configured internally
+
+# Example server configuration
+server = mcp_server(
+    name = &quot;http-server&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [
+        MCPTool(
+            name = &quot;status&quot;,
+            description = &quot;Get server status&quot;,
+            parameters = [],
+            handler = () -&gt; TextContent(text = &quot;Server is running&quot;)
+        )
+    ]
+)
+
+println(&quot;Server configured: $(server.config.name)&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Server configured: http-server</code></pre><h2 id="Common-Patterns"><a class="docs-heading-anchor" href="#Common-Patterns">Common Patterns</a><a id="Common-Patterns-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Patterns" title="Permalink"></a></h2><h3 id="Error-Handling-in-Tools"><a class="docs-heading-anchor" href="#Error-Handling-in-Tools">Error Handling in Tools</a><a id="Error-Handling-in-Tools-1"></a><a class="docs-heading-anchor-permalink" href="#Error-Handling-in-Tools" title="Permalink"></a></h3><p>Properly handling errors in tool implementations:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+
+safe_division_tool = MCPTool(
+    name = &quot;safe_divide&quot;,
+    description = &quot;Divide two numbers with error handling&quot;,
+    parameters = [
+        ToolParameter(name = &quot;dividend&quot;, description = &quot;Number to be divided&quot;, type = &quot;number&quot;, required = true),
+        ToolParameter(name = &quot;divisor&quot;, description = &quot;Number to divide by&quot;, type = &quot;number&quot;, required = true)
+    ],
+    handler = function(params)
+        dividend = params[&quot;dividend&quot;]
+        divisor = params[&quot;divisor&quot;]
+
+        # Return error result for invalid input
+        if divisor == 0
+            return CallToolResult(
+                content = [TextContent(text = &quot;Error: Division by zero is not allowed&quot;)],
+                is_error = true
+            )
+        end
+
+        result = dividend / divisor
+        return TextContent(text = &quot;Result: $result&quot;)
+    end
+)
+
+server = mcp_server(
+    name = &quot;safe-calc&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [safe_division_tool]
+)
+
+println(&quot;Error-handling tool configured: $(server.tools[1].name)&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Error-handling tool configured: safe_divide</code></pre><h3 id="Directory-Based-Auto-Registration"><a class="docs-heading-anchor" href="#Directory-Based-Auto-Registration">Directory-Based Auto-Registration</a><a id="Directory-Based-Auto-Registration-1"></a><a class="docs-heading-anchor-permalink" href="#Directory-Based-Auto-Registration" title="Permalink"></a></h3><p>Organizing components in a directory structure:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+
+# Example directory structure:
+# my_server/
+# ├── tools/
+# │   ├── file_ops.jl    # File operation tools
+# │   └── data_proc.jl   # Data processing tools
+# ├── resources/
+# │   └── configs.jl     # Configuration resources
+# └── prompts/
+#     └── templates.jl   # Prompt templates
+
+# Each file exports components like:
+# file: tools/file_ops.jl
+# read_file = MCPTool(name = &quot;read_file&quot;, ...)
+# write_file = MCPTool(name = &quot;write_file&quot;, ...)
+
+# Auto-register all components from directory
+server = mcp_server(
+    name = &quot;auto-server&quot;,
+    version = &quot;2.0.0&quot;,
+    auto_register_dir = &quot;my_server&quot;  # Scans and registers all components
+)
+
+# Alternatively, register individual components
+server2 = mcp_server(name = &quot;manual-server&quot;, version = &quot;1.0.0&quot;)
+# Use register! with specific components:
+# register!(server2, my_tool)  # Register a tool
+# register!(server2, my_resource)  # Register a resource
+# register!(server2, my_prompt)  # Register a prompt
+
+println(&quot;Auto-registration example configured&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi"><span class="sgr36"><span class="sgr1">[ Info: </span></span>Auto-registering components from /home/runner/work/ModelContextProtocol.jl/ModelContextProtocol.jl/my_server
+Auto-registration example configured</code></pre><h3 id="Tool-with-Default-Parameters"><a class="docs-heading-anchor" href="#Tool-with-Default-Parameters">Tool with Default Parameters</a><a id="Tool-with-Default-Parameters-1"></a><a class="docs-heading-anchor-permalink" href="#Tool-with-Default-Parameters" title="Permalink"></a></h3><p>Using default values for optional parameters:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+using Dates
+
+format_date_tool = MCPTool(
+    name = &quot;format_date&quot;,
+    description = &quot;Format the current date/time&quot;,
+    parameters = [
+        ToolParameter(
+            name = &quot;format&quot;,
+            type = &quot;string&quot;,
+            description = &quot;Date format string&quot;,
+            required = false,
+            default = &quot;yyyy-mm-dd HH:MM:SS&quot;  # Default format
+        ),
+        ToolParameter(
+            name = &quot;timezone&quot;,
+            type = &quot;string&quot;,
+            description = &quot;Timezone (not implemented in this example)&quot;,
+            required = false,
+            default = &quot;UTC&quot;
+        )
+    ],
+    handler = function(params)
+        format_str = params[&quot;format&quot;]  # Will use default if not provided
+        current_time = Dates.format(now(), format_str)
+        return TextContent(text = &quot;Current time: $current_time&quot;)
+    end
+)
+
+server = mcp_server(
+    name = &quot;time-server&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [format_date_tool]
+)
+
+println(&quot;Tool with defaults configured: $(server.tools[1].name)&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Tool with defaults configured: format_date</code></pre><h2 id="Testing-Your-Implementation"><a class="docs-heading-anchor" href="#Testing-Your-Implementation">Testing Your Implementation</a><a id="Testing-Your-Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Testing-Your-Implementation" title="Permalink"></a></h2><h3 id="Unit-Testing-Tools"><a class="docs-heading-anchor" href="#Unit-Testing-Tools">Unit Testing Tools</a><a id="Unit-Testing-Tools-1"></a><a class="docs-heading-anchor-permalink" href="#Unit-Testing-Tools" title="Permalink"></a></h3><p>Example of testing tool handlers:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+using Test
+
+# Create a test tool
+test_tool = MCPTool(
+    name = &quot;test_tool&quot;,
+    description = &quot;Tool for testing&quot;,
+    parameters = [
+        ToolParameter(name = &quot;input&quot;, type = &quot;string&quot;, required = true)
+    ],
+    handler = function(params)
+        return TextContent(text = &quot;Processed: $(params[&quot;input&quot;])&quot;)
+    end
+)
+
+# Test the handler directly
+@testset &quot;Tool Handler Tests&quot; begin
+    # Test normal operation
+    result = test_tool.handler(Dict(&quot;input&quot; =&gt; &quot;test&quot;))
+    @test result isa TextContent
+    @test result.text == &quot;Processed: test&quot;
+
+    # Test with different inputs
+    result2 = test_tool.handler(Dict(&quot;input&quot; =&gt; &quot;hello&quot;))
+    @test result2.text == &quot;Processed: hello&quot;
+end</code></pre><h3 id="Integration-Testing-with-curl"><a class="docs-heading-anchor" href="#Integration-Testing-with-curl">Integration Testing with curl</a><a id="Integration-Testing-with-curl-1"></a><a class="docs-heading-anchor-permalink" href="#Integration-Testing-with-curl" title="Permalink"></a></h3><p>Testing HTTP server endpoints:</p><pre><code class="language-bash hljs"># Start your HTTP server first
+julia --project server_http.jl &amp;
+
+# Wait for server to start
+sleep 5
+
+# Test initialization
+curl -X POST http://127.0.0.1:8765/ \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;test&quot;,&quot;version&quot;:&quot;1.0&quot;}},&quot;id&quot;:1}&#39;
+
+# Save session ID from response, then test tool listing
+curl -X POST http://127.0.0.1:8765/ \
+  -H &quot;Content-Type: application/json&quot; \
+  -H &quot;Mcp-Session-Id: YOUR_SESSION_ID&quot; \
+  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{},&quot;id&quot;:2}&#39;</code></pre><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><ol><li><strong>Always validate input parameters</strong> in tool handlers</li><li><strong>Use appropriate content types</strong> for different data formats</li><li><strong>Provide clear descriptions</strong> for tools, resources, and prompts</li><li><strong>Handle errors gracefully</strong> with CallToolResult when needed</li><li><strong>Test with MCP Inspector</strong> before deploying to production</li><li><strong>Use 127.0.0.1 instead of localhost</strong> on Windows for HTTP transport</li><li><strong>Organize complex servers</strong> using directory-based auto-registration</li><li><strong>Document parameter schemas</strong> thoroughly for better LLM understanding</li></ol><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../tools/">Tools Documentation</a> for detailed tool implementation</li><li><a href="../resources/">Resources Documentation</a> for resource management</li><li><a href="../prompts/">Prompts Documentation</a> for prompt templates</li><li><a href="../api/">API Reference</a> for complete function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../tools/">Tools »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.0 on <span class="colophon-date" title="Sunday 16 November 2025 20:29">Sunday 16 November 2025</span>. Using Julia version 1.12.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
