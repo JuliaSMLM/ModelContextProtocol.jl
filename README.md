@@ -5,118 +5,72 @@
 [![Build Status](https://github.com/JuliaSMLM/ModelContextProtocol.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaSMLM/ModelContextProtocol.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/JuliaSMLM/ModelContextProtocol.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/JuliaSMLM/ModelContextProtocol.jl)
 
-A Julia implementation of the [Model Context Protocol](https://modelcontextprotocol.io) (MCP), enabling seamless integration between Julia applications and Large Language Models like Claude Desktop through standardized tools, resources, and prompts.
+A Julia implementation of the [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP), enabling integration with Large Language Models (LLMs) like Anthropic's Claude by providing standardized access to tools, resources, and prompts.
 
-## Features
+## Overview
 
-✅ **Core MCP 2025-06-18 Protocol** - Server-side implementation with tools, resources, and prompts  
-✅ **Multiple Transports** - stdio (default) and HTTP with Server-Sent Events  
-✅ **Multi-Content Responses** - Tools can return text, images, and embedded resources  
-✅ **Auto-Registration** - Automatic component discovery from directory structure  
-✅ **Type-Safe** - Leverages Julia's type system for robust implementations  
-✅ **Session Management** - Secure session handling for HTTP transport  
+The Model Context Protocol allows applications to provide context and capabilities to LLMs in a standardized way. This package implements the full MCP specification in Julia, with `mcp_server()` as the main entry point for creating and configuring servers.
 
-**Note:** This is a server-side implementation. Client features (roots, sampling), OAuth, and some optional features (elicitation, audio content) are not yet implemented.  
+The `mcp_server()` function provides a flexible interface to:
+- Create MCP servers with custom names and configurations
+- Register tools, resources, and prompts manually or automatically
+- Configure server capabilities and behavior
+- Set up directory-based component organization
 
-## Quick Example
-
+Example:
 ```julia
-using ModelContextProtocol
-
-# Create a simple tool
-hello_tool = MCPTool(
-    name = "say_hello",
-    description = "Greet someone",
-    parameters = [
-        ToolParameter(name = "name", type = "string", description = "Name to greet")
-    ],
-    handler = (params) -> TextContent(text = "Hello, $(params["name"])!")
-)
-
-# Create and start server
 server = mcp_server(
-    name = "hello-server",
-    version = "1.0.0",
-    tools = hello_tool
+    name = "my-server",
+    version = "2024-11-05",
+    tools = my_tool,              # Single tool or vector of tools
+    resources = my_resource,      # Single resource or vector of resources
+    prompts = my_prompt,          # Single prompt or vector of prompts
+    description = "Server description",
+    auto_register_dir = "path/to/components"  # Optional auto-registration
 )
-
-start!(server)  # Uses stdio transport by default
 ```
 
-## Requirements
+The package enables you to:
+- Create MCP servers that expose tools, resources, and prompts
+- Define custom tools that LLMs can interact with
+- Organize and auto-register components from directory structures
+- Handle all MCP protocol messages and lifecycle events
 
-- Julia 1.9 or higher
-- No external dependencies for basic usage
-- Optional: HTTP.jl for HTTP transport
+## Core Components
 
-## Installation
+The package provides three main types that can be registered with an MCP server:
+
+1. `MCPTool`: Represents callable functions that LLMs can use
+   - Has a name, description, parameters, and handler function
+   - LLMs can invoke tools to perform actions or computations
+
+2. `MCPResource`: Represents data sources that LLMs can read
+   - Has a URI, name, MIME type, and data provider function
+   - Provides static or dynamic data access to LLMs
+
+3. `MCPPrompt`: Represents template-based prompts
+   - Has a name, description, and parameterized message templates
+   - Helps standardize interactions with LLMs
+
+## Quick Start
+
+### Installation
 
 ```julia
 using Pkg
 Pkg.add("ModelContextProtocol")
 ```
 
-## Core Components
+### Basic Example: Manual Tool Setup
 
-### Tools
-`MCPTool` - Functions that LLMs can call to perform actions or retrieve information
-```julia
-tool = MCPTool(
-    name = "get_data",
-    description = "Fetch data from source",
-    parameters = [...],
-    handler = (params) -> TextContent(text = "result")
-)
-```
-
-### Resources  
-`MCPResource` - Data sources that LLMs can read
-```julia
-resource = MCPResource(
-    uri = "file://data.json",
-    name = "Dataset",
-    mime_type = "application/json",
-    data_provider = () -> read("data.json", String)
-)
-```
-
-### Prompts
-`MCPPrompt` - Reusable prompt templates with variables
-```julia
-prompt = MCPPrompt(
-    name = "analyze",
-    description = "Analysis prompt template",
-    arguments = [PromptArgument(name = "topic", required = true)],
-    messages = [PromptMessage(content = TextContent(text = "Analyze {topic}"))]
-)
-```
-
-## Transport Options
-
-### stdio Transport (Default)
-Simple communication via standard input/output - perfect for Claude Desktop integration:
-```julia
-server = mcp_server(name = "my-server", tools = [my_tool])
-start!(server)  # Automatically uses stdio
-```
-
-### HTTP Transport  
-Web-based transport with Server-Sent Events for real-time updates:
-```julia
-transport = HttpTransport(host = "127.0.0.1", port = 3000)
-connect(transport)  # Must connect before starting
-start!(server, transport)
-```
-
-**Note:** On Windows, always use `127.0.0.1` instead of `localhost` for HTTP transport.
-
-## Complete Example
+Here's a minimal example creating an MCP server with a single tool:
 
 ```julia
 using ModelContextProtocol
+using JSON3
 using Dates
 
-# Create a tool that returns formatted time
+# Create a simple tool that returns the current time
 time_tool = MCPTool(
     name = "get_time",
     description = "Get current time in specified format",
@@ -124,131 +78,98 @@ time_tool = MCPTool(
         ToolParameter(
             name = "format",
             type = "string",
-            description = "DateTime format (e.g., 'HH:MM:SS')",
-            required = false,
-            default = "HH:MM:SS"
+            description = "DateTime format string",
+            required = true
         )
     ],
-    handler = function(params)
-        fmt = get(params, "format", "HH:MM:SS")
-        TextContent(text = Dates.format(now(), fmt))
-    end
-)
-
-# Create a resource that provides system info
-info_resource = MCPResource(
-    uri = "system://info",
-    name = "System Information",
-    mime_type = "application/json",
-    data_provider = () -> Dict(
-        "julia_version" => string(VERSION),
-        "os" => Sys.KERNEL,
-        "cpu_threads" => Sys.CPU_THREADS
+    handler = params -> TextContent(
+        text = JSON3.write(Dict(
+            "time" => Dates.format(now(), params["format"])
+        ))
     )
 )
 
-# Create and start server
+# Create and start server with the tool
 server = mcp_server(
-    name = "demo-server",
-    version = "1.0.0",
-    tools = time_tool,
-    resources = info_resource
+    name = "time-server",
+    description = "Simple MCP server with time tool",
+    tools = time_tool
 )
 
+# Start the server
 start!(server)
 ```
 
-## Auto-Registration
+When Claude connects to this server, it will discover the `get_time` tool and be able to use it to provide formatted time information to users.
 
-Organize components in directories for automatic discovery:
+### Directory-Based Organization
+
+You can also organize your MCP components in a directory structure and auto-register them:
 
 ```
-my_server/
+my_mcp_server/
 ├── tools/
-│   ├── calculator.jl
-│   └── file_ops.jl
+│   ├── time_tool.jl
+│   └── math_tool.jl
 ├── resources/
-│   └── data.jl
+│   └── data_source.jl
 └── prompts/
     └── templates.jl
 ```
 
 ```julia
-# Auto-register all components from directory
+using ModelContextProtocol
+
+# Create and start server with all components
 server = mcp_server(
-    name = "my-server",
-    version = "1.0.0",
-    auto_register_dir = "my_server"
+    name = "full-server",
+    description = "MCP server with auto-registered components",
+    auto_register_dir = "my_mcp_server"
 )
+
 start!(server)
 ```
 
-Each `.jl` file should define component instances. ModelContextProtocol is automatically available:
+The package will automatically scan the directory structure and register all components:
+- `tools/`: Contains tool definitions (MCPTool instances)
+- `resources/`: Contains resource definitions (MCPResource instances)
+- `prompts/`: Contains prompt definitions (MCPPrompt instances)
 
-```julia
-# tools/calculator.jl
-calculator = MCPTool(
-    name = "calc",
-    description = "Calculate expressions",
-    parameters = [
-        ToolParameter(name = "expr", type = "string", description = "Expression")
-    ],
-    handler = (p) -> TextContent(text = string(eval(Meta.parse(p["expr"]))))
-)
-```
+Each component file should export one or more instances of the appropriate type. They will be automatically discovered and registered with the server.
 
-## Claude Desktop Integration
+## Using with Claude
 
-1. **Configure Claude Desktop** (Settings → Developer → Edit Config):
-```json
-{
-  "mcpServers": {
-    "julia-server": {
-      "command": "julia",
-      "args": ["--project=/path/to/project", "server.jl"]
-    }
-  }
-}
-```
+To use your MCP server with Claude, you need to:
 
-2. **Restart Claude Desktop** to load the configuration
+1. Configure Claude Desktop:
+   - Go to File → Settings → Developer
+   - Click the Edit Config button
+   - Add to the configuration:
+   ```json
+   {
+     "mcpServers": {
+       "my-server": {
+         "command": "julia",
+         "args": ["--project=/path/to/project", "server_script.jl"]
+       }
+     }
+   }
+   ```
 
-3. **Use your server** - Claude will automatically connect and discover available tools
+2. Restart the Claude Desktop application to apply changes
 
-For HTTP servers, use the MCP Remote bridge:
-```json
-{
-  "mcpServers": {
-    "julia-http": {
-      "command": "npx",
-      "args": ["mcp-remote", "http://127.0.0.1:3000", "--allow-http"]
-    }
-  }
-}
-```
+3. Start a conversation with Claude and tell it to use your server:
+   ```
+   Please connect to the MCP server named "my-server" and list its available tools.
+   ```
 
-## Documentation
+4. Claude will connect to your server and can then:
+   - List available tools using the server's capabilities
+   - Call tools with appropriate parameters
+   - Access resources and prompts
+   - Report results back to you
 
-- **[API Reference](api.md)** - Complete API documentation with examples
-- **[Official Docs](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/)** - Full documentation
-- **[MCP Specification](https://modelcontextprotocol.io)** - Protocol specification
-
-## What's Included
-
-- **Server Implementation** - Complete MCP server with tools, resources, and prompts
-- **Multi-Content Responses** - Return text, images, and resources from a single tool
-- **Parameter Defaults** - Optional parameters with default values  
-- **Session Management** - Secure HTTP sessions with automatic ID generation
-- **Error Handling** - Built-in error types and CallToolResult for explicit control
-- **Resource Templates** - Dynamic resource URIs with placeholders
-
-## Not Yet Implemented
-
-- **Client Features** - Roots, sampling, completion (this is server-only)
-- **OAuth/Authentication** - Beyond basic session management
-- **Elicitation** - Server-to-client interaction requests
-- **Audio Content** - AudioContent type
-- **Progress Notifications** - Bidirectional progress updates (infrastructure exists but limited)
+See our [documentation](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/) for more details on integration with Claude.
 
 ## License
 
