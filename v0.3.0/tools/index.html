@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Tools · ModelContextProtocol.jl</title><meta name="title" content="Tools · ModelContextProtocol.jl"/><meta property="og:title" content="Tools · ModelContextProtocol.jl"/><meta property="twitter:title" content="Tools · ModelContextProtocol.jl"/><meta name="description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:description" content="Documentation for ModelContextProtocol.jl."/><meta property="twitter:description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/tools/"/><meta property="twitter:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/tools/"/><link rel="canonical" href="https://JuliaSMLM.github.io/ModelContextProtocol.jl/tools/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">ModelContextProtocol.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><a class="tocitem" href="../examples/">Examples</a></li><li><span class="tocitem">User Guide</span><ul><li class="is-active"><a class="tocitem" href>Tools</a><ul class="internal"><li><a class="tocitem" href="#Tool-Structure"><span>Tool Structure</span></a></li><li><a class="tocitem" href="#Creating-Tools"><span>Creating Tools</span></a></li><li><a class="tocitem" href="#Parameters"><span>Parameters</span></a></li><li><a class="tocitem" href="#Return-Values"><span>Return Values</span></a></li><li><a class="tocitem" href="#Registering-Tools"><span>Registering Tools</span></a></li><li><a class="tocitem" href="#Directory-Based-Organization"><span>Directory-Based Organization</span></a></li><li><a class="tocitem" href="#Advanced-Examples"><span>Advanced Examples</span></a></li></ul></li><li><a class="tocitem" href="../resources/">Resources</a></li><li><a class="tocitem" href="../prompts/">Prompts</a></li><li><a class="tocitem" href="../transports/">Transports</a></li><li><a class="tocitem" href="../auto-registration/">Auto-Registration</a></li></ul></li><li><span class="tocitem">Integration</span><ul><li><a class="tocitem" href="../claude/">Claude Desktop</a></li></ul></li><li><a class="tocitem" href="../api/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">User Guide</a></li><li class="is-active"><a href>Tools</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tools</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/JuliaSMLM/ModelContextProtocol.jl/blob/main/docs/src/tools.md#" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="MCP-Tools"><a class="docs-heading-anchor" href="#MCP-Tools">MCP Tools</a><a id="MCP-Tools-1"></a><a class="docs-heading-anchor-permalink" href="#MCP-Tools" title="Permalink"></a></h1><p>Tools represent callable functions that language models can invoke. Each tool has a name, description, parameters, and a handler function.</p><h2 id="Tool-Structure"><a class="docs-heading-anchor" href="#Tool-Structure">Tool Structure</a><a id="Tool-Structure-1"></a><a class="docs-heading-anchor-permalink" href="#Tool-Structure" title="Permalink"></a></h2><p>Every tool in ModelContextProtocol.jl is represented by the <code>MCPTool</code> struct, which contains:</p><ul><li><code>name</code>: Unique identifier for the tool</li><li><code>description</code>: Human-readable explanation of the tool&#39;s purpose</li><li><code>parameters</code>: List of input parameters the tool accepts</li><li><code>handler</code>: Function that executes when the tool is called</li><li><code>return_type</code>: The expected return type of the handler (defaults to <code>Vector{Content}</code>)</li></ul><h2 id="Creating-Tools"><a class="docs-heading-anchor" href="#Creating-Tools">Creating Tools</a><a id="Creating-Tools-1"></a><a class="docs-heading-anchor-permalink" href="#Creating-Tools" title="Permalink"></a></h2><p>Here&#39;s how to create a basic tool:</p><pre><code class="language-julia hljs">calculator_tool = MCPTool(
+    name = &quot;calculate&quot;,
+    description = &quot;Perform basic arithmetic&quot;,
+    parameters = [
+        ToolParameter(
+            name = &quot;expression&quot;,
+            type = &quot;string&quot;,
+            description = &quot;Math expression to evaluate&quot;,
+            required = true
+        )
+    ],
+    handler = params -&gt; TextContent(
+        text = JSON3.write(Dict(
+            &quot;result&quot; =&gt; eval(Meta.parse(params[&quot;expression&quot;]))
+        ))
+    )
+)</code></pre><h2 id="Parameters"><a class="docs-heading-anchor" href="#Parameters">Parameters</a><a id="Parameters-1"></a><a class="docs-heading-anchor-permalink" href="#Parameters" title="Permalink"></a></h2><p>Tool parameters are defined using the <code>ToolParameter</code> struct:</p><ul><li><code>name</code>: Parameter identifier</li><li><code>description</code>: Explanation of the parameter</li><li><code>type</code>: JSON schema type (e.g., &quot;string&quot;, &quot;number&quot;, &quot;boolean&quot;)</li><li><code>required</code>: Whether the parameter must be provided (default: false)</li><li><code>default</code>: Default value for the parameter (default: nothing)</li></ul><h2 id="Return-Values"><a class="docs-heading-anchor" href="#Return-Values">Return Values</a><a id="Return-Values-1"></a><a class="docs-heading-anchor-permalink" href="#Return-Values" title="Permalink"></a></h2><p>Tool handlers can return various types which are automatically converted:</p><ul><li><code>Content</code> instance: A single <code>TextContent</code>, <code>ImageContent</code>, or <code>EmbeddedResource</code></li><li><code>Vector{&lt;:Content}</code>: Multiple content items (can mix different content types)</li><li><code>Dict</code>: Automatically converted to JSON and wrapped in <code>TextContent</code></li><li><code>String</code>: Automatically wrapped in <code>TextContent</code></li><li><code>Tuple{Vector{UInt8}, String}</code>: Automatically wrapped in <code>ImageContent</code> (bytes, mime_type)</li><li><code>CallToolResult</code>: For full control over the response including error handling</li></ul><p>When <code>return_type</code> is <code>Vector{Content}</code> (default), single items are automatically wrapped in a vector.</p><h2 id="Registering-Tools"><a class="docs-heading-anchor" href="#Registering-Tools">Registering Tools</a><a id="Registering-Tools-1"></a><a class="docs-heading-anchor-permalink" href="#Registering-Tools" title="Permalink"></a></h2><p>Tools can be registered with a server in two ways:</p><ol><li>During server creation:</li></ol><pre><code class="language-julia hljs">server = mcp_server(
+    name = &quot;my-server&quot;,
+    tools = my_tool  # Single tool or vector of tools
+)</code></pre><ol><li>After server creation:</li></ol><pre><code class="language-julia hljs">register!(server, my_tool)</code></pre><h2 id="Directory-Based-Organization"><a class="docs-heading-anchor" href="#Directory-Based-Organization">Directory-Based Organization</a><a id="Directory-Based-Organization-1"></a><a class="docs-heading-anchor-permalink" href="#Directory-Based-Organization" title="Permalink"></a></h2><p>Tools can be organized in directory structures and auto-registered:</p><pre><code class="nohighlight hljs">my_server/
+└── tools/
+    ├── calculator.jl
+    └── time_tool.jl</code></pre><p>Each file should export one or more <code>MCPTool</code> instances:</p><pre><code class="language-julia hljs"># calculator.jl
+using ModelContextProtocol
+using JSON3
+
+calculator_tool = MCPTool(
+    name = &quot;calculate&quot;,
+    description = &quot;Basic calculator&quot;,
+    parameters = [
+        ToolParameter(name = &quot;expression&quot;, type = &quot;string&quot;, required = true)
+    ],
+    handler = params -&gt; TextContent(
+        text = JSON3.write(Dict(&quot;result&quot; =&gt; eval(Meta.parse(params[&quot;expression&quot;]))))
+    )
+)</code></pre><p>Then auto-register from the directory:</p><pre><code class="language-julia hljs">server = mcp_server(
+    name = &quot;my-server&quot;,
+    auto_register_dir = &quot;my_server&quot;
+)</code></pre><h2 id="Advanced-Examples"><a class="docs-heading-anchor" href="#Advanced-Examples">Advanced Examples</a><a id="Advanced-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Advanced-Examples" title="Permalink"></a></h2><h3 id="Tool-with-Multiple-Content-Returns"><a class="docs-heading-anchor" href="#Tool-with-Multiple-Content-Returns">Tool with Multiple Content Returns</a><a id="Tool-with-Multiple-Content-Returns-1"></a><a class="docs-heading-anchor-permalink" href="#Tool-with-Multiple-Content-Returns" title="Permalink"></a></h3><pre><code class="language-julia hljs">analyze_tool = MCPTool(
+    name = &quot;analyze_data&quot;,
+    description = &quot;Analyze data and return text + image&quot;,
+    parameters = [
+        ToolParameter(name = &quot;data&quot;, description = &quot;Data to analyze&quot;, type = &quot;string&quot;, required = true)
+    ],
+    handler = function(params)
+        # Return multiple content items
+        return [
+            TextContent(text = &quot;Analysis complete&quot;),
+            ImageContent(
+                data = generate_chart_bytes(),  # Your chart generation
+                mime_type = &quot;image/png&quot;
+            ),
+            TextContent(text = &quot;See chart above for details&quot;)
+        ]
+    end,
+    return_type = Vector{Content}
+)</code></pre><h3 id="Tool-with-Error-Handling"><a class="docs-heading-anchor" href="#Tool-with-Error-Handling">Tool with Error Handling</a><a id="Tool-with-Error-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#Tool-with-Error-Handling" title="Permalink"></a></h3><pre><code class="language-julia hljs">safe_tool = MCPTool(
+    name = &quot;safe_operation&quot;,
+    description = &quot;Tool with explicit error handling&quot;,
+    parameters = [
+        ToolParameter(name = &quot;path&quot;, description = &quot;File path&quot;, type = &quot;string&quot;, required = true)
+    ],
+    handler = function(params)
+        if !isfile(params[&quot;path&quot;])
+            # Return error result
+            return CallToolResult(
+                content = [Dict(&quot;type&quot; =&gt; &quot;text&quot;, &quot;text&quot; =&gt; &quot;File not found&quot;)],
+                is_error = true
+            )
+        end
+        
+        content = read(params[&quot;path&quot;], String)
+        return TextContent(text = content)
+    end
+)</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../examples/">« Examples</a><a class="docs-footer-nextpage" href="../resources/">Resources »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.0 on <span class="colophon-date" title="Sunday 16 November 2025 20:44">Sunday 16 November 2025</span>. Using Julia version 1.12.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

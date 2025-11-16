@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Auto-Registration · ModelContextProtocol.jl</title><meta name="title" content="Auto-Registration · ModelContextProtocol.jl"/><meta property="og:title" content="Auto-Registration · ModelContextProtocol.jl"/><meta property="twitter:title" content="Auto-Registration · ModelContextProtocol.jl"/><meta name="description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:description" content="Documentation for ModelContextProtocol.jl."/><meta property="twitter:description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/auto-registration/"/><meta property="twitter:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/auto-registration/"/><link rel="canonical" href="https://JuliaSMLM.github.io/ModelContextProtocol.jl/auto-registration/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">ModelContextProtocol.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><a class="tocitem" href="../examples/">Examples</a></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../tools/">Tools</a></li><li><a class="tocitem" href="../resources/">Resources</a></li><li><a class="tocitem" href="../prompts/">Prompts</a></li><li><a class="tocitem" href="../transports/">Transports</a></li><li class="is-active"><a class="tocitem" href>Auto-Registration</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Directory-Structure"><span>Directory Structure</span></a></li><li><a class="tocitem" href="#Component-File-Format"><span>Component File Format</span></a></li><li><a class="tocitem" href="#Usage-Examples"><span>Usage Examples</span></a></li><li><a class="tocitem" href="#Shared-State"><span>Shared State</span></a></li><li><a class="tocitem" href="#Best-Practices"><span>Best Practices</span></a></li><li><a class="tocitem" href="#Troubleshooting"><span>Troubleshooting</span></a></li><li><a class="tocitem" href="#Complete-Example"><span>Complete Example</span></a></li></ul></li></ul></li><li><span class="tocitem">Integration</span><ul><li><a class="tocitem" href="../claude/">Claude Desktop</a></li></ul></li><li><a class="tocitem" href="../api/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">User Guide</a></li><li class="is-active"><a href>Auto-Registration</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Auto-Registration</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/JuliaSMLM/ModelContextProtocol.jl/blob/main/docs/src/auto-registration.md#" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Auto-Registration-System"><a class="docs-heading-anchor" href="#Auto-Registration-System">Auto-Registration System</a><a id="Auto-Registration-System-1"></a><a class="docs-heading-anchor-permalink" href="#Auto-Registration-System" title="Permalink"></a></h1><p>ModelContextProtocol.jl provides an auto-registration system that automatically loads and registers MCP components (tools, prompts, and resources) from a directory structure. This enables clean organization of large MCP servers with many components.</p><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>Instead of manually registering each component, you can organize them in directories and let the system auto-register them:</p><pre><code class="language-julia hljs">server = mcp_server(
+    name = &quot;my-large-server&quot;,
+    version = &quot;1.0.0&quot;,
+    auto_register_dir = &quot;path/to/components&quot;
+)</code></pre><p>The system will automatically scan for and register all components found in the directory structure.</p><h2 id="Directory-Structure"><a class="docs-heading-anchor" href="#Directory-Structure">Directory Structure</a><a id="Directory-Structure-1"></a><a class="docs-heading-anchor-permalink" href="#Directory-Structure" title="Permalink"></a></h2><p>The auto-registration system expects a specific directory layout:</p><pre><code class="nohighlight hljs">components/
+├── tools/          # MCPTool definitions
+│   ├── data_tools.jl
+│   ├── file_tools.jl
+│   └── math_tools.jl
+├── prompts/        # MCPPrompt definitions  
+│   ├── analysis.jl
+│   └── code_review.jl
+└── resources/      # MCPResource definitions
+    ├── config.jl
+    └── docs.jl</code></pre><p>Each subdirectory is scanned for <code>.jl</code> files containing component definitions.</p><h2 id="Component-File-Format"><a class="docs-heading-anchor" href="#Component-File-Format">Component File Format</a><a id="Component-File-Format-1"></a><a class="docs-heading-anchor-permalink" href="#Component-File-Format" title="Permalink"></a></h2><h3 id="Tool-Files-(tools/)"><a class="docs-heading-anchor" href="#Tool-Files-(tools/)">Tool Files (tools/)</a><a id="Tool-Files-(tools/)-1"></a><a class="docs-heading-anchor-permalink" href="#Tool-Files-(tools/)" title="Permalink"></a></h3><p>Each file should define one or more <code>MCPTool</code> instances:</p><pre><code class="language-julia hljs"># tools/math_tools.jl
+using ModelContextProtocol
+
+# Simple calculator tool
+calculator_tool = MCPTool(
+    name = &quot;calculate&quot;,
+    description = &quot;Perform basic arithmetic calculations&quot;,
+    parameters = [
+        ToolParameter(
+            name = &quot;expression&quot;,
+            type = &quot;string&quot;,
+            description = &quot;Mathematical expression to evaluate&quot;,
+            required = true
+        )
+    ],
+    handler = function(params)
+        expr = params[&quot;expression&quot;]
+        try
+            result = eval(Meta.parse(expr))
+            return TextContent(text = &quot;Result: $result&quot;)
+        catch e
+            return TextContent(text = &quot;Error: $e&quot;)
+        end
+    end
+)
+
+# Statistics tool
+stats_tool = MCPTool(
+    name = &quot;statistics&quot;,
+    description = &quot;Calculate statistics for a dataset&quot;,
+    parameters = [
+        ToolParameter(
+            name = &quot;data&quot;,
+            type = &quot;array&quot;,
+            description = &quot;Array of numbers&quot;,
+            required = true
+        )
+    ],
+    handler = function(params)
+        data = params[&quot;data&quot;]
+        mean_val = sum(data) / length(data)
+        return TextContent(text = &quot;Mean: $mean_val&quot;)
+    end
+)</code></pre><h3 id="Prompt-Files-(prompts/)"><a class="docs-heading-anchor" href="#Prompt-Files-(prompts/)">Prompt Files (prompts/)</a><a id="Prompt-Files-(prompts/)-1"></a><a class="docs-heading-anchor-permalink" href="#Prompt-Files-(prompts/)" title="Permalink"></a></h3><p>Define <code>MCPPrompt</code> instances for reusable prompt templates:</p><pre><code class="language-julia hljs"># prompts/analysis.jl
+using ModelContextProtocol
+
+data_analysis_prompt = MCPPrompt(
+    name = &quot;analyze_data&quot;,
+    description = &quot;Analyze a dataset and provide insights&quot;,
+    arguments = [
+        PromptArgument(
+            name = &quot;dataset&quot;,
+            description = &quot;Description of the dataset to analyze&quot;,
+            required = true
+        ),
+        PromptArgument(
+            name = &quot;focus_areas&quot;,
+            description = &quot;Specific areas to focus analysis on&quot;,
+            required = false
+        )
+    ],
+    messages = [
+        PromptMessage(
+            role = ModelContextProtocol.user,
+            content = TextContent(
+                text = &quot;&quot;&quot;Analyze the following dataset: {dataset}
+                
+{?focus_areas?Focus particularly on: {focus_areas}}
+
+Provide:
+1. Key insights and patterns
+2. Statistical summary  
+3. Recommendations for further analysis&quot;&quot;&quot;
+            )
+        )
+    ]
+)</code></pre><h3 id="Resource-Files-(resources/)"><a class="docs-heading-anchor" href="#Resource-Files-(resources/)">Resource Files (resources/)</a><a id="Resource-Files-(resources/)-1"></a><a class="docs-heading-anchor-permalink" href="#Resource-Files-(resources/)" title="Permalink"></a></h3><p>Define <code>MCPResource</code> instances for data access:</p><pre><code class="language-julia hljs"># resources/config.jl
+using ModelContextProtocol
+using URIs
+
+app_config_resource = MCPResource(
+    uri = URI(&quot;config://app/settings&quot;),
+    name = &quot;Application Configuration&quot;,
+    description = &quot;Current application settings and configuration&quot;,
+    mime_type = &quot;application/json&quot;,
+    data_provider = function()
+        return Dict(
+            &quot;version&quot; =&gt; &quot;1.0.0&quot;,
+            &quot;debug_mode&quot; =&gt; false,
+            &quot;max_connections&quot; =&gt; 100,
+            &quot;features&quot; =&gt; [
+                &quot;auto_registration&quot;,
+                &quot;http_transport&quot;,
+                &quot;sse_streaming&quot;
+            ]
+        )
+    end
+)</code></pre><h2 id="Usage-Examples"><a class="docs-heading-anchor" href="#Usage-Examples">Usage Examples</a><a id="Usage-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Usage-Examples" title="Permalink"></a></h2><h3 id="Basic-Auto-Registration"><a class="docs-heading-anchor" href="#Basic-Auto-Registration">Basic Auto-Registration</a><a id="Basic-Auto-Registration-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Auto-Registration" title="Permalink"></a></h3><pre><code class="language-julia hljs">using ModelContextProtocol
+
+# Create server with auto-registration
+server = mcp_server(
+    name = &quot;my-server&quot;,
+    version = &quot;1.0.0&quot;,
+    auto_register_dir = joinpath(@__DIR__, &quot;mcp_components&quot;)
+)
+
+# Start server (all components are automatically registered)
+start!(server)</code></pre><h3 id="With-HTTP-Transport"><a class="docs-heading-anchor" href="#With-HTTP-Transport">With HTTP Transport</a><a id="With-HTTP-Transport-1"></a><a class="docs-heading-anchor-permalink" href="#With-HTTP-Transport" title="Permalink"></a></h3><pre><code class="language-julia hljs">using ModelContextProtocol
+using ModelContextProtocol: HttpTransport
+
+# Create server with auto-registration
+server = mcp_server(
+    name = &quot;http-server&quot;,
+    auto_register_dir = &quot;components&quot;
+)
+
+# Add HTTP transport
+transport = HttpTransport(port = 3000)
+server.transport = transport
+ModelContextProtocol.connect(transport)
+
+start!(server)</code></pre><h3 id="Manual-Registration-Combined"><a class="docs-heading-anchor" href="#Manual-Registration-Combined">Manual Registration Combined</a><a id="Manual-Registration-Combined-1"></a><a class="docs-heading-anchor-permalink" href="#Manual-Registration-Combined" title="Permalink"></a></h3><p>You can combine auto-registration with manual registration:</p><pre><code class="language-julia hljs"># Manual tool
+manual_tool = MCPTool(
+    name = &quot;special_tool&quot;,
+    description = &quot;Manually registered tool&quot;,
+    parameters = [],
+    handler = params -&gt; TextContent(text = &quot;Hello from manual tool!&quot;)
+)
+
+# Server with both auto and manual registration
+server = mcp_server(
+    name = &quot;mixed-server&quot;,
+    tools = [manual_tool],  # Manual registration
+    auto_register_dir = &quot;components&quot;  # Auto registration
+)</code></pre><h2 id="Shared-State"><a class="docs-heading-anchor" href="#Shared-State">Shared State</a><a id="Shared-State-1"></a><a class="docs-heading-anchor-permalink" href="#Shared-State" title="Permalink"></a></h2><p>Components loaded via auto-registration can share state through the global <code>Main.storage</code> dictionary:</p><pre><code class="language-julia hljs"># In any tool file
+if !isdefined(Main, :storage)
+    Main.storage = Dict{String, Any}()
+end
+
+# Tool that stores data
+store_tool = MCPTool(
+    name = &quot;store_data&quot;,
+    description = &quot;Store data in shared storage&quot;,
+    parameters = [
+        ToolParameter(name = &quot;key&quot;, type = &quot;string&quot;, required = true),
+        ToolParameter(name = &quot;value&quot;, type = &quot;string&quot;, required = true)
+    ],
+    handler = function(params)
+        Main.storage[params[&quot;key&quot;]] = params[&quot;value&quot;]
+        return TextContent(text = &quot;Data stored successfully&quot;)
+    end
+)
+
+# Tool that retrieves data
+get_tool = MCPTool(
+    name = &quot;get_data&quot;, 
+    description = &quot;Get data from shared storage&quot;,
+    parameters = [
+        ToolParameter(name = &quot;key&quot;, type = &quot;string&quot;, required = true)
+    ],
+    handler = function(params)
+        value = get(Main.storage, params[&quot;key&quot;], &quot;Not found&quot;)
+        return TextContent(text = &quot;Value: $value&quot;)
+    end
+)</code></pre><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><h3 id="Organization-Strategies"><a class="docs-heading-anchor" href="#Organization-Strategies">Organization Strategies</a><a id="Organization-Strategies-1"></a><a class="docs-heading-anchor-permalink" href="#Organization-Strategies" title="Permalink"></a></h3><ol><li><p><strong>By Domain</strong>: Group related functionality</p><pre><code class="nohighlight hljs">components/
+├── tools/
+│   ├── database_tools.jl
+│   ├── file_tools.jl
+│   └── api_tools.jl</code></pre></li><li><p><strong>By Complexity</strong>: Separate simple and complex tools</p><pre><code class="nohighlight hljs">components/
+├── tools/
+│   ├── basic/
+│   │   ├── math.jl
+│   │   └── text.jl
+│   └── advanced/
+│       ├── ml_analysis.jl
+│       └── data_processing.jl</code></pre></li><li><p><strong>By Team</strong>: Organize by development team</p><pre><code class="nohighlight hljs">components/
+├── tools/
+│   ├── backend_team.jl
+│   ├── frontend_team.jl
+│   └── data_team.jl</code></pre></li></ol><h3 id="Component-Design"><a class="docs-heading-anchor" href="#Component-Design">Component Design</a><a id="Component-Design-1"></a><a class="docs-heading-anchor-permalink" href="#Component-Design" title="Permalink"></a></h3><ol><li><strong>Single Responsibility</strong>: Each tool should have a clear, focused purpose</li><li><strong>Error Handling</strong>: Always handle errors gracefully in tool handlers</li><li><strong>Documentation</strong>: Use clear descriptions and parameter documentation</li><li><strong>Return Types</strong>: Be explicit about return types for better error detection</li></ol><pre><code class="language-julia hljs">my_tool = MCPTool(
+    name = &quot;well_designed_tool&quot;,
+    description = &quot;Clear description of what this tool does&quot;,
+    parameters = [
+        ToolParameter(
+            name = &quot;input&quot;,
+            type = &quot;string&quot;,
+            description = &quot;Detailed description of this parameter&quot;,
+            required = true
+        )
+    ],
+    handler = function(params)
+        try
+            # Tool logic here
+            result = process(params[&quot;input&quot;])
+            return TextContent(text = result)
+        catch e
+            return TextContent(text = &quot;Error: $(string(e))&quot;)
+        end
+    end,
+    return_type = TextContent  # Explicit return type
+)</code></pre><h3 id="Scaling-Considerations"><a class="docs-heading-anchor" href="#Scaling-Considerations">Scaling Considerations</a><a id="Scaling-Considerations-1"></a><a class="docs-heading-anchor-permalink" href="#Scaling-Considerations" title="Permalink"></a></h3><ol><li><strong>Module Isolation</strong>: Each component file runs in its own module to avoid conflicts</li><li><strong>Startup Time</strong>: Large numbers of components may increase server startup time</li><li><strong>Memory Usage</strong>: Monitor memory usage with many auto-registered components</li><li><strong>Error Isolation</strong>: One broken component file won&#39;t prevent others from loading</li></ol><h2 id="Troubleshooting"><a class="docs-heading-anchor" href="#Troubleshooting">Troubleshooting</a><a id="Troubleshooting-1"></a><a class="docs-heading-anchor-permalink" href="#Troubleshooting" title="Permalink"></a></h2><h3 id="Common-Issues"><a class="docs-heading-anchor" href="#Common-Issues">Common Issues</a><a id="Common-Issues-1"></a><a class="docs-heading-anchor-permalink" href="#Common-Issues" title="Permalink"></a></h3><ol><li><p><strong>Components Not Loading</strong></p><ul><li>Check file permissions (files must be readable)</li><li>Verify directory structure matches expected layout</li><li>Check for syntax errors in component files</li></ul></li><li><p><strong>Import Errors</strong></p><ul><li>The auto-registration system automatically imports ModelContextProtocol</li><li>Avoid conflicting using statements in component files</li><li>Use fully qualified names for other packages</li></ul></li><li><p><strong>Variable Name Conflicts</strong></p><ul><li>Each component runs in its own module, so variable names are isolated</li><li>Global state should use Main.storage, not module-level variables</li></ul></li></ol><h3 id="Debugging"><a class="docs-heading-anchor" href="#Debugging">Debugging</a><a id="Debugging-1"></a><a class="docs-heading-anchor-permalink" href="#Debugging" title="Permalink"></a></h3><p>Enable verbose logging to see what components are being registered:</p><pre><code class="language-julia hljs">using Logging
+global_logger(ConsoleLogger(Logging.Debug))
+
+server = mcp_server(
+    name = &quot;debug-server&quot;,
+    auto_register_dir = &quot;components&quot;
+)</code></pre><p>You&#39;ll see messages like:</p><pre><code class="nohighlight hljs">[ Info: Auto-registering components from /path/to/components
+[ Info: Registered MCPTool from /path/to/components/tools/math.jl: calculator_tool
+[ Info: Registered MCPPrompt from /path/to/components/prompts/analysis.jl: data_analysis_prompt</code></pre><h2 id="Complete-Example"><a class="docs-heading-anchor" href="#Complete-Example">Complete Example</a><a id="Complete-Example-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Example" title="Permalink"></a></h2><p>See <code>examples/reg_dir.jl</code> and <code>examples/reg_dir_http.jl</code> for complete working examples of auto-registration with both stdio and HTTP transports.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../transports/">« Transports</a><a class="docs-footer-nextpage" href="../claude/">Claude Desktop »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.0 on <span class="colophon-date" title="Sunday 16 November 2025 20:44">Sunday 16 November 2025</span>. Using Julia version 1.12.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
