@@ -108,9 +108,10 @@ analysis_tool = MCPTool(
         data = params["data"]
 
         # Return multiple content items
+        space_char = ' '
         return [
             TextContent(text = "Analysis Summary: Processed $(length(data)) characters"),
-            TextContent(text = "Data contains $(count(==(' '), data)) spaces"),
+            TextContent(text = "Data contains $(count(==(space_char), data)) spaces"),
             # Could also include ImageContent with base64 data
             # ImageContent(data = base64_encoded_image, mime_type = "image/png")
         ]
@@ -193,8 +194,8 @@ Creating reusable prompt templates:
 using ModelContextProtocol
 
 # Import Role enum values
-const user = ModelContextProtocol.user
-const assistant = ModelContextProtocol.assistant
+user_role = ModelContextProtocol.user
+assistant_role = ModelContextProtocol.assistant
 
 # Function to generate messages for code review
 function generate_code_review_messages(args)
@@ -202,14 +203,14 @@ function generate_code_review_messages(args)
     focus = get(args, "focus", "general quality")
     return [
         PromptMessage(
-            role = user,
+            role = user_role,
             content = TextContent(
                 text = "Please review this $lang code focusing on $focus. " *
                       "Look for bugs, performance issues, and adherence to best practices."
             )
         ),
         PromptMessage(
-            role = assistant,
+            role = assistant_role,
             content = TextContent(
                 text = "I'll review your $lang code with a focus on $focus. " *
                       "Please share the code you'd like me to examine."
@@ -238,7 +239,7 @@ analysis_prompt = MCPPrompt(
     ],
     messages = [
         PromptMessage(
-            role = user,
+            role = user_role,
             content = TextContent(
                 text = "Analyze the dataset. " *
                       "Provide insights on patterns, anomalies, and recommendations."
