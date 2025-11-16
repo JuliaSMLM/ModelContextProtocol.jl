@@ -127,12 +127,12 @@
             handler = (args) -> [
                 TextContent(text = "Here's a resource:"),
                 EmbeddedResource(
-                    resource = TextResourceContents(
-                        uri = "test://resource",
-                        text = "Resource data",
-                        mime_type = "text/plain"
+                    resource = Dict{String,Any}(
+                        "uri" => "test://resource",
+                        "text" => "Resource data",
+                        "mime_type" => "text/plain"
                     ),
-                    annotations = LittleDict{String,Any}("priority" => "high")
+                    annotations = Dict{String,Any}("priority" => "high")
                 )
             ],
             return_type = Vector{Content}

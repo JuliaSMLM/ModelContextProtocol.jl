@@ -1,4 +1,213 @@
-# ModelContextProtocol.jl Development Guide
+# ModelContextProtocol.jl Guide
+
+## HTTP Transport Usage
+
+### Windows Localhost Issues
+On Windows, use `127.0.0.1` instead of `localhost` to avoid IPv6 connection issues:
+- Server: `HttpTransport(host="127.0.0.1", port=3000)`
+- Client: `http://127.0.0.1:3000/`
+- MCP Remote: `npx mcp-remote http://127.0.0.1:3000 --allow-http`
+
+### Testing HTTP Transport
+1. **Direct curl test**:
+   ```bash
+   curl -X POST http://127.0.0.1:3000/ -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+   ```
+
+2. **MCP Inspector with mcp-remote bridge**:
+   ```bash
+   npx @modelcontextprotocol/inspector stdio -- npx mcp-remote http://127.0.0.1:3000 --allow-http
+   ```
+
+3. **Claude Desktop configuration**:
+   ```json
+   {
+     "mcpServers": {
+       "julia-http": {
+         "command": "npx",
+         "args": ["mcp-remote", "http://127.0.0.1:3000", "--allow-http"]
+       }
+     }
+   }
+   ```
+
+### HTTP Transport Implementation
+The HTTP transport implements the Streamable HTTP specification:
+- **POST requests**: JSON-RPC messages with immediate JSON responses
+- **GET requests**: SSE streams for server-to-client notifications (requires `Accept: text/event-stream` header)
+
+## Testing MCP Servers as a Client
+
+### stdio Transport Testing
+Test stdio servers using pipe communication:
+
+```bash
+# Single request
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | julia --project examples/time_server.jl 2>/dev/null | jq .
+
+# Multiple requests (initialize, then list tools)
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
+
+# Call a tool
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_time","arguments":{"format":"HH:MM:SS"}},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
+```
+
+### Streamable HTTP Transport Testing
+
+1. **Start the server** (in one terminal):
+   ```bash
+   julia --project examples/simple_http_server.jl
+   ```
+
+2. **Test with curl** (in another terminal):
+   ```bash
+   # Initialize
+   curl -X POST http://localhost:3000/ \
+     -H 'Content-Type: application/json' \
+     -H 'MCP-Protocol-Version: 2025-06-18' \
+     -H 'Accept: application/json' \
+     -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | jq .
+   
+   # List tools (include session ID if provided)
+   curl -X POST http://localhost:3000/ \
+     -H 'Content-Type: application/json' \
+     -H 'Mcp-Session-Id: <session-id-from-init>' \
+     -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | jq .
+   
+   # Call a tool
+   curl -X POST http://localhost:3000/ \
+     -H 'Content-Type: application/json' \
+     -H 'Mcp-Session-Id: <session-id-from-init>' \
+     -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"Hello MCP!"}},"id":3}' | jq .
+   ```
+
+3. **Test SSE streaming**:
+   ```bash
+   # Connect SSE client
+   curl -N -H 'Accept: text/event-stream' http://localhost:3000/
+   ```
+
+### Common Test Scenarios
+
+1. **Protocol negotiation**:
+   - Test with different protocol versions
+   - Verify server capabilities response
+
+2. **Tool testing**:
+   - List available tools
+   - Call tools with valid arguments
+   - Test error handling with invalid arguments
+   - Test missing required parameters
+
+3. **Session management** (HTTP only):
+   - Verify session ID generation on init
+   - Test requests with/without session ID
+   - Verify 400 Bad Request for missing session when required
+
+4. **Error scenarios**:
+   - Call non-existent methods
+   - Send malformed JSON
+   - Test with invalid tool names
+   - Exceed parameter limits
+
+### Automated Testing Script
+Create a test script for comprehensive testing:
+
+```julia
+# test_client.jl
+using HTTP, JSON3
+
+function test_mcp_server(url)
+    # Initialize
+    init_response = HTTP.post(url,
+        ["Content-Type" => "application/json"],
+        JSON3.write(Dict(
+            "jsonrpc" => "2.0",
+            "method" => "initialize",
+            "params" => Dict(
+                "protocolVersion" => "2025-06-18",
+                "clientInfo" => Dict("name" => "test", "version" => "1.0")
+            ),
+            "id" => 1
+        ))
+    )
+    println("Init: ", String(init_response.body))
+    
+    # Extract session ID if present
+    session_id = HTTP.header(init_response, "Mcp-Session-Id", "")
+    
+    # List tools
+    headers = ["Content-Type" => "application/json"]
+    if !isempty(session_id)
+        push!(headers, "Mcp-Session-Id" => session_id)
+    end
+    
+    tools_response = HTTP.post(url, headers,
+        JSON3.write(Dict(
+            "jsonrpc" => "2.0",
+            "method" => "tools/list",
+            "params" => Dict(),
+            "id" => 2
+        ))
+    )
+    println("Tools: ", String(tools_response.body))
+end
+
+test_mcp_server("http://localhost:3000/")
+```
+
+## Troubleshooting
+
+### Session Validation in HTTP Transport
+
+**Problem**: Session validation happens before checking if request is initialization, causing init requests to fail.
+
+**Solution**: Read and parse request body BEFORE validating session:
+```julia
+# ✅ CORRECT: Parse body first, then check session
+body = String(read(stream))
+msg = JSON3.read(body)
+is_initialize = get(msg, "method", "") == "initialize"
+
+if !is_initialize && transport.session_required
+    # Check session only for non-initialization requests
+end
+
+# ❌ WRONG: Don't use HTTP.payload(request) - causes streaming issues
+```
+
+### Common Port Conflicts
+
+Use less common ports to avoid conflicts:
+- **8765**: Good default test port (less common than 8080)
+- **3000-3999**: Often used by web dev servers
+- **8080**: Commonly used by proxies/web servers
+- **5000-5999**: Often used by Flask/Python servers
+
+Check for running servers:
+```bash
+ps aux | grep -E "julia.*(server|mcp)" | grep -v grep
+```
+
+### Notification Handling (202 Accepted)
+
+Notifications (requests without `id` field) must return 202 Accepted with no body:
+```julia
+if is_notification
+    HTTP.setstatus(stream, 202)
+    HTTP.setheader(stream, "Content-Length" => "0")
+    HTTP.startwrite(stream)  # Send headers
+    # No body for 202 per spec
+end
+```
+
+### SSE Stream Flushing
+
+Use `Base.flush()` explicitly for HTTP streams to avoid naming conflicts:
+```julia
+write(stream, event)
+Base.flush(stream)  # Not just flush(stream)
+```
 
 ## Commands
 - Build: `using Pkg; Pkg.build("ModelContextProtocol")`
@@ -226,3 +435,143 @@ The ModelContextProtocol.jl package includes infrastructure for progress monitor
 3. **Long-term**: Implement full bidirectional communication with proper notification support
 
 The infrastructure exists but requires additional implementation to enable progress monitoring from within tool handlers.
+
+## Technical Notes
+- Use 127.0.0.1 instead of localhost on Windows for HTTP transport
+- Julia JIT compilation takes 5-10 seconds on first server start
+- Port 8765 is good alternative to avoid common conflicts (3000, 8080, etc.)
+
+## MCP Server Testing & Management
+
+### Finding Running Servers
+When testing MCP servers, check for running processes:
+```bash
+# Check for running Julia MCP servers
+ps aux | grep "julia.*examples.*" | grep -v grep
+
+# Check specific ports (HTTP servers)
+netstat -tlnp | grep ":300[0-9]"  # Common MCP HTTP ports 3000-3009
+netstat -tlnp | grep ":8765"      # Alternative test port
+```
+
+### Shutting Down Servers
+```bash
+# Kill specific processes by PID
+kill PID1 PID2 PID3
+
+# Kill all Julia MCP processes (use carefully)
+pkill -f "julia.*examples.*"
+
+# Force kill if needed
+pkill -9 -f "julia.*examples.*"
+```
+
+### Best Practices for MCP Client Testing
+1. **Always check for running servers before starting new ones**
+2. **Use different ports for concurrent testing** (3000, 3001, 3002, etc.)
+3. **Kill servers after testing** to free ports and resources
+4. **Allow 5-10 seconds for Julia JIT compilation** before making requests
+5. **Use proper session management** for HTTP servers (Mcp-Session-Id header)
+
+### Common Issues
+- **Port conflicts**: Use `netstat` to check occupied ports
+- **Hanging processes**: Use `kill -9` for force termination
+- **JIT compilation timeouts**: Allow adequate time for server startup
+- **Session validation**: HTTP servers require proper session headers after initialization
+
+## MCP Protocol 2025-06-18 Compliance Status
+
+### ✅ Fully Implemented Features
+
+1. **Core Transport Protocols**
+   - ✅ stdio transport (standard input/output)
+   - ✅ Streamable HTTP transport with SSE support
+   - ✅ Session management (Mcp-Session-Id headers)
+   - ✅ Protocol version negotiation (only 2025-06-18 supported)
+
+2. **Version Validation**
+   - ✅ Strict protocol version validation (only accepts 2025-06-18)
+   - ✅ Proper error responses for unsupported versions
+   - ✅ MCP-Protocol-Version header validation in HTTP transport
+
+3. **JSON-RPC Compliance (2025-06-18)**
+   - ✅ Removed JSON-RPC batching support (returns proper error)
+   - ✅ Single message per request enforcement
+   - ✅ Proper JSON-RPC 2.0 validation
+
+4. **Content Types**
+   - ✅ TextContent - Text-based responses
+   - ✅ ImageContent - Binary image content with base64 encoding
+   - ✅ EmbeddedResource - Embedded resource content
+   - ✅ ResourceLink - Resource references (NEW in 2025-06-18)
+
+5. **Multi-Content Tool Returns**
+   - ✅ Single content return: `return TextContent(...)`
+   - ✅ Multiple content return: `return [TextContent(...), ImageContent(...)]`
+   - ✅ Mixed content types in single response
+
+6. **Security Features** 
+   - ✅ Origin header validation for HTTP transport
+   - ✅ Localhost binding by default
+   - ✅ Cryptographically secure session IDs (UUID format)
+   - ✅ Session ID ASCII validation (0x21-0x7E)
+
+7. **Auto-Registration System**
+   - ✅ Directory-based component organization
+   - ✅ Automatic tool/prompt/resource discovery
+   - ✅ Isolated module loading for each component file
+
+### ❌ Features Not Yet Implemented (Optional/Future)
+
+1. **OAuth Authorization (Optional)**
+   - ❌ OAuth Resource Server classification  
+   - ❌ Authorization server discovery
+   - ❌ Protected resource metadata
+   - ❌ Resource Indicators (RFC 8707) support
+
+2. **Elicitation (Optional)**
+   - ❌ Server-to-client user interaction requests
+   - ❌ elicitation/create method handling
+   - ❌ Structured user input with JSON schemas
+   - ❌ Nested interaction workflows
+
+3. **Client Features (Client-Side)**
+   - ❌ Roots - filesystem access boundaries
+   - ❌ Sampling - LLM completion requests
+   - ❌ Completion/autocompletion suggestions
+
+4. **Advanced Features (Optional)**
+   - ❌ _meta fields on message types (metadata support)
+   - ❌ Audio content type (AudioContent)  
+   - ❌ Progress notifications with bidirectional updates
+   - ❌ Stream resumption with Last-Event-ID
+   - ❌ title field support for human-friendly display names
+
+5. **Enterprise Features (Optional)**
+   - ❌ Advanced authentication beyond basic session management
+   - ❌ Fine-grained authorization per tool/resource
+   - ❌ Enterprise SSO integration
+
+### 🎯 Implementation Priority for Future Work
+
+**High Priority** (Core 2025-06-18 compliance):
+1. _meta field support on core types
+2. title field support for tools/resources/prompts
+3. Audio content type (AudioContent)
+
+**Medium Priority** (Enhanced functionality):
+1. Progress notification improvements
+2. Stream resumption support
+3. Elicitation basic support
+
+**Low Priority** (Enterprise/Optional):
+1. OAuth authorization support
+2. Advanced authentication
+3. Client-side features (roots, sampling)
+
+### 🧪 Testing Status
+- ✅ Protocol version validation working
+- ✅ JSON-RPC batch rejection working  
+- ✅ ResourceLink content type working
+- ✅ All existing functionality preserved
+- ✅ HTTP transport fully compliant with 2025-06-18

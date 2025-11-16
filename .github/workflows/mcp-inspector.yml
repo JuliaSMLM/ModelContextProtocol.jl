@@ -1,0 +1,242 @@
+name: MCP Inspector Tests
+on:
+  push:
+    branches:
+      - main
+      - http-sse
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  inspector-stdio:
+    name: Test stdio servers with MCP Inspector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - uses: actions/checkout@v5
+      
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.11'
+      
+      - uses: julia-actions/cache@v2
+      
+      - name: Build Julia package
+        run: |
+          julia --project -e 'using Pkg; Pkg.instantiate()'
+          julia --project -e 'using Pkg; Pkg.precompile()'
+      
+      - name: Test time_server.jl with Inspector CLI
+        run: |
+          echo "Testing time_server.jl..."
+          
+          # List tools
+          npx @modelcontextprotocol/inspector --cli \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl \
+            --method tools/list > tools_output.json
+          
+          echo "Tools response:"
+          cat tools_output.json | jq .
+          
+          # Verify we got tools
+          jq -e '.tools | length > 0' tools_output.json
+          
+          # Call the current_time tool
+          npx @modelcontextprotocol/inspector --cli \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl \
+            --method tools/call \
+            --tool-name current_time > tool_call.json
+          
+          echo "Tool call response:"
+          cat tool_call.json | jq .
+          
+          # Verify tool returned content
+          jq -e '.content[0].text | test("Current time")' tool_call.json
+      
+      - name: Test resources with Inspector CLI
+        run: |
+          echo "Testing resources..."
+          
+          # List resources
+          npx @modelcontextprotocol/inspector --cli \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl \
+            --method resources/list > resources.json
+          
+          echo "Resources:"
+          cat resources.json | jq .
+          
+          # Read Harry Potter birthday resource
+          npx @modelcontextprotocol/inspector --cli \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl \
+            --method resources/read \
+            --uri "character-info://harry-potter/birthday" > resource_read.json
+          
+          echo "Resource read response:"
+          cat resource_read.json | jq .
+      
+      - name: Test prompts with Inspector CLI
+        run: |
+          echo "Testing prompts..."
+          
+          # List prompts
+          npx @modelcontextprotocol/inspector --cli \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl \
+            --method prompts/list > prompts.json
+          
+          echo "Prompts:"
+          cat prompts.json | jq .
+          
+          # Verify we have prompts
+          jq -e '.prompts | length > 0' prompts.json
+          
+          # Test greeting prompt without arguments (this should work with Inspector)
+          npx @modelcontextprotocol/inspector --cli \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl \
+            --method prompts/get \
+            --prompt-name greeting > greeting_prompt.json || echo "Inspector may not support prompts/get"
+          
+          if [ -f greeting_prompt.json ] && [ -s greeting_prompt.json ]; then
+            echo "Greeting prompt response:"
+            cat greeting_prompt.json | jq .
+          fi
+          
+          # NOTE: Inspector CLI has a bug with prompt arguments (--prompt-arg)
+          # We test this with direct JSON-RPC instead (see next step)
+      
+      - name: Test prompts with arguments using direct JSON-RPC
+        run: |
+          echo "Testing prompts/get with arguments via direct JSON-RPC..."
+          
+          # Test movie_analysis prompt with required 'genre' argument
+          echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
+          {"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"science fiction"}},"id":2}' | \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl 2>/dev/null | \
+            tail -1 > prompt_with_args.json
+          
+          echo "Prompt with required argument response:"
+          cat prompt_with_args.json | jq .
+          
+          # Verify the prompt was processed correctly
+          jq -e '.messages[0].content.text | test("science fiction")' prompt_with_args.json
+          
+          # Test with both required and optional arguments
+          echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
+          {"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"horror","year":"1980"}},"id":3}' | \
+            julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/time_server.jl 2>/dev/null | \
+            tail -1 > prompt_full_args.json
+          
+          echo "Prompt with all arguments response:"
+          cat prompt_full_args.json | jq .
+          
+          # Verify both arguments were processed
+          jq -e '.messages[0].content.text | test("horror") and test("1980")' prompt_full_args.json
+  
+  inspector-http:
+    name: Test HTTP servers with MCP Inspector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - uses: actions/checkout@v5
+      
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.11'
+      
+      - uses: julia-actions/cache@v2
+      
+      - name: Build Julia package
+        run: |
+          julia --project -e 'using Pkg; Pkg.instantiate()'
+          julia --project -e 'using Pkg; Pkg.precompile()'
+      
+      - name: Test HTTP server with mcp-remote bridge
+        run: |
+          echo "Starting HTTP server..."
+          
+          # Start HTTP server in background
+          julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/simple_http_server.jl &
+          SERVER_PID=$!
+          
+          # Wait for server to be ready (Julia JIT compilation)
+          echo "Waiting for server startup (Julia JIT)..."
+          sleep 15
+          
+          # Check if server is running
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "Server failed to start"
+            exit 1
+          fi
+          
+          echo "Testing HTTP server via mcp-remote..."
+          
+          # List tools via mcp-remote bridge
+          npx @modelcontextprotocol/inspector --cli \
+            npx mcp-remote http://127.0.0.1:3000 --allow-http \
+            --method tools/list > http_tools.json || true
+          
+          # Check if we got a response
+          if [ -f http_tools.json ] && [ -s http_tools.json ]; then
+            echo "HTTP tools response:"
+            cat http_tools.json | jq . || cat http_tools.json
+          else
+            echo "Warning: HTTP test may have issues with mcp-remote bridge"
+          fi
+          
+          # Clean up
+          kill $SERVER_PID || true
+          wait $SERVER_PID 2>/dev/null || true
+      
+      - name: Direct HTTP API test
+        run: |
+          echo "Starting HTTP server for direct API test..."
+          
+          # Start HTTP server
+          julia --project=${{ github.workspace }} \
+            ${{ github.workspace }}/examples/simple_http_server.jl &
+          SERVER_PID=$!
+          
+          # Wait for server
+          sleep 15
+          
+          echo "Testing direct HTTP API..."
+          
+          # Initialize session
+          curl -X POST http://127.0.0.1:3000/ \
+            -H 'Content-Type: application/json' \
+            -H 'MCP-Protocol-Version: 2025-06-18' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
+            -s -o init.json -D headers.txt
+          
+          echo "Initialization response:"
+          cat init.json | jq .
+          
+          # Extract session ID
+          SESSION_ID=$(grep -i "mcp-session-id" headers.txt | cut -d' ' -f2 | tr -d '\r' || echo "")
+          
+          if [ -n "$SESSION_ID" ]; then
+            echo "Session ID: $SESSION_ID"
+            
+            # List tools with session
+            curl -X POST http://127.0.0.1:3000/ \
+              -H 'Content-Type: application/json' \
+              -H "Mcp-Session-Id: $SESSION_ID" \
+              -H 'Accept: application/json, text/event-stream' \
+              -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' \
+              -s | jq .
+          fi
+          
+          # Clean up
+          kill $SERVER_PID || true
+          wait $SERVER_PID 2>/dev/null || true

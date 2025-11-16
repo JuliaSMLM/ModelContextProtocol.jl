@@ -86,13 +86,26 @@ Automatically register MCP components found in the specified directory structure
 - `server::Server`: The server to register components with
 - `dir::AbstractString`: Root directory containing component subdirectories
 
-
 # Directory Structure
 - `dir/tools/`: Contains tool definition files
 - `dir/resources/`: Contains resource definition files
 - `dir/prompts/`: Contains prompt definition files
 
 Each subdirectory is optional. Files should be .jl files containing component definitions.
+
+# Component File Format
+Component files must have the tool/resource/prompt as the **last expression** in the file.
+The return value of `include()` is used to obtain the component.
+
+Example:
+```julia
+# tools/my_tool.jl
+julia_version_tool = MCPTool(
+    name = "julia_version",
+    description = "Get Julia version",
+    handler = params -> Dict("version" => string(VERSION))
+)  # ← This must be the last expression
+```
 
 # Returns
 - `Server`: The updated server instance for method chaining
@@ -113,20 +126,17 @@ function auto_register!(server::Server, dir::AbstractString)
                         # Create a new module with ModelContextProtocol already imported
                         mod = Module()
                         Core.eval(mod, :(using ModelContextProtocol))
-                        
-                        # Simply include the file in this module's namespace
-                        Base.include(mod, file)
-                        
-                        # Look for ANY variables that are of our target type
-                        # No need for exports!
-                        for name in names(mod, all=true)
-                            if isdefined(mod, name)
-                                component = getfield(mod, name)
-                                if component isa type
-                                    register!(server, component)
-                                    @info "Registered $type from $file: $name"
-                                end
-                            end
+
+                        # Include returns the last expression in the file
+                        # Component files should have the tool/resource/prompt as the last expression
+                        component = Base.include(mod, file)
+
+                        # Register if it's the expected type
+                        if component isa type
+                            register!(server, component)
+                            @info "Registered $type from $file"
+                        else
+                            @warn "File $file did not return a $type (got $(typeof(component)))"
                         end
                     catch e
                         @warn "Error processing $file" exception=e stack=stacktrace(catch_backtrace())
@@ -157,7 +167,7 @@ function default_capabilities()
 end
 
 """
-    mcp_server(; name::String, version::String="2024-11-05", 
+    mcp_server(; name::String, version::String="1.0.0", 
              tools::Union{Vector{MCPTool},MCPTool,Nothing}=nothing,
              resources::Union{Vector{MCPResource},MCPResource,Nothing}=nothing, 
              prompts::Union{Vector{MCPPrompt},MCPPrompt,Nothing}=nothing,
@@ -169,7 +179,7 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 
 # Arguments
 - `name::String`: Unique identifier for the server instance 
-- `version::String`: Server implementation version
+- `version::String`: Your server implementation version (defaults to "1.0.0") - YOUR server's version, not the MCP protocol version
 - `tools`: Tools to expose to the model
 - `resources`: Resources available to the model
 - `prompts`: Predefined prompts for the model
@@ -184,6 +194,7 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 ```julia
 server = mcp_server(
     name = "my-server",
+    version = "1.0.0",  # Your server version
     description = "Demo server with time tool",
     tools = MCPTool(
         name = "get_time",
@@ -197,7 +208,7 @@ start!(server)
 """
 function mcp_server(;
     name::String,
-    version::String = "2024-11-05", 
+    version::String = "1.0.0",  # Default server version for convenience 
     tools::Union{Vector{MCPTool}, MCPTool, Nothing} = nothing,
     resources::Union{Vector{MCPResource}, MCPResource, Nothing} = nothing,
     prompts::Union{Vector{MCPPrompt}, MCPPrompt, Nothing} = nothing,  # Added prompts parameter

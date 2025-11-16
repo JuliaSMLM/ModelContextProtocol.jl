@@ -68,6 +68,28 @@ function parse_message(json::String)::MCPMessage
         )
     end
     
+    # MCP protocol 2025-06-18 removes support for JSON-RPC batching
+    if raw isa Array || raw isa Vector
+        return JSONRPCError(
+            id = nothing,
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_REQUEST,
+                message = "JSON-RPC batching not supported in MCP protocol 2025-06-18"
+            )
+        )
+    end
+    
+    # Ensure we have an object, not array
+    if !(raw isa JSON3.Object)
+        return JSONRPCError(
+            id = nothing,
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_REQUEST,
+                message = "JSON-RPC batching not supported in MCP protocol 2025-06-18"
+            )
+        )
+    end
+    
     # Validate basic JSON-RPC structure
     if !haskey(raw, :jsonrpc) || raw.jsonrpc != "2.0"
         return JSONRPCError(
@@ -159,9 +181,19 @@ function parse_notification(raw::JSON3.Object)::Notification
     method = raw.method
     params = if haskey(raw, :params)
         # Handle empty params object case
-        isempty(raw.params) ? LittleDict{String,Any}() : raw.params
+        if isempty(raw.params)
+            Dict{String,Any}()
+        else
+            # Convert JSON3.Object to Dict more carefully to avoid MethodError
+            try
+                Dict{String,Any}(raw.params)
+            catch e
+                # If conversion fails, convert manually to preserve all fields
+                Dict{String,Any}(string(k) => v for (k, v) in pairs(raw.params))
+            end
+        end
     else
-        LittleDict{String,Any}() 
+        Dict{String,Any}() 
     end
     
     # Parse method-specific parameters

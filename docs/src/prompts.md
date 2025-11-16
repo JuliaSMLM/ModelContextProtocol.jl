@@ -15,6 +15,11 @@ Every prompt in ModelContextProtocol.jl is represented by the `MCPPrompt` struct
 
 Here's how to create a basic prompt:
 
+Note: The `role` field uses the `Role` enum with values `user` and `assistant`. You may need to import these:
+```julia
+import ModelContextProtocol: user, assistant
+```
+
 ```julia
 greeting_prompt = MCPPrompt(
     name = "greeting",
@@ -112,5 +117,80 @@ Then auto-register from the directory:
 server = mcp_server(
     name = "my-server",
     auto_register_dir = "my_server"
+)
+```
+
+## Advanced Examples
+
+### Multi-Message Conversation Prompt
+
+```julia
+conversation_prompt = MCPPrompt(
+    name = "code_review",
+    description = "Code review conversation template",
+    arguments = [
+        PromptArgument(
+            name = "language",
+            description = "Programming language",
+            required = true
+        ),
+        PromptArgument(
+            name = "code",
+            description = "Code to review",
+            required = true
+        ),
+        PromptArgument(
+            name = "focus_area",
+            description = "Specific area to focus on",
+            required = false
+        )
+    ],
+    messages = [
+        PromptMessage(
+            role = user,
+            content = TextContent(
+                text = "Please review this {language} code:{?focus_area? Focus on {focus_area}.}"
+            )
+        ),
+        PromptMessage(
+            role = user,
+            content = TextContent(text = "```{language}\n{code}\n```")
+        ),
+        PromptMessage(
+            role = assistant,
+            content = TextContent(
+                text = "I'll analyze this {language} code{?focus_area? with focus on {focus_area}}."
+            )
+        )
+    ]
+)
+```
+
+### Prompt with Image Content
+
+```julia
+visual_prompt = MCPPrompt(
+    name = "analyze_diagram",
+    description = "Analyze a diagram or chart",
+    arguments = [
+        PromptArgument(name = "image_path", description = "Path to image", required = true),
+        PromptArgument(name = "question", description = "Question about the image", required = false)
+    ],
+    messages = [
+        PromptMessage(
+            role = user,
+            content = TextContent(
+                text = "Please analyze this diagram{?question?: {question}}"
+            )
+        ),
+        # Note: In practice, you'd load the actual image data
+        PromptMessage(
+            role = user,
+            content = ImageContent(
+                data = UInt8[],  # Placeholder for image bytes
+                mime_type = "image/png"
+            )
+        )
+    ]
 )
 ```

@@ -77,35 +77,35 @@ function process_message(server::Server, state::ServerState, message::String)::U
             return nothing
         end
     catch e
-        id = if parsed isa JSONRPCRequest
-            parsed.id
+        # Only return error responses for requests, not notifications
+        if parsed isa JSONRPCRequest
+            error_info = ErrorInfo(
+                code = ErrorCodes.INTERNAL_ERROR,
+                message = "Internal server error: $(e)"
+            )
+            # Log the error
+            @error "JSON-RPC error" error_code=ErrorCodes.INTERNAL_ERROR error_message=error_info.message
+            # Return JSON-RPC error response
+            return serialize_message(JSONRPCError(
+                id = parsed.id,
+                error = error_info
+            ))
         else
-            nothing
+            # For notifications, just log the error and return nothing
+            @error "Notification processing error" error=e
+            return nothing
         end
-
-        error_info = ErrorInfo(
-            code = ErrorCodes.INTERNAL_ERROR,
-            message = "Internal server error: $(e)"
-        )
-        # Log the error
-        @error "JSON-RPC error" error_code=ErrorCodes.INTERNAL_ERROR error_message=error_info.message request=parsed
-
-        # Return JSON-RPC error response
-        return serialize_message(JSONRPCError(
-            id = id,
-            error = error_info
-        ))
     end
 end
 
 """
     run_server_loop(server::Server, state::ServerState) -> Nothing
 
-Execute the main server loop that reads JSON-RPC messages from stdin and writes responses to stdout.
+Execute the main server loop that reads JSON-RPC messages from the transport and writes responses back.
 Implements optimized CPU usage by blocking on input rather than active polling.
 
 # Arguments
-- `server::Server`: The MCP server instance
+- `server::Server`: The MCP server instance with configured transport
 - `state::ServerState`: The server state object to track running status
 
 # Returns
@@ -114,9 +114,15 @@ Implements optimized CPU usage by blocking on input rather than active polling.
 function run_server_loop(server::Server, state::ServerState)
     state.running = true
     
+    # Ensure transport is available
+    if isnothing(server.transport)
+        throw(ServerError("No transport configured"))
+    end
+    
+    transport = server.transport
+    
     @debug "Server loop starting"
-    flush(stdout)
-    flush(stderr)
+    flush(transport)
     
     # Pre-allocate common error responses to reduce allocations
     error_templates = Dict{Int, ErrorInfo}(
@@ -130,29 +136,40 @@ function run_server_loop(server::Server, state::ServerState)
         )
     )
     
-    while state.running
+    while state.running && is_connected(transport)
         try
-            # readline() is already blocking, so it doesn't consume CPU while waiting
-            message = readline()
+            # read_message() blocks until a message is available
+            message = read_message(transport)
             
-            # Skip empty messages to avoid unnecessary processing
-            isempty(message) && continue
+            # Handle different message conditions
+            if isnothing(message)
+                # For HTTP transport, keep running even without messages
+                if isa(transport, HttpTransport)
+                    sleep(0.1)  # Small delay to prevent busy loop
+                    continue
+                else
+                    # For stdio transport, null message means EOF
+                    break
+                end
+            elseif isempty(message)
+                # Skip empty messages (e.g., blank lines between requests)
+                continue
+            end
             
-            # Process the message only if non-empty
+            # Process the message
             @debug "Processing message" raw=message
             response = process_message(server, state, message)
             
             if !isnothing(response)
                 @debug "Sending response" response=response
-                println(response)
-                flush(stdout)
+                write_message(transport, response)
             end
         catch e
             if e isa InterruptException
                 @info "Server shutting down..."
                 break
-            elseif e isa EOFError
-                @info "Input stream closed, shutting down..."
+            elseif e isa TransportError
+                @error "Transport error" exception=e
                 break
             end
             
@@ -171,22 +188,24 @@ function run_server_loop(server::Server, state::ServerState)
                     id = nothing,
                     error = error_info
                 ))
-                println(error_response)
-                flush(stdout)
+                write_message(transport, error_response)
             catch response_error
                 @error "Failed to send error response" exception=response_error
             end
         end
     end
+    
+    @debug "Server loop ended"
 end
 
 """
-    start!(server::Server) -> Nothing
+    start!(server::Server; transport::Union{Transport,Nothing}=nothing) -> Nothing
 
 Start the MCP server, setting up logging and entering the main server loop.
 
 # Arguments
 - `server::Server`: The server instance to start
+- `transport::Union{Transport,Nothing}`: Optional transport to use. If not provided, uses StdioTransport
 
 # Returns
 - `Nothing`: The function returns after the server stops
@@ -194,12 +213,20 @@ Start the MCP server, setting up logging and entering the main server loop.
 # Throws
 - `ServerError`: If the server is already running
 """
-function start!(server::Server)::Nothing
+function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::Nothing
     if server.active
         # Use MCPLogger format for errors
         @error "Server already running"
         throw(ServerError("Server already running"))
     end
+    
+    # Set transport - use provided transport, server's existing transport, or default to stdio
+    if !isnothing(transport)
+        server.transport = transport
+    elseif isnothing(server.transport)
+        server.transport = StdioTransport()
+    end
+    # else: use server's existing transport
     
     state = ServerState()
     
@@ -210,6 +237,7 @@ function start!(server::Server)::Nothing
     @info "Starting MCP server: $(server.config.name)"
     
     try
+        server.active = true
         run_server_loop(server, state)
     catch e
         server.active = false
@@ -217,6 +245,7 @@ function start!(server::Server)::Nothing
         rethrow(e)
     finally
         server.active = false
+        close(server.transport)
         @info "Server stopped"
     end
     
@@ -283,8 +312,5 @@ function unsubscribe!(server::Server, uri::String, callback::Function)
     server
 end
 
-# Pretty printing
-Base.show(io::IO, config::ServerConfig) = print(io, "ServerConfig($(config.name) v$(config.version))")
-Base.show(io::IO, server::Server) = print(io, "MCP Server($(server.config.name), $(server.active ? "active" : "inactive"))")
 
 

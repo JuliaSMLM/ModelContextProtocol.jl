@@ -87,8 +87,7 @@ function convert_to_content_type(result::Any, return_type::Type)
     if result isa Dict && return_type == TextContent
         return TextContent(
             type = "text",
-            text = JSON3.write(result),
-            annotations = LittleDict{String,Any}()
+            text = JSON3.write(result)
         )
     end
     
@@ -96,8 +95,7 @@ function convert_to_content_type(result::Any, return_type::Type)
     if result isa String && return_type == TextContent
         return TextContent(
             type = "text",
-            text = result,
-            annotations = LittleDict{String,Any}()
+            text = result
         )
     end
     
@@ -107,8 +105,7 @@ function convert_to_content_type(result::Any, return_type::Type)
         return ImageContent(
             type = "image",
             data = data,
-            mime_type = mime_type,
-            annotations = LittleDict{String,Any}()
+            mime_type = mime_type
         )
     end
     
@@ -129,20 +126,44 @@ Handle MCP protocol initialization requests by setting up the server and returni
 - `HandlerResult`: Contains the server's capabilities and configuration
 """
 function handle_initialize(ctx::RequestContext, params::InitializeParams)::HandlerResult
+    # Currently we only support MCP protocol version 2025-06-18
+    # In the future, this could be extended to support multiple versions
+    SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18"]
+    supported_version = SUPPORTED_PROTOCOL_VERSIONS[1]  # Use the only supported version for now
+    
+    # Check if client requested a specific version
+    if !isnothing(params.protocolVersion) && params.protocolVersion != supported_version
+        # Return error for unsupported versions
+        error_info = ErrorInfo(
+            code = ErrorCodes.INVALID_PARAMS,
+            message = "Unsupported protocol version",
+            data = LittleDict{String,Any}(
+                "supported" => [supported_version],
+                "requested" => params.protocolVersion
+            )
+        )
+        return HandlerResult(
+            response=JSONRPCError(
+                id=ctx.request_id,
+                error=error_info
+            )
+        )
+    end
+
     # Get full capabilities including available tools and resources
     current_capabilities = capabilities_to_protocol(
         ctx.server.config.capabilities,
         ctx.server
     )
 
-    # Create initialization result
+    # Create initialization result with our supported version
     result = InitializeResult(
         serverInfo=Dict(
             "name" => ctx.server.config.name,
             "version" => ctx.server.config.version
         ),
         capabilities=current_capabilities,
-        protocolVersion=params.protocolVersion,
+        protocolVersion=supported_version,
         instructions=ctx.server.config.instructions
     )
 

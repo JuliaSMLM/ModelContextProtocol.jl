@@ -77,30 +77,54 @@ function content2dict end
 
 # TextContent conversion
 function content2dict(content::TextContent)
-    LittleDict{String,Any}(
+    result = LittleDict{String,Any}(
         "type" => "text",
-        "text" => content.text,
-        "annotations" => content.annotations
+        "text" => content.text
     )
+    # Add optional fields if present
+    !isnothing(content.annotations) && (result["annotations"] = content.annotations)
+    !isnothing(content._meta) && (result["_meta"] = content._meta)
+    return result
 end
 
 # ImageContent conversion
 function content2dict(content::ImageContent)
-    LittleDict{String,Any}(
+    result = LittleDict{String,Any}(
         "type" => "image",
         "data" => base64encode(content.data),
-        "mimeType" => content.mime_type,
-        "annotations" => content.annotations
+        "mimeType" => content.mime_type
     )
+    # Add optional fields if present
+    !isnothing(content.annotations) && (result["annotations"] = content.annotations)
+    !isnothing(content._meta) && (result["_meta"] = content._meta)
+    return result
 end
 
 # EmbeddedResource conversion
 function content2dict(content::EmbeddedResource)
-    LittleDict{String,Any}(
+    result = LittleDict{String,Any}(
         "type" => "resource",
-        "resource" => serialize_resource_contents(content.resource),
-        "annotations" => content.annotations
+        "resource" => content.resource
     )
+    # Add optional fields if present
+    !isnothing(content.annotations) && (result["annotations"] = content.annotations)
+    !isnothing(content._meta) && (result["_meta"] = content._meta)
+    return result
+end
+
+# ResourceLink conversion (new in MCP protocol 2025-06-18)
+function content2dict(content::ResourceLink)
+    result = LittleDict{String,Any}(
+        "type" => "link",
+        "href" => content.href
+    )
+    
+    # Add optional fields if present
+    !isnothing(content.title) && (result["title"] = content.title)
+    !isnothing(content.annotations) && (result["annotations"] = content.annotations)
+    !isnothing(content._meta) && (result["_meta"] = content._meta)
+    
+    return result
 end
 
 # Generic fallback for unknown content types
