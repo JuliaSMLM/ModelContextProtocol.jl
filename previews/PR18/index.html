@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Home · ModelContextProtocol.jl</title><meta name="title" content="Home · ModelContextProtocol.jl"/><meta property="og:title" content="Home · ModelContextProtocol.jl"/><meta property="twitter:title" content="Home · ModelContextProtocol.jl"/><meta name="description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:description" content="Documentation for ModelContextProtocol.jl."/><meta property="twitter:description" content="Documentation for ModelContextProtocol.jl."/><meta property="og:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/"/><meta property="twitter:url" content="https://JuliaSMLM.github.io/ModelContextProtocol.jl/"/><link rel="canonical" href="https://JuliaSMLM.github.io/ModelContextProtocol.jl/"/><script data-outdated-warner src="assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="assets/documenter.js"></script><script src="search_index.js"></script><script src="siteinfo.js"></script><script src="../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href>ModelContextProtocol.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li class="is-active"><a class="tocitem" href>Home</a><ul class="internal"><li><a class="tocitem" href="#Features"><span>Features</span></a></li><li><a class="tocitem" href="#Installation"><span>Installation</span></a></li><li><a class="tocitem" href="#Quick-Start"><span>Quick Start</span></a></li><li><a class="tocitem" href="#Documentation-Structure"><span>Documentation Structure</span></a></li><li><a class="tocitem" href="#Protocol-Compliance"><span>Protocol Compliance</span></a></li><li><a class="tocitem" href="#Basic-Concepts"><span>Basic Concepts</span></a></li><li><a class="tocitem" href="#Testing-Your-Server"><span>Testing Your Server</span></a></li><li><a class="tocitem" href="#Next-Steps"><span>Next Steps</span></a></li><li><a class="tocitem" href="#Contributing"><span>Contributing</span></a></li><li><a class="tocitem" href="#License"><span>License</span></a></li></ul></li><li><a class="tocitem" href="examples/">Examples</a></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="tools/">Tools</a></li><li><a class="tocitem" href="resources/">Resources</a></li><li><a class="tocitem" href="prompts/">Prompts</a></li><li><a class="tocitem" href="transports/">Transports</a></li><li><a class="tocitem" href="auto-registration/">Auto-Registration</a></li></ul></li><li><span class="tocitem">Integration</span><ul><li><a class="tocitem" href="claude/">Claude Desktop</a></li></ul></li><li><a class="tocitem" href="api/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Home</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Home</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/JuliaSMLM/ModelContextProtocol.jl/blob/main/docs/src/index.md#" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="ModelContextProtocol.jl"><a class="docs-heading-anchor" href="#ModelContextProtocol.jl">ModelContextProtocol.jl</a><a id="ModelContextProtocol.jl-1"></a><a class="docs-heading-anchor-permalink" href="#ModelContextProtocol.jl" title="Permalink"></a></h1><p>Julia implementation of the <a href="https://modelcontextprotocol.io">Model Context Protocol (MCP)</a>, enabling seamless integration between AI applications and external data sources, tools, and services.</p><h2 id="Features"><a class="docs-heading-anchor" href="#Features">Features</a><a id="Features-1"></a><a class="docs-heading-anchor-permalink" href="#Features" title="Permalink"></a></h2><ul><li>✅ <strong>Core MCP 2025-06-18 Protocol</strong> - Server-side implementation with tools, resources, and prompts</li><li>✅ <strong>Multiple Transports</strong> - stdio (default) and HTTP with Server-Sent Events</li><li>✅ <strong>Multi-Content Responses</strong> - Tools can return text, images, and embedded resources</li><li>✅ <strong>Auto-Registration</strong> - Automatic component discovery from directory structure</li><li>✅ <strong>Type-Safe</strong> - Leverages Julia&#39;s type system for robust implementations</li><li>✅ <strong>Session Management</strong> - Secure session handling for HTTP transport</li></ul><p><strong>Note:</strong> This is a server-side implementation. Client features (roots, sampling), OAuth, and some optional features (elicitation, audio content) are not yet implemented.</p><h2 id="Installation"><a class="docs-heading-anchor" href="#Installation">Installation</a><a id="Installation-1"></a><a class="docs-heading-anchor-permalink" href="#Installation" title="Permalink"></a></h2><pre><code class="language-julia hljs">using Pkg
+Pkg.add(&quot;ModelContextProtocol&quot;)</code></pre><h2 id="Quick-Start"><a class="docs-heading-anchor" href="#Quick-Start">Quick Start</a><a id="Quick-Start-1"></a><a class="docs-heading-anchor-permalink" href="#Quick-Start" title="Permalink"></a></h2><p>Create a simple MCP server with a tool:</p><pre><code class="language-julia hljs">using ModelContextProtocol
+
+# Create a server with a simple echo tool
+server = mcp_server(
+    name = &quot;echo-server&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [
+        MCPTool(
+            name = &quot;echo&quot;,
+            description = &quot;Echo back the input message&quot;,
+            parameters = [
+                ToolParameter(
+                    name = &quot;message&quot;,
+                    type = &quot;string&quot;,
+                    description = &quot;Message to echo&quot;,
+                    required = true
+                )
+            ],
+            handler = (params) -&gt; TextContent(text = params[&quot;message&quot;])
+        )
+    ]
+)
+
+# Start the server (stdio transport by default)
+start!(server)</code></pre><h3 id="Using-HTTP-Transport"><a class="docs-heading-anchor" href="#Using-HTTP-Transport">Using HTTP Transport</a><a id="Using-HTTP-Transport-1"></a><a class="docs-heading-anchor-permalink" href="#Using-HTTP-Transport" title="Permalink"></a></h3><p>For web-based integrations, use the HTTP transport:</p><pre><code class="language-julia hljs"># Create server with HTTP transport
+server = mcp_server(
+    name = &quot;http-server&quot;,
+    version = &quot;1.0.0&quot;,
+    tools = [...],  # Your tools here
+    transport = HttpTransport(host = &quot;127.0.0.1&quot;, port = 3000)
+)
+
+start!(server)
+
+# Test with curl
+# curl -X POST http://127.0.0.1:3000/ \
+#   -H &quot;Content-Type: application/json&quot; \
+#   -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{},&quot;id&quot;:1}&#39;</code></pre><h2 id="Documentation-Structure"><a class="docs-heading-anchor" href="#Documentation-Structure">Documentation Structure</a><a id="Documentation-Structure-1"></a><a class="docs-heading-anchor-permalink" href="#Documentation-Structure" title="Permalink"></a></h2><ul><li><strong><a href="examples/">Examples</a></strong> - Complete working examples and common patterns</li><li><strong><a href="tools/">Tools</a></strong> - Creating and using MCP tools</li><li><strong><a href="resources/">Resources</a></strong> - Managing data sources and subscriptions</li><li><strong><a href="prompts/">Prompts</a></strong> - Defining prompt templates for LLMs</li><li><strong><a href="transports/">Transports</a></strong> - Transport options and configuration</li><li><strong><a href="auto-registration/">Auto-Registration</a></strong> - Directory-based component organization</li><li><strong><a href="claude/">Claude Desktop Integration</a></strong> - Integration with Claude Desktop</li><li><strong><a href="api/">API Reference</a></strong> - Complete API documentation</li></ul><h2 id="Protocol-Compliance"><a class="docs-heading-anchor" href="#Protocol-Compliance">Protocol Compliance</a><a id="Protocol-Compliance-1"></a><a class="docs-heading-anchor-permalink" href="#Protocol-Compliance" title="Permalink"></a></h2><p>ModelContextProtocol.jl implements the MCP specification version <code>2025-06-18</code>, including:</p><ul><li>JSON-RPC 2.0 message protocol</li><li>Tool discovery and invocation</li><li>Resource management with subscriptions</li><li>Prompt templates with arguments</li><li>Session management for HTTP transport</li><li>Content negotiation and multi-format responses</li></ul><h2 id="Basic-Concepts"><a class="docs-heading-anchor" href="#Basic-Concepts">Basic Concepts</a><a id="Basic-Concepts-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Concepts" title="Permalink"></a></h2><h3 id="Tools"><a class="docs-heading-anchor" href="#Tools">Tools</a><a id="Tools-1"></a><a class="docs-heading-anchor-permalink" href="#Tools" title="Permalink"></a></h3><p>Tools are functions that can be invoked by the LLM:</p><pre><code class="language-julia hljs">tool = MCPTool(
+    name = &quot;calculate&quot;,
+    description = &quot;Perform basic arithmetic&quot;,
+    parameters = [
+        ToolParameter(name = &quot;a&quot;, type = &quot;number&quot;, required = true),
+        ToolParameter(name = &quot;b&quot;, type = &quot;number&quot;, required = true),
+        ToolParameter(name = &quot;op&quot;, type = &quot;string&quot;, required = true)
+    ],
+    handler = function(params)
+        a, b = params[&quot;a&quot;], params[&quot;b&quot;]
+        result = if params[&quot;op&quot;] == &quot;+&quot;
+            a + b
+        elseif params[&quot;op&quot;] == &quot;-&quot;
+            a - b
+        elseif params[&quot;op&quot;] == &quot;*&quot;
+            a * b
+        elseif params[&quot;op&quot;] == &quot;/&quot;
+            a / b
+        else
+            error(&quot;Unknown operation&quot;)
+        end
+        return TextContent(text = string(result))
+    end
+)</code></pre><h3 id="Resources"><a class="docs-heading-anchor" href="#Resources">Resources</a><a id="Resources-1"></a><a class="docs-heading-anchor-permalink" href="#Resources" title="Permalink"></a></h3><p>Resources provide data access to the LLM:</p><pre><code class="language-julia hljs">resource = MCPResource(
+    uri = &quot;file:///data/config.json&quot;,
+    name = &quot;Application Config&quot;,
+    description = &quot;Current application configuration&quot;,
+    mime_type = &quot;application/json&quot;,
+    handler = function(uri)
+        config_data = read(&quot;config.json&quot;, String)
+        return TextResourceContents(
+            uri = uri,
+            text = config_data,
+            mime_type = &quot;application/json&quot;
+        )
+    end
+)</code></pre><h3 id="Prompts"><a class="docs-heading-anchor" href="#Prompts">Prompts</a><a id="Prompts-1"></a><a class="docs-heading-anchor-permalink" href="#Prompts" title="Permalink"></a></h3><p>Prompts are templates for generating conversations:</p><pre><code class="language-julia hljs">prompt = MCPPrompt(
+    name = &quot;code_review&quot;,
+    description = &quot;Request a code review&quot;,
+    arguments = [
+        PromptArgument(
+            name = &quot;language&quot;,
+            description = &quot;Programming language&quot;,
+            required = true
+        )
+    ],
+    handler = function(args)
+        return [
+            PromptMessage(
+                role = user,
+                content = TextContent(
+                    text = &quot;Please review this $(args[&quot;language&quot;]) code for best practices.&quot;
+                )
+            )
+        ]
+    end
+)</code></pre><h2 id="Testing-Your-Server"><a class="docs-heading-anchor" href="#Testing-Your-Server">Testing Your Server</a><a id="Testing-Your-Server-1"></a><a class="docs-heading-anchor-permalink" href="#Testing-Your-Server" title="Permalink"></a></h2><h3 id="With-MCP-Inspector"><a class="docs-heading-anchor" href="#With-MCP-Inspector">With MCP Inspector</a><a id="With-MCP-Inspector-1"></a><a class="docs-heading-anchor-permalink" href="#With-MCP-Inspector" title="Permalink"></a></h3><p>Test your server using the official MCP Inspector:</p><pre><code class="language-bash hljs"># For stdio transport
+npx @modelcontextprotocol/inspector stdio -- julia --project server.jl
+
+# For HTTP transport
+npx @modelcontextprotocol/inspector http://127.0.0.1:3000/</code></pre><h3 id="With-curl-(HTTP-only)"><a class="docs-heading-anchor" href="#With-curl-(HTTP-only)">With curl (HTTP only)</a><a id="With-curl-(HTTP-only)-1"></a><a class="docs-heading-anchor-permalink" href="#With-curl-(HTTP-only)" title="Permalink"></a></h3><pre><code class="language-bash hljs"># Initialize connection
+curl -X POST http://127.0.0.1:3000/ \
+  -H &quot;Content-Type: application/json&quot; \
+  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;test&quot;,&quot;version&quot;:&quot;1.0&quot;}},&quot;id&quot;:1}&#39;
+
+# List available tools
+curl -X POST http://127.0.0.1:3000/ \
+  -H &quot;Content-Type: application/json&quot; \
+  -H &quot;Mcp-Session-Id: &lt;session-id-from-init&gt;&quot; \
+  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{},&quot;id&quot;:2}&#39;</code></pre><h2 id="Next-Steps"><a class="docs-heading-anchor" href="#Next-Steps">Next Steps</a><a id="Next-Steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps" title="Permalink"></a></h2><ul><li>Explore the <a href="examples/">Examples</a> for complete working implementations</li><li>Read the <a href="tools/">User Guide</a> to understand each component type</li><li>Check the <a href="api/">API Reference</a> for detailed function documentation</li><li>Set up <a href="claude/">Claude Desktop Integration</a> for real-world usage</li></ul><h2 id="Contributing"><a class="docs-heading-anchor" href="#Contributing">Contributing</a><a id="Contributing-1"></a><a class="docs-heading-anchor-permalink" href="#Contributing" title="Permalink"></a></h2><p>ModelContextProtocol.jl is part of the <a href="https://github.com/JuliaSMLM">JuliaSMLM</a> organization. Contributions are welcome! Please see our <a href="https://github.com/JuliaSMLM/ModelContextProtocol.jl">GitHub repository</a> for issues and pull requests.</p><h2 id="License"><a class="docs-heading-anchor" href="#License">License</a><a id="License-1"></a><a class="docs-heading-anchor-permalink" href="#License" title="Permalink"></a></h2><p>This project is licensed under the MIT License.</p></article><nav class="docs-footer"><a class="docs-footer-nextpage" href="examples/">Examples »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.0 on <span class="colophon-date" title="Sunday 16 November 2025 17:36">Sunday 16 November 2025</span>. Using Julia version 1.12.1.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
