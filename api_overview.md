@@ -363,11 +363,17 @@ Define a tool that can be invoked by clients.
 MCPTool(;
     name::String,                          # Unique identifier
     description::String,                   # Human-readable description
-    parameters::Vector{ToolParameter},    # Input parameters (required, use [] for none)
+    parameters::Vector{ToolParameter} = ToolParameter[],  # Input parameters (use [] for none)
+    input_schema::Union{Nothing,AbstractDict} = nothing,  # Custom JSON Schema (takes precedence)
     handler::Function,                     # (Dict -> Content) handler
     return_type::Type = Vector{Content}    # Expected return type (default: Vector{Content})
 )
 ```
+
+**Schema Options:**
+- Use `parameters` for simple tools with basic types (string, number, boolean)
+- Use `input_schema` for complex schemas requiring arrays, enums, nested objects, or advanced JSON Schema features
+- When `input_schema` is provided, the `parameters` field is ignored
 
 **Handler Return Types:**
 - Single `Content` subtype (auto-wrapped in vector)
@@ -428,6 +434,105 @@ calc_tool = MCPTool(
         result = eval(Meta.parse(params["expression"]))
         precision = get(params, "precision", 2)  # Uses default
         TextContent(text = string(round(result, digits=Int(precision))))
+    end
+)
+```
+
+#### Complex Input Schemas
+
+For tools requiring arrays, enums, nested objects, or other advanced JSON Schema features, use `input_schema` instead of `parameters`:
+
+**Array Parameters:**
+```julia
+tag_tool = MCPTool(
+    name = "filter_by_tags",
+    description = "Filter items by multiple tags",
+    input_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "tags" => Dict{String,Any}(
+                "type" => "array",
+                "items" => Dict{String,Any}("type" => "string"),
+                "description" => "List of tags to filter by",
+                "minItems" => 1
+            ),
+            "match_all" => Dict{String,Any}(
+                "type" => "boolean",
+                "default" => false,
+                "description" => "Require all tags to match"
+            )
+        ),
+        "required" => ["tags"]
+    ),
+    handler = function(params)
+        tags = params["tags"]
+        match_all = get(params, "match_all", false)
+        TextContent(text = "Filtering by $(length(tags)) tags (match_all=$match_all)")
+    end
+)
+```
+
+**Enum Parameters:**
+```julia
+sort_tool = MCPTool(
+    name = "sort_results",
+    description = "Sort results by field",
+    input_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "field" => Dict{String,Any}(
+                "type" => "string",
+                "enum" => ["name", "date", "relevance", "size"],
+                "description" => "Field to sort by"
+            ),
+            "order" => Dict{String,Any}(
+                "type" => "string",
+                "enum" => ["asc", "desc"],
+                "default" => "asc"
+            )
+        ),
+        "required" => ["field"]
+    ),
+    handler = function(params)
+        field = params["field"]
+        order = get(params, "order", "asc")
+        TextContent(text = "Sorting by $field ($order)")
+    end
+)
+```
+
+**Nested Objects:**
+```julia
+filter_tool = MCPTool(
+    name = "advanced_filter",
+    description = "Filter with complex criteria",
+    input_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "query" => Dict{String,Any}("type" => "string"),
+            "options" => Dict{String,Any}(
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    "limit" => Dict{String,Any}(
+                        "type" => "integer",
+                        "default" => 10,
+                        "minimum" => 1,
+                        "maximum" => 100
+                    ),
+                    "offset" => Dict{String,Any}(
+                        "type" => "integer",
+                        "default" => 0
+                    )
+                )
+            )
+        ),
+        "required" => ["query"]
+    ),
+    handler = function(params)
+        query = params["query"]
+        options = get(params, "options", Dict())
+        limit = get(options, "limit", 10)
+        TextContent(text = "Query: $query (limit=$limit)")
     end
 )
 ```

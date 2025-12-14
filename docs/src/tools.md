@@ -8,7 +8,8 @@ Every tool in ModelContextProtocol.jl is represented by the `MCPTool` struct, wh
 
 - `name`: Unique identifier for the tool
 - `description`: Human-readable explanation of the tool's purpose
-- `parameters`: List of input parameters the tool accepts
+- `parameters`: List of input parameters the tool accepts (for simple types)
+- `input_schema`: Custom JSON Schema for complex parameter types (takes precedence over `parameters`)
 - `handler`: Function that executes when the tool is called
 - `return_type`: The expected return type of the handler (defaults to `Vector{Content}`)
 
@@ -45,6 +46,102 @@ Tool parameters are defined using the `ToolParameter` struct:
 - `type`: JSON schema type (e.g., "string", "number", "boolean")
 - `required`: Whether the parameter must be provided (default: false)
 - `default`: Default value for the parameter (default: nothing)
+
+## Complex Input Schemas
+
+For tools requiring arrays, enums, nested objects, or other advanced JSON Schema features, use `input_schema` instead of `parameters`. When `input_schema` is provided, the `parameters` field is ignored.
+
+### Array Parameters
+
+```julia
+tag_tool = MCPTool(
+    name = "filter_by_tags",
+    description = "Filter items by multiple tags",
+    input_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "tags" => Dict{String,Any}(
+                "type" => "array",
+                "items" => Dict{String,Any}("type" => "string"),
+                "description" => "List of tags to filter by",
+                "minItems" => 1
+            )
+        ),
+        "required" => ["tags"]
+    ),
+    handler = function(params)
+        tags = params["tags"]
+        TextContent(text = "Filtering by tags: $(join(tags, ", "))")
+    end
+)
+```
+
+### Enum Parameters
+
+```julia
+sort_tool = MCPTool(
+    name = "sort_results",
+    description = "Sort results by field and order",
+    input_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "field" => Dict{String,Any}(
+                "type" => "string",
+                "enum" => ["name", "date", "relevance", "size"],
+                "description" => "Field to sort by"
+            ),
+            "order" => Dict{String,Any}(
+                "type" => "string",
+                "enum" => ["asc", "desc"],
+                "default" => "asc"
+            )
+        ),
+        "required" => ["field"]
+    ),
+    handler = function(params)
+        field = params["field"]
+        order = get(params, "order", "asc")
+        TextContent(text = "Sorting by $field ($order)")
+    end
+)
+```
+
+### Nested Objects
+
+```julia
+filter_tool = MCPTool(
+    name = "advanced_filter",
+    description = "Filter with complex criteria",
+    input_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "query" => Dict{String,Any}("type" => "string"),
+            "options" => Dict{String,Any}(
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    "limit" => Dict{String,Any}(
+                        "type" => "integer",
+                        "default" => 10,
+                        "minimum" => 1,
+                        "maximum" => 100
+                    ),
+                    "offset" => Dict{String,Any}(
+                        "type" => "integer",
+                        "default" => 0
+                    )
+                )
+            )
+        ),
+        "required" => ["query"]
+    ),
+    handler = function(params)
+        query = params["query"]
+        options = get(params, "options", Dict())
+        limit = get(options, "limit", 10)
+        TextContent(text = "Query: $query (limit=$limit)")
+    end
+)
+```
 
 ## Return Values
 
