@@ -131,7 +131,7 @@ jobs:
           cat prompt_with_args.json | jq .
 
           # Verify the prompt was processed correctly
-          jq -e '.messages[0].content.text | test("science fiction")' prompt_with_args.json
+          jq -e '.result.messages[0].content.text | test("science fiction")' prompt_with_args.json
 
           # Test with both required and optional arguments
           cat > /tmp/prompt_test2.jsonl << 'JSONRPC'
@@ -148,7 +148,7 @@ jobs:
           cat prompt_full_args.json | jq .
 
           # Verify both arguments were processed
-          jq -e '.messages[0].content.text | test("horror") and test("1980")' prompt_full_args.json
+          jq -e '.result.messages[0].content.text | test("horror") and test("1980")' prompt_full_args.json
   
   inspector-http:
     name: Test HTTP servers with MCP Inspector
