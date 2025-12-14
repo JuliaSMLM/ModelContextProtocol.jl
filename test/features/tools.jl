@@ -344,10 +344,182 @@ end
     tools = result.response.result["tools"]
     @test length(tools) == 1
     @test tools[1]["name"] == "get_time"
-    
+
     tool_schema = tools[1]["inputSchema"]
     @test tool_schema["properties"] isa Dict
     @test tool_schema["required"] isa Vector
     @test isempty(tool_schema["properties"])
     @test isempty(tool_schema["required"])
+end
+
+@testset "Complex input_schema support" begin
+    @testset "Tool with custom input_schema" begin
+        # Create a tool with a complex input_schema (arrays, enums, nested objects)
+        complex_schema = Dict{String,Any}(
+            "type" => "object",
+            "properties" => Dict{String,Any}(
+                "query" => Dict{String,Any}(
+                    "type" => "string",
+                    "description" => "Search query"
+                ),
+                "tags" => Dict{String,Any}(
+                    "type" => "array",
+                    "items" => Dict{String,Any}("type" => "string"),
+                    "description" => "Filter tags"
+                ),
+                "sort" => Dict{String,Any}(
+                    "type" => "string",
+                    "enum" => ["asc", "desc"],
+                    "description" => "Sort order"
+                ),
+                "options" => Dict{String,Any}(
+                    "type" => "object",
+                    "properties" => Dict{String,Any}(
+                        "limit" => Dict{String,Any}("type" => "integer"),
+                        "offset" => Dict{String,Any}("type" => "integer")
+                    )
+                )
+            ),
+            "required" => ["query"]
+        )
+
+        tool = MCPTool(
+            name = "complex_search",
+            description = "Search with complex parameters",
+            input_schema = complex_schema,
+            handler = function(params)
+                TextContent(text = "Search results")
+            end
+        )
+
+        server = mcp_server(
+            name = "test-server",
+            version = "1.0.0",
+            tools = [tool]
+        )
+
+        ctx = ModelContextProtocol.RequestContext(
+            server = server,
+            request_id = 1
+        )
+
+        result = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams())
+
+        @test !isnothing(result.response)
+        @test isnothing(result.error)
+
+        tools = result.response.result["tools"]
+        @test length(tools) == 1
+        @test tools[1]["name"] == "complex_search"
+
+        # Verify the complex schema is passed through correctly
+        schema = tools[1]["inputSchema"]
+        @test schema["type"] == "object"
+        @test schema["required"] == ["query"]
+
+        # Check array type
+        @test schema["properties"]["tags"]["type"] == "array"
+        @test schema["properties"]["tags"]["items"]["type"] == "string"
+
+        # Check enum
+        @test schema["properties"]["sort"]["enum"] == ["asc", "desc"]
+
+        # Check nested object
+        @test schema["properties"]["options"]["type"] == "object"
+        @test schema["properties"]["options"]["properties"]["limit"]["type"] == "integer"
+    end
+
+    @testset "Tool with input_schema ignores parameters" begin
+        # When input_schema is provided, parameters should be ignored
+        tool = MCPTool(
+            name = "schema_priority_test",
+            description = "Test that input_schema takes priority",
+            parameters = [
+                ToolParameter(
+                    name = "ignored_param",
+                    description = "This should be ignored",
+                    type = "string",
+                    required = true
+                )
+            ],
+            input_schema = Dict{String,Any}(
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    "actual_param" => Dict{String,Any}("type" => "number")
+                ),
+                "required" => []
+            ),
+            handler = function(params)
+                TextContent(text = "Result")
+            end
+        )
+
+        server = mcp_server(
+            name = "test-server",
+            version = "1.0.0",
+            tools = [tool]
+        )
+
+        ctx = ModelContextProtocol.RequestContext(
+            server = server,
+            request_id = 1
+        )
+
+        result = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams())
+        schema = result.response.result["tools"][1]["inputSchema"]
+
+        # Should have actual_param from input_schema, not ignored_param from parameters
+        @test haskey(schema["properties"], "actual_param")
+        @test !haskey(schema["properties"], "ignored_param")
+        @test schema["properties"]["actual_param"]["type"] == "number"
+    end
+
+    @testset "Tool without input_schema uses parameters" begin
+        # Verify backward compatibility - tools without input_schema still work
+        tool = MCPTool(
+            name = "simple_tool",
+            description = "Simple tool with parameters",
+            parameters = [
+                ToolParameter(
+                    name = "message",
+                    description = "A message",
+                    type = "string",
+                    required = true
+                ),
+                ToolParameter(
+                    name = "count",
+                    description = "A count",
+                    type = "integer",
+                    required = false,
+                    default = 10
+                )
+            ],
+            handler = function(params)
+                TextContent(text = "Done")
+            end
+        )
+
+        server = mcp_server(
+            name = "test-server",
+            version = "1.0.0",
+            tools = [tool]
+        )
+
+        ctx = ModelContextProtocol.RequestContext(
+            server = server,
+            request_id = 1
+        )
+
+        result = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams())
+        schema = result.response.result["tools"][1]["inputSchema"]
+
+        # Should be built from parameters
+        @test schema["type"] == "object"
+        @test haskey(schema["properties"], "message")
+        @test haskey(schema["properties"], "count")
+        @test schema["properties"]["message"]["type"] == "string"
+        @test schema["properties"]["count"]["default"] == 10
+        @test "message" in schema["required"]
+        @test !("count" in schema["required"])
+    end
 end

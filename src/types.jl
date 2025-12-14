@@ -276,17 +276,29 @@ Base.@kwdef struct ToolParameter
 end
 
 """
-    MCPTool(; name::String, description::String, parameters::Vector{ToolParameter},
-          handler::Function, return_type::Type=Vector{Content}) <: Tool
+    MCPTool(; name::String, description::String, parameters::Vector{ToolParameter}=ToolParameter[],
+          input_schema::Union{Nothing,AbstractDict}=nothing, handler::Function,
+          return_type::Type=Vector{Content}) <: Tool
 
 Implement a tool that can be invoked by clients in the MCP protocol.
 
 # Fields
 - `name::String`: Unique identifier for the tool
 - `description::String`: Human-readable description of the tool's purpose
-- `parameters::Vector{ToolParameter}`: Parameters that the tool accepts
+- `parameters::Vector{ToolParameter}`: Simple parameters (ignored if input_schema is provided)
+- `input_schema::Union{Nothing,AbstractDict}`: Raw JSON Schema for complex parameter types
 - `handler::Function`: Function that implements the tool's functionality
 - `return_type::Type`: Expected return type of the handler (defaults to Vector{Content})
+
+# Parameter Definition
+Tools can define parameters in two ways:
+
+1. **Simple parameters** using `parameters::Vector{ToolParameter}`:
+   Good for flat schemas with basic types (string, number, boolean).
+
+2. **Complex schemas** using `input_schema::AbstractDict`:
+   Supports arrays, enums, nested objects, and any valid JSON Schema.
+   When provided, `input_schema` takes precedence over `parameters`.
 
 # Handler Return Types
 The tool handler can return various types which are automatically converted:
@@ -303,7 +315,8 @@ Note: When returning CallToolResult directly, the return_type field is ignored.
 Base.@kwdef struct MCPTool <: Tool
     name::String
     description::String
-    parameters::Vector{ToolParameter}
+    parameters::Vector{ToolParameter} = ToolParameter[]
+    input_schema::Union{Nothing,AbstractDict} = nothing
     handler::Function
     return_type::Type = Vector{Content}  # Can be Content subtype or Vector{<:Content}
 end

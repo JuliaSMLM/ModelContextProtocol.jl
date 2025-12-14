@@ -616,26 +616,35 @@ Handle requests to list all available tools on the MCP server.
 function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::HandlerResult
     try
         tools = map(ctx.server.tools) do tool
-            LittleDict{String,Any}(
-                "name" => tool.name,
-                "description" => tool.description,
-                "inputSchema" => LittleDict{String,Any}(
+            # Use input_schema if provided, otherwise build from parameters
+            schema = if !isnothing(tool.input_schema)
+                # Use the raw input_schema directly
+                tool.input_schema
+            else
+                # Build schema from parameters (original behavior)
+                LittleDict{String,Any}(
                     "type" => "object",
                     "properties" => Dict(
                         param.name => begin
-                            schema = LittleDict{String,Any}(
+                            param_schema = LittleDict{String,Any}(
                                 "type" => param.type,
                                 "description" => param.description
                             )
                             # Add default value to schema if it exists
                             if !isnothing(param.default)
-                                schema["default"] = param.default
+                                param_schema["default"] = param.default
                             end
-                            schema
+                            param_schema
                         end for param in tool.parameters
                     ),
                     "required" => [p.name for p in tool.parameters if p.required]
                 )
+            end
+
+            LittleDict{String,Any}(
+                "name" => tool.name,
+                "description" => tool.description,
+                "inputSchema" => schema
             )
         end
 

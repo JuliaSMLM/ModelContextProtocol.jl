@@ -102,6 +102,54 @@ start!(server)
 
 When Claude connects to this server, it will discover the `get_time` tool and be able to use it to provide formatted time information to users.
 
+### Advanced Tool Parameters with `input_schema`
+
+For tools requiring complex parameter types (arrays, enums, nested objects), use `input_schema` to provide a full JSON Schema:
+
+```julia
+using ModelContextProtocol
+
+# Tool with enum and array parameters
+search_tool = MCPTool(
+    name = "search",
+    description = "Search with filters",
+    input_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "query" => Dict{String,Any}(
+                "type" => "string",
+                "description" => "Search query"
+            ),
+            "tags" => Dict{String,Any}(
+                "type" => "array",
+                "items" => Dict{String,Any}("type" => "string"),
+                "description" => "Filter tags"
+            ),
+            "sort" => Dict{String,Any}(
+                "type" => "string",
+                "enum" => ["relevance", "date", "name"],
+                "default" => "relevance"
+            )
+        ),
+        "required" => ["query"]
+    ),
+    handler = function(params)
+        query = params["query"]
+        tags = get(params, "tags", String[])
+        sort = get(params, "sort", "relevance")
+        TextContent(text = "Searching '$query' with $(length(tags)) tags, sorted by $sort")
+    end
+)
+
+server = mcp_server(
+    name = "search-server",
+    tools = search_tool
+)
+start!(server)
+```
+
+When `input_schema` is provided, it takes precedence over the `parameters` field, enabling any valid JSON Schema construct.
+
 ### Directory-Based Organization
 
 You can also organize your MCP components in a directory structure and auto-register them:
