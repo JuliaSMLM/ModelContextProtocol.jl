@@ -211,104 +211,78 @@
         Base.close(timer)
     end
     
-    @testset "Protocol Version Validation" begin
+    @testset "Protocol Version Negotiation" begin
+        # Per MCP spec: version negotiation happens at JSON-RPC level.
+        # Server MUST respond with a version it supports (not error).
+        # Client then decides if it can work with that version.
+
         port = 15090 + rand(1:1000)
-        
+
         transport = HttpTransport(port=port, protocol_version="2025-06-18")
-        
+
         server = mcp_server(
             name = "version-test",
             version = "1.0.0"
         )
-        
+
         server.transport = transport
         ModelContextProtocol.connect(transport)
-        
+
         server_task = @async start!(server)
         sleep(2)
-        
-        # First, properly initialize the server
+
+        # Test 1: Client requests newer version, server responds with its version
         init_response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",  # Client sends newer version
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2025-06-18",
+                    "protocolVersion" => "2025-11-25",  # Client requests newer version
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test", "version" => "1.0")
                 ),
-                "id" => 0
+                "id" => 1
             ))
         )
         @test init_response.status == 200
+        result = JSON3.read(String(init_response.body))
+        @test haskey(result, "result")
+        # Server responds with its supported version (not error)
+        @test result["result"]["protocolVersion"] == "2025-06-18"
+
         session_id = HTTP.header(init_response, "Mcp-Session-Id", "")
-        
-        # Request with wrong protocol version header - should fail
-        try
-            response = HTTP.post(
-                "http://127.0.0.1:$port/",
-                ["Content-Type" => "application/json",
-                 "MCP-Protocol-Version" => "2024-11-05",  # Wrong version
-                 "Accept" => "application/json, text/event-stream"],
-                JSON3.write(Dict(
-                    "jsonrpc" => "2.0",
-                    "method" => "initialize",
-                    "params" => Dict(
-                        "protocolVersion" => "2025-06-18",
-                        "capabilities" => Dict(),
-                        "clientInfo" => Dict("name" => "test", "version" => "1.0")
-                    ),
-                    "id" => 1
-                ))
-            )
-            @test false  # Should not succeed
-        catch e
-            if e isa HTTP.ExceptionRequest.StatusError
-                @test e.response.status == 400  # Should return 400 for wrong protocol version
-                # Verify the error message
-                body = String(e.response.body)
-                msg = JSON3.read(body)
-                @test msg["error"]["code"] == -32602
-                @test contains(msg["error"]["message"], "protocol version")
-            else
-                rethrow(e)
-            end
-        end
-        
-        # Request with wrong protocol version in params (but correct header)
-        # This is a different case - the transport accepts it but the server should reject
+
+        # Test 2: Client requests older version, server still responds with its version
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
-             "Mcp-Session-Id" => session_id,
+             "MCP-Protocol-Version" => "2024-11-05",  # Older version header
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2024-11-05",  # Wrong version
+                    "protocolVersion" => "2024-11-05",  # Older version
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test", "version" => "1.0")
                 ),
                 "id" => 2
             ))
         )
-        
-        # Should return error
-        @test response.status == 200  # Still 200 for JSON-RPC errors
+        @test response.status == 200
         result = JSON3.read(String(response.body))
-        @test haskey(result, "error")
-        @test result["error"]["code"] == -32602  # Invalid params
-        
+        @test haskey(result, "result")
+        # Server responds with its version, client decides compatibility
+        @test result["result"]["protocolVersion"] == "2025-06-18"
+
         # Clean up
         server.active = false
         ModelContextProtocol.close(transport)
-        
+
         timer = Timer(2)
         while !istaskdone(server_task) && isopen(timer)
             sleep(0.1)

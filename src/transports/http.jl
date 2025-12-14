@@ -302,28 +302,13 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         return nothing
     end
     
-    # Check MCP-Protocol-Version header - required for 2025-06-18 spec
+    # MCP-Protocol-Version header check
+    # Per spec: version negotiation happens at JSON-RPC level (initialize request/response).
+    # The header is for subsequent requests after negotiation. We log mismatches but don't
+    # error - the JSON-RPC layer handles version negotiation properly.
     client_protocol_version = HTTP.header(request, "MCP-Protocol-Version", "")
     if !isempty(client_protocol_version) && client_protocol_version != transport.protocol_version
-        @debug "Unsupported protocol version" client=client_protocol_version server=transport.protocol_version
-        HTTP.setstatus(stream, 400)
-        HTTP.setheader(stream, "Content-Type" => "application/json")
-        error_response = JSON3.write(Dict(
-            "jsonrpc" => "2.0",
-            "error" => Dict(
-                "code" => -32602,
-                "message" => "Unsupported protocol version", 
-                "data" => Dict(
-                    "supported" => [transport.protocol_version],
-                    "requested" => client_protocol_version
-                )
-            ),
-            "id" => nothing
-        ))
-        HTTP.setheader(stream, "Content-Length" => string(length(error_response)))
-        HTTP.startwrite(stream)  # Ensure headers are sent
-        write(stream, error_response)
-        return nothing
+        @debug "Client protocol version differs from server" client=client_protocol_version server=transport.protocol_version
     end
     
     # Security: Validate Origin header if configured

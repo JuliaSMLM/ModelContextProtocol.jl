@@ -126,28 +126,15 @@ Handle MCP protocol initialization requests by setting up the server and returni
 - `HandlerResult`: Contains the server's capabilities and configuration
 """
 function handle_initialize(ctx::RequestContext, params::InitializeParams)::HandlerResult
-    # Currently we only support MCP protocol version 2025-06-18
-    # In the future, this could be extended to support multiple versions
-    SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18"]
-    supported_version = SUPPORTED_PROTOCOL_VERSIONS[1]  # Use the only supported version for now
-    
-    # Check if client requested a specific version
-    if !isnothing(params.protocolVersion) && params.protocolVersion != supported_version
-        # Return error for unsupported versions
-        error_info = ErrorInfo(
-            code = ErrorCodes.INVALID_PARAMS,
-            message = "Unsupported protocol version",
-            data = LittleDict{String,Any}(
-                "supported" => [supported_version],
-                "requested" => params.protocolVersion
-            )
-        )
-        return HandlerResult(
-            response=JSONRPCError(
-                id=ctx.request_id,
-                error=error_info
-            )
-        )
+    # MCP protocol version we support
+    # Per spec: if client requests unsupported version, server MUST respond with
+    # a version it supports (not error). Client then decides if it can work with that.
+    SERVER_PROTOCOL_VERSION = "2025-06-18"
+
+    # Log version negotiation for debugging
+    client_version = params.protocolVersion
+    if !isnothing(client_version) && client_version != SERVER_PROTOCOL_VERSION
+        @debug "Version negotiation" client_requested=client_version server_supports=SERVER_PROTOCOL_VERSION
     end
 
     # Get full capabilities including available tools and resources
@@ -163,7 +150,7 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
             "version" => ctx.server.config.version
         ),
         capabilities=current_capabilities,
-        protocolVersion=supported_version,
+        protocolVersion=SERVER_PROTOCOL_VERSION,
         instructions=ctx.server.config.instructions
     )
 
