@@ -117,7 +117,7 @@ jobs:
           # Test movie_analysis prompt with required 'genre' argument
           # Use a temp file to avoid multiline echo issues with stdin (leading whitespace breaks JSON)
           cat > /tmp/prompt_test1.jsonl << 'JSONRPC'
-          {"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
+          {"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
           {"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"science fiction"}},"id":2}
           JSONRPC
 
@@ -135,7 +135,7 @@ jobs:
 
           # Test with both required and optional arguments
           cat > /tmp/prompt_test2.jsonl << 'JSONRPC'
-          {"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
+          {"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}
           {"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"horror","year":"1980"}},"id":3}
           JSONRPC
 
@@ -224,9 +224,9 @@ jobs:
           # Initialize session
           curl -X POST http://127.0.0.1:3000/ \
             -H 'Content-Type: application/json' \
-            -H 'MCP-Protocol-Version: 2025-06-18' \
+            -H 'MCP-Protocol-Version: 2025-11-25' \
             -H 'Accept: application/json, text/event-stream' \
-            -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
+            -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
             -s -o init.json -D headers.txt
           
           echo "Initialization response:"

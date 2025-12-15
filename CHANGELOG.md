@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-12-14
+
+### Changed
+
+#### Protocol Version Update
+- **Updated**: MCP protocol version from `2025-06-18` to `2025-11-25`
+  - Server now reports protocol version `2025-11-25` in initialization response
+  - All documentation, examples, and tests updated to reflect new version
+  - Backward compatible: clients sending older versions still receive valid responses
+
+#### Version Negotiation Behavior
+- **Fixed**: Version negotiation now follows MCP spec correctly
+  - Server responds with its supported version (not error) when client requests different version
+  - Client decides whether to continue based on server's response
+  - Removed incorrect test that expected error for old protocol versions
+
+### Added
+
+- Protocol upgrade plan (`PROTOCOL_UPGRADE_PLAN.md`) documenting path to full 2025-11-25 compliance
+- Foundation for upcoming features: OAuth authorization, Tasks, icon metadata
+
+### Notes
+
+This release updates the protocol version identifier. The actual 2025-11-25 features (Tasks, enhanced elicitation, OAuth) will be added in subsequent releases on feature branches.
+
+## [0.4.0] - 2025-12-XX
+
+### Added
+- Complex input schema support for tools (`input_schema` field)
+
 ## [0.3.0] - 2025-11-16
 
 ### Breaking Changes

@@ -60,7 +60,7 @@ EmbeddedResource
 ```
 
 !!! note "ResourceLink"
-    `ResourceLink` is part of the 2025-06-18 protocol but not yet exported.
+    `ResourceLink` was added in the 2025-06-18 protocol but is not yet exported.
     It will be available in a future release.
 
 ### Resource Content Types

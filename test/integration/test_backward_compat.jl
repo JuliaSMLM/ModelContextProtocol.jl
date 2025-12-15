@@ -18,7 +18,7 @@ using JSON3
         # We'll mock this by checking the behavior without actually starting the loop
         
         # Create custom IO for testing with CORRECT protocol version
-        input = IOBuffer("""{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}""")
+        input = IOBuffer("""{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}""")
         output = IOBuffer()
         
         # Create server with custom transport
@@ -67,33 +67,34 @@ using JSON3
         state = ModelContextProtocol.ServerState()
         
         # Initialize request with correct protocol version
-        init_msg = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        init_msg = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
         response = ModelContextProtocol.process_message(server, state, init_msg)
-        
+
         @test !isnothing(response)
         parsed = JSON3.read(response)
         @test parsed.jsonrpc == "2.0"
         @test parsed.id == 1
         @test haskey(parsed, :result)
-        @test parsed.result.protocolVersion == "2025-06-18"
+        @test parsed.result.protocolVersion == "2025-11-25"
     end
-    
-    @testset "Protocol Version Rejection" begin
-        # Test that old protocol versions are rejected
+
+    @testset "Protocol Version Negotiation" begin
+        # Per MCP spec: Server MUST respond with a version it supports (not error).
+        # Client then decides if it can work with that version.
         config = ServerConfig(name = "test-server")
         server = Server(config)
         state = ModelContextProtocol.ServerState()
-        
-        # Test with old protocol version
+
+        # Test with old protocol version - server responds with its version, not error
         old_protocol_msg = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
         response = ModelContextProtocol.process_message(server, state, old_protocol_msg)
-        
+
         @test !isnothing(response)
         parsed = JSON3.read(response)
         @test parsed.jsonrpc == "2.0"
         @test parsed.id == 1
-        @test haskey(parsed, :error)
-        @test parsed.error.code == -32602  # Invalid params
-        @test occursin("Unsupported protocol version", parsed.error.message)
+        # Server responds with its supported version (not error)
+        @test haskey(parsed, :result)
+        @test parsed.result.protocolVersion == "2025-11-25"
     end
 end

@@ -112,7 +112,7 @@ function content2dict(content::EmbeddedResource)
     return result
 end
 
-# ResourceLink conversion (new in MCP protocol 2025-06-18)
+# ResourceLink conversion (added in MCP protocol 2025-06-18)
 function content2dict(content::ResourceLink)
     result = LittleDict{String,Any}(
         "type" => "link",

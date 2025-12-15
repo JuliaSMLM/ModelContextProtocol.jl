@@ -10,7 +10,7 @@ This skill provides comprehensive testing capabilities for Model Context Protoco
 ## Purpose
 
 Test MCP servers to verify:
-- Protocol compliance (2025-06-18 specification)
+- Protocol compliance (2025-11-25 specification)
 - Tool, resource, and prompt functionality
 - Response format validation
 - Error handling
@@ -183,9 +183,9 @@ npx @modelcontextprotocol/inspector --cli \
 ```bash
 curl -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -H 'Accept: application/json' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18"},"id":1}' \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25"},"id":1}' \
 | jq .
 ```
 
@@ -487,7 +487,7 @@ Based on testing with ModelContextProtocol.jl:
 
 ## References
 
-- **MCP Specification**: https://modelcontextprotocol.io/specification/2025-06-18/
+- **MCP Specification**: https://modelcontextprotocol.io/specification/2025-11-25/
 - **Inspector CLI**: https://github.com/modelcontextprotocol/inspector
 - **Inspector Documentation**: https://modelcontextprotocol.io/docs/tools/inspector
 - **ModelContextProtocol.jl**: https://github.com/JuliaSMLM/ModelContextProtocol.jl

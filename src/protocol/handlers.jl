@@ -129,7 +129,7 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
     # MCP protocol version we support
     # Per spec: if client requests unsupported version, server MUST respond with
     # a version it supports (not error). Client then decides if it can work with that.
-    SERVER_PROTOCOL_VERSION = "2025-06-18"
+    SERVER_PROTOCOL_VERSION = "2025-11-25"
 
     # Log version negotiation for debugging
     client_version = params.protocolVersion

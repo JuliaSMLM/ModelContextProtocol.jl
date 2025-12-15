@@ -21,7 +21,7 @@
 
 ## Overview
 
-ModelContextProtocol.jl provides a Julia implementation of the Model Context Protocol (MCP) version 2025-06-18, enabling standardized communication between AI applications and external tools, resources, and data sources.
+ModelContextProtocol.jl provides a Julia implementation of the Model Context Protocol (MCP) version 2025-11-25, enabling standardized communication between AI applications and external tools, resources, and data sources.
 
 ### Version Information
 
@@ -29,7 +29,7 @@ ModelContextProtocol.jl provides a Julia implementation of the Model Context Pro
 
 | Version Type | Example | Who Sets It | Purpose |
 |-------------|---------|------------|----------|
-| **Protocol Version** | `"2025-06-18"` | MCP Specification | Protocol compatibility (fixed) |
+| **Protocol Version** | `"2025-11-25"` | MCP Specification | Protocol compatibility (fixed) |
 | **Server Version** | `"1.0.0"` | You (developer) | Your server's version |
 
 ```julia
@@ -45,13 +45,13 @@ server = mcp_server(
 ### Breaking Changes and Migration
 
 **From Earlier Versions:**
-- Protocol version 2025-06-18 is strictly enforced (no negotiation)
+- Protocol version 2025-11-25 is strictly enforced (no negotiation)
 - JSON-RPC batching is no longer supported
 - ResourceLink is a new content type
 - Session management added for HTTP transport
 
 **Migration Tips:**
-- Update all protocol version references to "2025-06-18"
+- Update all protocol version references to "2025-11-25"
 - Split batch requests into individual calls
 - Use ResourceLink for resource references instead of embedding
 
@@ -108,7 +108,7 @@ start!(server)  # Uses stdio by default
 
 ### Core Principles
 
-1. **Protocol-First Design**: Strict compliance with MCP 2025-06-18 specification. No version negotiation complexity, no legacy support.
+1. **Protocol-First Design**: Strict compliance with MCP 2025-11-25 specification. No version negotiation complexity, no legacy support.
 
 2. **Layered Architecture**: 
    - **Transport Layer**: Abstract interface with stdio and HTTP implementations
@@ -226,7 +226,7 @@ mcp_server(;
 ) -> Server
 ```
 
-**Protocol Version:** This implementation exclusively supports MCP protocol version `2025-06-18`.
+**Protocol Version:** This implementation exclusively supports MCP protocol version `2025-11-25`.
 
 **Examples:**
 
@@ -861,7 +861,7 @@ HttpTransport(;
     host::String = "127.0.0.1",          # Bind address
     port::Int = 8080,                    # Port number
     endpoint::String = "/",              # Endpoint path
-    protocol_version::String = "2025-06-18",  # Must be this value
+    protocol_version::String = "2025-11-25",  # Must be this value
     session_required::Bool = false,      # Require session validation
     allowed_origins::Vector{String} = [] # CORS origins
 )
@@ -1291,9 +1291,9 @@ Edit Claude Desktop config:
 
 ### Protocol Version Support
 
-ModelContextProtocol.jl **strictly enforces MCP protocol version 2025-06-18**.
+ModelContextProtocol.jl **strictly enforces MCP protocol version 2025-11-25**.
 
-- **Single Version**: Only protocol version `2025-06-18` is accepted
+- **Single Version**: Only protocol version `2025-11-25` is accepted
 - **No Negotiation**: Protocol version negotiation is not supported
 - **Automatic Handling**: The protocol version is managed internally
 - **Error on Mismatch**: Other protocol versions result in immediate error
@@ -1575,7 +1575,7 @@ transport = HttpTransport(host = "127.0.0.1", port = 3000)
 ```bash
 # Save session ID from init response
 SESSION_ID=$(curl -X POST http://127.0.0.1:3000/ \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
   | jq -r '.sessionId')
 
 # Use in subsequent requests
@@ -1961,7 +1961,7 @@ println("Server version: ", server.config.version)
 # Test HTTP server with verbose output
 curl -v -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}},"id":1}' \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}},"id":1}' \
   | jq .
 ```
 
@@ -1985,7 +1985,7 @@ curl -v -X POST http://127.0.0.1:3000/ \
 - URI fields accept strings but store as `URI` objects internally
 
 ### Protocol Compliance
-- Strictly enforces protocol version 2025-06-18 (no negotiation)
+- Strictly enforces protocol version 2025-11-25 (no negotiation)
 - JSON-RPC batching not supported (returns error)
 - Session management required for HTTP transport
-- ResourceLink is new in protocol version 2025-06-18
+- ResourceLink is new in protocol version 2025-11-25

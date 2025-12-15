@@ -52,7 +52,7 @@ julia --project examples/simple_http_server.jl
 ### Testing stdio Servers
 ```bash
 # Direct JSON-RPC test
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | \
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | \
   julia --project examples/time_server.jl 2>/dev/null | jq .
 
 # With MCP Inspector CLI
@@ -69,9 +69,9 @@ julia --project examples/simple_http_server.jl
 # Test with curl (in another terminal)
 curl -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18"},"id":1}' | jq .
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25"},"id":1}' | jq .
 
 # With MCP Inspector CLI (via mcp-remote)
 npx @modelcontextprotocol/inspector --cli \
@@ -271,7 +271,7 @@ Before adding a new example, verify:
 - [ ] Works with direct JSON-RPC testing
 - [ ] Works with MCP Inspector CLI
 - [ ] Handles errors gracefully
-- [ ] Uses protocol version `2025-06-18`
+- [ ] Uses protocol version `2025-11-25`
 - [ ] Has clear console output
 - [ ] Includes helpful comments
 - [ ] Follows naming conventions

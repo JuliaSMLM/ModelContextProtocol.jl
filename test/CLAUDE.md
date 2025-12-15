@@ -35,7 +35,7 @@ This directory contains all tests for ModelContextProtocol.jl. Follow these conv
 - **Aim for simplicity** - Good coverage without bloating tests
 - **Avoid pedantic edge cases** - Focus on meaningful tests that aid development
 - **Maintainability first** - Tests should be easy to update as code evolves
-- **Protocol compliance** - Ensure all tests use protocol version `2025-06-18`
+- **Protocol compliance** - Ensure all tests use protocol version `2025-11-25`
 
 ## Running Tests
 
@@ -115,7 +115,7 @@ end
     
     # Test deserialization
     parsed = JSON3.read(json, InitializeRequest)
-    @test parsed.protocol_version == "2025-06-18"
+    @test parsed.protocol_version == "2025-11-25"
 end
 ```
 

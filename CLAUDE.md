@@ -43,13 +43,13 @@ Test stdio servers using pipe communication:
 
 ```bash
 # Single request
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | julia --project examples/time_server.jl 2>/dev/null | jq .
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | julia --project examples/time_server.jl 2>/dev/null | jq .
 
 # Multiple requests (initialize, then list tools)
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
 
 # Call a tool
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_time","arguments":{"format":"HH:MM:SS"}},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_time","arguments":{"format":"HH:MM:SS"}},"id":2}' | julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
 ```
 
 ### Streamable HTTP Transport Testing
@@ -64,9 +64,9 @@ echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"202
    # Initialize
    curl -X POST http://localhost:3000/ \
      -H 'Content-Type: application/json' \
-     -H 'MCP-Protocol-Version: 2025-06-18' \
+     -H 'MCP-Protocol-Version: 2025-11-25' \
      -H 'Accept: application/json' \
-     -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | jq .
+     -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | jq .
    
    # List tools (include session ID if provided)
    curl -X POST http://localhost:3000/ \
@@ -125,7 +125,7 @@ function test_mcp_server(url)
             "jsonrpc" => "2.0",
             "method" => "initialize",
             "params" => Dict(
-                "protocolVersion" => "2025-06-18",
+                "protocolVersion" => "2025-11-25",
                 "clientInfo" => Dict("name" => "test", "version" => "1.0")
             ),
             "id" => 1
@@ -479,7 +479,7 @@ pkill -9 -f "julia.*examples.*"
 - **JIT compilation timeouts**: Allow adequate time for server startup
 - **Session validation**: HTTP servers require proper session headers after initialization
 
-## MCP Protocol 2025-06-18 Compliance Status
+## MCP Protocol 2025-11-25 Compliance Status
 
 ### ✅ Fully Implemented Features
 
@@ -487,14 +487,14 @@ pkill -9 -f "julia.*examples.*"
    - ✅ stdio transport (standard input/output)
    - ✅ Streamable HTTP transport with SSE support
    - ✅ Session management (Mcp-Session-Id headers)
-   - ✅ Protocol version negotiation (only 2025-06-18 supported)
+   - ✅ Protocol version negotiation (only 2025-11-25 supported)
 
 2. **Version Validation**
-   - ✅ Strict protocol version validation (only accepts 2025-06-18)
+   - ✅ Strict protocol version validation (only accepts 2025-11-25)
    - ✅ Proper error responses for unsupported versions
    - ✅ MCP-Protocol-Version header validation in HTTP transport
 
-3. **JSON-RPC Compliance (2025-06-18)**
+3. **JSON-RPC Compliance (2025-11-25)**
    - ✅ Removed JSON-RPC batching support (returns proper error)
    - ✅ Single message per request enforcement
    - ✅ Proper JSON-RPC 2.0 validation
@@ -503,7 +503,7 @@ pkill -9 -f "julia.*examples.*"
    - ✅ TextContent - Text-based responses
    - ✅ ImageContent - Binary image content with base64 encoding
    - ✅ EmbeddedResource - Embedded resource content
-   - ✅ ResourceLink - Resource references (NEW in 2025-06-18)
+   - ✅ ResourceLink - Resource references (NEW in 2025-11-25)
 
 5. **Multi-Content Tool Returns**
    - ✅ Single content return: `return TextContent(...)`
@@ -554,7 +554,7 @@ pkill -9 -f "julia.*examples.*"
 
 ### 🎯 Implementation Priority for Future Work
 
-**High Priority** (Core 2025-06-18 compliance):
+**High Priority** (Core 2025-11-25 compliance):
 1. _meta field support on core types
 2. title field support for tools/resources/prompts
 3. Audio content type (AudioContent)
@@ -574,4 +574,4 @@ pkill -9 -f "julia.*examples.*"
 - ✅ JSON-RPC batch rejection working  
 - ✅ ResourceLink content type working
 - ✅ All existing functionality preserved
-- ✅ HTTP transport fully compliant with 2025-06-18
+- ✅ HTTP transport fully compliant with 2025-11-25

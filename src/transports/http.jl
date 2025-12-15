@@ -7,7 +7,7 @@ using UUIDs: uuid4
 """
     HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
 
-Transport implementation following the MCP Streamable HTTP specification (2025-06-18).
+Transport implementation following the MCP Streamable HTTP specification (2025-11-25).
 Supports Server-Sent Events (SSE) for streaming and session management.
 
 # Fields
@@ -45,7 +45,7 @@ mutable struct HttpTransport <: Transport
         port::Int=8080, 
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
-        protocol_version::String="2025-06-18",
+        protocol_version::String="2025-11-25",
         session_required::Bool=false
     )
         new(

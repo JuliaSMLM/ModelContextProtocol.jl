@@ -60,7 +60,7 @@ end
         params=InitializeParams(
             capabilities=ClientCapabilities(),
             clientInfo=Implementation(name="test-client"),
-            protocolVersion="2025-06-18"
+            protocolVersion="2025-11-25"
         )
     )
 

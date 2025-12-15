@@ -234,7 +234,7 @@ end
                  annotations::Union{Nothing,Dict{String,Any}}=nothing,
                  _meta::Union{Nothing,Dict{String,Any}}=nothing) <: Content
 
-Link to an external resource (NEW in protocol 2025-06-18).
+Link to an external resource (added in protocol 2025-06-18).
 
 # Fields
 - `type::String`: Content type identifier (always "link")

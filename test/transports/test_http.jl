@@ -38,13 +38,13 @@
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2025-06-18",
+                    "protocolVersion" => "2025-11-25",
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test-client", "version" => "1.0.0")
                 ),
@@ -60,7 +60,7 @@
         @test result["jsonrpc"] == "2.0"
         @test result["id"] == 1
         @test haskey(result, "result")
-        @test result["result"]["protocolVersion"] == "2025-06-18"
+        @test result["result"]["protocolVersion"] == "2025-11-25"
         @test result["result"]["serverInfo"]["name"] == "test-http-server"
         
         # Get session ID for subsequent requests
@@ -137,13 +137,13 @@
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2025-06-18",
+                    "protocolVersion" => "2025-11-25",
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test", "version" => "1.0")
                 ),
@@ -207,13 +207,13 @@
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2025-06-18",
+                    "protocolVersion" => "2025-11-25",
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test", "version" => "1.0")
                 ),
@@ -319,7 +319,7 @@
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",

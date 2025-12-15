@@ -37,7 +37,7 @@ transport = HttpTransport(
     host = "127.0.0.1",
     port = 3004,
     endpoint = "/",
-    protocol_version = "2025-06-18"
+    protocol_version = "2025-11-25"
 )
 
 # Set the transport on the server
@@ -51,7 +51,7 @@ println("Components loaded from: $(joinpath(@__DIR__, "mcp_tools"))")
 println()
 println("Test with:")
 println("  curl -X POST http://127.0.0.1:3004/ -H 'Content-Type: application/json' \\")
-println("    -H 'MCP-Protocol-Version: 2025-06-18' \\")
+println("    -H 'MCP-Protocol-Version: 2025-11-25' \\")
 println("    -d '{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{},\"id\":1}'")
 println()
 println("Press Ctrl+C to stop the server")
