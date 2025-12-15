@@ -14,6 +14,7 @@ using ModelContextProtocol: HandlerResult, CallToolParams, ListResourcesParams  
 using ModelContextProtocol: user, assistant  # For role constants
 using ModelContextProtocol: PromptCapability  # For server tests
 using ModelContextProtocol: MCPLogger  # For logging tests
+using ModelContextProtocol: add_token!, decode_jwt_payload, auth_error_response, check_allowlist  # For auth tests
 
 @testset "ModelContextProtocol.jl" begin
     include("core/types.jl")
@@ -31,4 +32,5 @@ using ModelContextProtocol: MCPLogger  # For logging tests
     include("transports/test_http.jl")
     include("transports/test_streamable_http.jl")
     include("integration/full_server.jl")
+    include("auth/test_auth.jl")
 end

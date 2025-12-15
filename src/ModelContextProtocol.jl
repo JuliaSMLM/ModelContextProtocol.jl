@@ -76,6 +76,9 @@ include("protocol/handlers.jl")
 # 6. Serialization (needs all types)
 include("utils/serialization.jl")
 
+# 7. Authentication (OAuth 2.0 framework)
+include("auth/auth.jl")
+
 # 7. Features (types are now in types.jl, no separate feature files needed)
 
 # 9. API documentation
@@ -110,6 +113,15 @@ export
     # Advanced features
     Server,  # For type annotations in user code
     subscribe!, unsubscribe!,  # Resource subscription management
-    content2dict  # Utility for debugging/testing
+    content2dict,  # Utility for debugging/testing
+
+    # Authentication (OAuth 2.0)
+    AuthProvider, TokenValidator, AuthenticatedUser,
+    OAuthConfig, AuthResult, AuthMiddleware,
+    ProtectedResourceMetadata,
+    SimpleTokenValidator, JWTValidator, IntrospectionValidator,
+    create_auth_middleware, create_simple_auth, disable_auth,
+    create_protected_resource_metadata, create_github_resource_metadata,
+    authenticate_request, validate_token, extract_bearer_token
 
 end # module
