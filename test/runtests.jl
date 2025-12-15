@@ -16,6 +16,7 @@ using ModelContextProtocol: PromptCapability  # For server tests
 using ModelContextProtocol: MCPLogger  # For logging tests
 using ModelContextProtocol: add_token!, decode_jwt_payload, auth_error_response, check_allowlist  # For auth tests
 using ModelContextProtocol: GitHubOAuthValidatorWithOrg, GITHUB_API_URL  # For GitHub auth tests
+using ModelContextProtocol: WELL_KNOWN_PATH, handle_well_known_request  # For HTTP auth tests
 
 @testset "ModelContextProtocol.jl" begin
     include("core/types.jl")

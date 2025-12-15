@@ -5,10 +5,12 @@ using JSON3
 using UUIDs: uuid4
 
 """
-    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
+    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/",
+                   auth::Union{AuthMiddleware,Nothing}=nothing,
+                   resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing)
 
 Transport implementation following the MCP Streamable HTTP specification (2025-11-25).
-Supports Server-Sent Events (SSE) for streaming and session management.
+Supports Server-Sent Events (SSE) for streaming, session management, and OAuth authentication.
 
 # Fields
 - `host::String`: Host address to bind to (default: "127.0.0.1")
@@ -20,6 +22,25 @@ Supports Server-Sent Events (SSE) for streaming and session management.
 - `active_streams::Dict{String,HTTP.Stream}`: Active streaming connections
 - `request_queue::Channel{Tuple{String,String}}`: Queue for incoming requests (id, message)
 - `response_channels::Dict{String,Channel{String}}`: Response channels per request
+- `auth::Union{AuthMiddleware,Nothing}`: Optional authentication middleware
+- `resource_metadata::Union{ProtectedResourceMetadata,Nothing}`: Protected resource metadata for discovery
+
+# Example with GitHub Authentication
+```julia
+auth = create_github_auth(
+    allowed_users = ["user1", "user2"]
+)
+
+transport = HttpTransport(
+    host = "0.0.0.0",
+    port = 8080,
+    auth = auth,
+    resource_metadata = create_github_resource_metadata(
+        "https://mcp.example.com",
+        scopes = ["read:user"]
+    )
+)
+```
 """
 mutable struct HttpTransport <: Transport
     host::String
@@ -39,14 +60,19 @@ mutable struct HttpTransport <: Transport
     protocol_version::String  # MCP protocol version
     event_counter::Int64  # SSE event IDs
     allowed_origins::Vector{String}  # CORS security
-    
-    function HttpTransport(; 
-        host::String="127.0.0.1", 
-        port::Int=8080, 
+    auth::Union{AuthMiddleware,Nothing}  # OAuth authentication
+    resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 metadata
+    current_user::Union{AuthenticatedUser,Nothing}  # Current authenticated user
+
+    function HttpTransport(;
+        host::String="127.0.0.1",
+        port::Int=8080,
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
         protocol_version::String="2025-11-25",
-        session_required::Bool=false
+        session_required::Bool=false,
+        auth::Union{AuthMiddleware,Nothing}=nothing,
+        resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing
     )
         new(
             host,
@@ -65,7 +91,10 @@ mutable struct HttpTransport <: Transport
             session_required,
             protocol_version,
             0,  # Event counter starts at 0
-            allowed_origins
+            allowed_origins,
+            auth,
+            resource_metadata,
+            nothing  # No authenticated user initially
         )
     end
 end
@@ -262,13 +291,60 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     method = HTTP.method(request)
     target = request.target
     path = HTTP.URI(target).path
-    
+
+    # Handle .well-known/oauth-protected-resource discovery endpoint (RFC 9728)
+    if path == WELL_KNOWN_PATH && method == "GET"
+        if !isnothing(transport.resource_metadata)
+            status, body, headers = handle_well_known_request(transport.resource_metadata)
+            HTTP.setstatus(stream, status)
+            for (k, v) in headers
+                HTTP.setheader(stream, k => v)
+            end
+            HTTP.setheader(stream, "Content-Length" => string(length(body)))
+            HTTP.startwrite(stream)
+            write(stream, body)
+        else
+            HTTP.setstatus(stream, 404)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            HTTP.setheader(stream, "Content-Length" => "9")
+            HTTP.startwrite(stream)
+            write(stream, "Not Found")
+        end
+        return nothing
+    end
+
     # Handle both POST and GET requests to our endpoint
     if path != transport.endpoint
         HTTP.setstatus(stream, 404)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         write(stream, "Not Found")
         return nothing
+    end
+
+    # Authentication check (if auth middleware is configured)
+    if !isnothing(transport.auth)
+        auth_header_raw = HTTP.header(request, "Authorization", "")
+        auth_header = isempty(auth_header_raw) ? nothing : String(auth_header_raw)
+        auth_result = authenticate_request(transport.auth, auth_header)
+
+        if !auth_result.success
+            # Return appropriate auth error response
+            status, body, headers = auth_error_response(
+                auth_result.error_code,
+                auth_result.error
+            )
+            HTTP.setstatus(stream, status)
+            for (k, v) in headers
+                HTTP.setheader(stream, k => v)
+            end
+            HTTP.setheader(stream, "Content-Length" => string(length(body)))
+            HTTP.startwrite(stream)
+            write(stream, body)
+            return nothing
+        end
+
+        # Store authenticated user for this request
+        transport.current_user = auth_result.user
     end
     
     # Handle GET requests for SSE notification stream
@@ -793,9 +869,40 @@ function end_response(transport::HttpTransport)::Nothing
     nothing
 end
 
+"""
+    get_authenticated_user(transport::HttpTransport) -> Union{AuthenticatedUser,Nothing}
+
+Get the currently authenticated user for this transport.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+
+# Returns
+- `Union{AuthenticatedUser,Nothing}`: The authenticated user, or nothing if no auth
+"""
+function get_authenticated_user(transport::HttpTransport)::Union{AuthenticatedUser,Nothing}
+    return transport.current_user
+end
+
+"""
+    is_auth_enabled(transport::HttpTransport) -> Bool
+
+Check if authentication is enabled for this transport.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+
+# Returns
+- `Bool`: true if auth is enabled, false otherwise
+"""
+function is_auth_enabled(transport::HttpTransport)::Bool
+    return !isnothing(transport.auth) && transport.auth.enabled
+end
+
 # Pretty printing
 function Base.show(io::IO, transport::HttpTransport)
     status = transport.connected ? "connected" : "disconnected"
     active = length(transport.active_streams)
-    print(io, "HttpTransport(http://$(transport.host):$(transport.port)$(transport.endpoint), $status, $active active)")
+    auth_status = is_auth_enabled(transport) ? ", auth enabled" : ""
+    print(io, "HttpTransport(http://$(transport.host):$(transport.port)$(transport.endpoint), $status, $active active$auth_status)")
 end

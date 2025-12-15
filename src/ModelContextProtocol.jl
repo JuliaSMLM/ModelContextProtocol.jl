@@ -54,32 +54,32 @@ include("types.jl")
 # 2. Protocol Messages
 include("protocol/messages.jl")
 
-# 3. Transport Layer
+# 3. Authentication (OAuth 2.0 framework - needed by HTTP transport)
+include("auth/auth.jl")
+
+# 4. Transport Layer
 include("transports/base.jl")
 include("transports/stdio.jl")
 include("transports/http.jl")
 
-# 4. Server Type (depends on Transport)
+# 5. Server Type (depends on Transport)
 include("server_types.jl")
 
-# 5. Utils
+# 6. Utils
 include("utils/errors.jl")
 include("utils/logging.jl")
 
-# 5. Implementation
+# 7. Implementation
 include("protocol/jsonrpc.jl")
 include("core/capabilities.jl")
 include("core/server.jl")
 include("core/init.jl")
 include("protocol/handlers.jl")
 
-# 6. Serialization (needs all types)
+# 8. Serialization (needs all types)
 include("utils/serialization.jl")
 
-# 7. Authentication (OAuth 2.0 framework)
-include("auth/auth.jl")
-
-# 7. Features (types are now in types.jl, no separate feature files needed)
+# 9. Features (types are now in types.jl, no separate feature files needed)
 
 # 9. API documentation
 include("api.jl")
@@ -109,6 +109,7 @@ export
     Transport,  # Abstract type for type annotations
     StdioTransport, HttpTransport,
     connect,  # For HTTP transport initialization
+    get_authenticated_user, is_auth_enabled,  # HTTP auth helpers
     
     # Advanced features
     Server,  # For type annotations in user code
