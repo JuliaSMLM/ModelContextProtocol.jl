@@ -236,4 +236,111 @@
         @test status == 403
         @test occursin("insufficient_scope", headers["WWW-Authenticate"])
     end
+
+    @testset "GitHub OAuth Provider" begin
+        @testset "GitHubAuthConfig" begin
+            config = GitHubAuthConfig(
+                client_id = "test-client-id",
+                allowed_users = Set(["user1", "user2"]),
+                required_org = "TestOrg",
+                cache_ttl_seconds = 600
+            )
+
+            @test config.client_id == "test-client-id"
+            @test "user1" in config.allowed_users
+            @test "user2" in config.allowed_users
+            @test config.required_org == "TestOrg"
+            @test config.cache_ttl_seconds == 600
+        end
+
+        @testset "GitHubAuthConfig defaults" begin
+            config = GitHubAuthConfig()
+
+            @test config.client_id == ""
+            @test isempty(config.allowed_users)
+            @test isnothing(config.required_org)
+            @test config.cache_ttl_seconds == 300
+        end
+
+        @testset "GitHubOAuthValidator" begin
+            validator = GitHubOAuthValidator(cache_ttl_seconds = 120)
+
+            @test validator.cache_ttl_seconds == 120
+            @test isempty(validator.user_cache)
+        end
+
+        @testset "create_github_auth with allowlist" begin
+            auth = create_github_auth(
+                allowed_users = ["user1", "user2", "user3"]
+            )
+
+            @test auth.enabled == true
+            @test !isnothing(auth.allowlist)
+            @test "user1" in auth.allowlist
+            @test "user2" in auth.allowlist
+            @test "user3" in auth.allowlist
+            @test auth.config.issuer == "https://github.com"
+        end
+
+        @testset "create_github_auth with Set allowlist" begin
+            auth = create_github_auth(
+                allowed_users = Set(["userA", "userB"])
+            )
+
+            @test auth.enabled == true
+            @test "userA" in auth.allowlist
+            @test "userB" in auth.allowlist
+        end
+
+        @testset "create_github_auth without allowlist" begin
+            auth = create_github_auth()
+
+            @test auth.enabled == true
+            @test isnothing(auth.allowlist)  # No allowlist = allow all authenticated
+        end
+
+        @testset "create_github_auth with org requirement" begin
+            auth = create_github_auth(
+                required_org = "JuliaSMLM"
+            )
+
+            @test auth.enabled == true
+            # The validator should be GitHubOAuthValidatorWithOrg
+            @test auth.validator isa ModelContextProtocol.GitHubOAuthValidatorWithOrg
+            @test auth.validator.required_org == "JuliaSMLM"
+        end
+
+        @testset "clear_cache!" begin
+            validator = GitHubOAuthValidator()
+
+            # Manually add to cache for testing
+            user = AuthenticatedUser(subject = "123", provider = "github", username = "test")
+            validator.user_cache["test-token"] = (user, Dates.now(Dates.UTC))
+
+            @test !isempty(validator.user_cache)
+
+            clear_cache!(validator)
+
+            @test isempty(validator.user_cache)
+        end
+
+        @testset "GITHUB_API_URL constant" begin
+            @test ModelContextProtocol.GITHUB_API_URL == "https://api.github.com"
+        end
+
+        @testset "GitHub auth integration without real token" begin
+            # Test that validation fails gracefully without valid token
+            auth = create_github_auth(
+                allowed_users = ["user1"]
+            )
+
+            # Without a real GitHub token, validation should fail
+            # Note: This doesn't actually call GitHub API in test
+            result = authenticate_request(auth, "Bearer fake-token-12345")
+
+            # The request will fail because we can't reach GitHub API or token is invalid
+            @test result.success == false
+            @test result.error_code == :invalid_token
+        end
+    end
 end

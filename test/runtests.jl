@@ -1,6 +1,6 @@
 using Test
 using ModelContextProtocol
-using JSON3, URIs, DataStructures, Logging, Base64, HTTP
+using JSON3, URIs, DataStructures, Logging, Base64, HTTP, Dates
 using OrderedCollections: LittleDict
 
 # Only import internals that are actually needed for specific tests
@@ -15,6 +15,7 @@ using ModelContextProtocol: user, assistant  # For role constants
 using ModelContextProtocol: PromptCapability  # For server tests
 using ModelContextProtocol: MCPLogger  # For logging tests
 using ModelContextProtocol: add_token!, decode_jwt_payload, auth_error_response, check_allowlist  # For auth tests
+using ModelContextProtocol: GitHubOAuthValidatorWithOrg, GITHUB_API_URL  # For GitHub auth tests
 
 @testset "ModelContextProtocol.jl" begin
     include("core/types.jl")

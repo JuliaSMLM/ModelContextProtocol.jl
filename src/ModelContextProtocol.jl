@@ -122,6 +122,9 @@ export
     SimpleTokenValidator, JWTValidator, IntrospectionValidator,
     create_auth_middleware, create_simple_auth, disable_auth,
     create_protected_resource_metadata, create_github_resource_metadata,
-    authenticate_request, validate_token, extract_bearer_token
+    authenticate_request, validate_token, extract_bearer_token,
+
+    # GitHub OAuth Provider
+    GitHubOAuthValidator, GitHubAuthConfig, create_github_auth, clear_cache!
 
 end # module

@@ -230,3 +230,4 @@ end
 include("token.jl")
 include("middleware.jl")
 include("metadata.jl")
+include("providers/github.jl")
