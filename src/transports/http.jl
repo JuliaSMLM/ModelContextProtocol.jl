@@ -281,12 +281,18 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             # Handle SSE stream
             handle_sse_stream(transport, stream, stream_id)
         else
-            HTTP.setstatus(stream, 406)
-            HTTP.setheader(stream, "Content-Type" => "text/plain")
-            error_msg = "Not Acceptable - GET requests must Accept: text/event-stream"
-            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+            # Return health check response for plain GET requests (no Accept: text/event-stream)
+            # This allows clients like Claude Code to perform health checks
+            HTTP.setstatus(stream, 200)
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            health_response = JSON3.write(Dict(
+                "status" => "ok",
+                "protocol_version" => transport.protocol_version,
+                "session_id" => transport.session_id
+            ))
+            HTTP.setheader(stream, "Content-Length" => string(length(health_response)))
             HTTP.startwrite(stream)
-            write(stream, error_msg)
+            write(stream, health_response)
         end
         return nothing
     end
@@ -338,16 +344,12 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         return nothing
     end
     
-    # Check Accept header per 2025-06-18 spec - MUST include both application/json and text/event-stream
+    # Check Accept header per 2025-06-18 spec - SHOULD include both application/json and text/event-stream
+    # Made lenient to support clients like Claude Code that may not send correct Accept headers
     accept_header = HTTP.header(request, "Accept", "")
     if !contains(accept_header, "application/json") || !contains(accept_header, "text/event-stream")
-        HTTP.setstatus(stream, 406)
-        HTTP.setheader(stream, "Content-Type" => "text/plain")
-        error_msg = "Not Acceptable: Must accept both application/json and text/event-stream"
-        HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
-        HTTP.startwrite(stream)
-        write(stream, error_msg)
-        return nothing
+        @debug "Client Accept header doesn't meet spec requirements" accept=accept_header expected="application/json, text/event-stream"
+        # Continue anyway - the spec requirement is relaxed for compatibility
     end
     
     # Check for session ID header

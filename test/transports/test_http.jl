@@ -343,4 +343,136 @@
         end
         Base.close(timer)
     end
+
+    @testset "Health Check (Plain GET)" begin
+        # Test that plain GET requests (without Accept: text/event-stream) return health status
+        # This is needed for clients like Claude Code that perform simple health checks
+        port = 12090 + rand(1:1000)
+
+        transport = HttpTransport(port=port)
+
+        server = mcp_server(
+            name = "health-check-server",
+            version = "1.0.0"
+        )
+
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        # Plain GET without Accept: text/event-stream should return health status
+        response = HTTP.get(
+            "http://127.0.0.1:$port/",
+            ["Accept" => "application/json"]  # Not text/event-stream
+        )
+
+        @test response.status == 200
+        @test HTTP.header(response, "Content-Type") == "application/json"
+
+        result = JSON3.read(String(response.body))
+        @test result["status"] == "ok"
+        @test haskey(result, "protocol_version")
+        @test result["protocol_version"] == "2025-06-18"
+
+        # Also test with no Accept header at all
+        response = HTTP.get("http://127.0.0.1:$port/")
+
+        @test response.status == 200
+        result = JSON3.read(String(response.body))
+        @test result["status"] == "ok"
+
+        # Clean up
+        server.active = false
+        ModelContextProtocol.close(transport)
+
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
+
+    @testset "Lenient Accept Header for POST" begin
+        # Test that POST requests work even without proper Accept header
+        # This is needed for clients like Claude Code that may not send correct headers
+        port = 13090 + rand(1:1000)
+
+        transport = HttpTransport(port=port)
+
+        test_tool = MCPTool(
+            name = "test_tool",
+            description = "Test tool",
+            handler = function(params)
+                return TextContent(text = "success")
+            end,
+            parameters = []
+        )
+
+        server = mcp_server(
+            name = "lenient-header-server",
+            version = "1.0.0",
+            tools = [test_tool]
+        )
+
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        # POST with only application/json Accept (missing text/event-stream)
+        response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "Accept" => "application/json"],  # Missing text/event-stream
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "initialize",
+                "params" => Dict(
+                    "protocolVersion" => "2025-06-18",
+                    "capabilities" => Dict(),
+                    "clientInfo" => Dict("name" => "test", "version" => "1.0")
+                ),
+                "id" => 1
+            ))
+        )
+
+        # Should succeed despite non-compliant Accept header
+        @test response.status == 200
+        result = JSON3.read(String(response.body))
+        @test result["jsonrpc"] == "2.0"
+        @test result["id"] == 1
+        @test haskey(result, "result")
+
+        session_id = HTTP.header(response, "Mcp-Session-Id", "")
+
+        # Also test with */* Accept header
+        response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "Mcp-Session-Id" => session_id,
+             "Accept" => "*/*"],  # Wildcard accept
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "tools/list",
+                "params" => Dict(),
+                "id" => 2
+            ))
+        )
+
+        @test response.status == 200
+        result = JSON3.read(String(response.body))
+        @test result["id"] == 2
+        @test length(result["result"]["tools"]) == 1
+
+        # Clean up
+        server.active = false
+        ModelContextProtocol.close(transport)
+
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
 end
