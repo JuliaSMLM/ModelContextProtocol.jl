@@ -91,7 +91,7 @@ export
     start!, stop!, register!,
     
     # Component types for defining MCP components
-    MCPTool, ToolParameter,
+    MCPTool, ToolParameter, MCPIcon,
     MCPResource, ResourceTemplate,
     MCPPrompt, PromptArgument, PromptMessage,
     

@@ -6,11 +6,11 @@ using OrderedCollections: LittleDict
 # Only import internals that are actually needed for specific tests
 using ModelContextProtocol: ServerState, process_message  # For backward compat tests
 using ModelContextProtocol: ServerConfig, ResourceCapability, ToolCapability  # For server config tests
-using ModelContextProtocol: handle_initialize, handle_read_resource, handle_list_resources, handle_get_prompt, handle_call_tool, handle_ping  # For handler tests
+using ModelContextProtocol: handle_initialize, handle_read_resource, handle_list_resources, handle_get_prompt, handle_call_tool, handle_ping, handle_list_tools, handle_list_prompts  # For handler tests
 using ModelContextProtocol: RequestContext, CallToolResult, content2dict  # For handler tests
 using ModelContextProtocol: InitializeParams, InitializeResult, ClientCapabilities, Implementation  # For integration tests
 using ModelContextProtocol: JSONRPCRequest, JSONRPCResponse, JSONRPCError, ReadResourceParams, ReadResourceResult, GetPromptParams, GetPromptResult  # For integration tests
-using ModelContextProtocol: HandlerResult, CallToolParams, ListResourcesParams  # For integration tests
+using ModelContextProtocol: HandlerResult, CallToolParams, ListResourcesParams, ListToolsParams, ListPromptsParams  # For integration tests
 using ModelContextProtocol: user, assistant  # For role constants
 using ModelContextProtocol: PromptCapability  # For server tests
 using ModelContextProtocol: MCPLogger  # For logging tests

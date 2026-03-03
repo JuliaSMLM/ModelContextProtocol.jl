@@ -144,11 +144,15 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
     )
 
     # Create initialization result with our supported version
+    server_info = Dict{String,Any}(
+        "name" => ctx.server.config.name,
+        "version" => ctx.server.config.version
+    )
+    !isnothing(ctx.server.config.title) && (server_info["title"] = ctx.server.config.title)
+    !isnothing(ctx.server.config.icons) && (server_info["icons"] = [icon_to_dict(i) for i in ctx.server.config.icons])
+
     result = InitializeResult(
-        serverInfo=Dict(
-            "name" => ctx.server.config.name,
-            "version" => ctx.server.config.version
-        ),
+        serverInfo=server_info,
         capabilities=current_capabilities,
         protocolVersion=SERVER_PROTOCOL_VERSION,
         instructions=ctx.server.config.instructions
@@ -198,15 +202,24 @@ Handle requests to list available prompts on the MCP server.
 function handle_list_prompts(ctx::RequestContext, params::ListPromptsParams)::HandlerResult
     try
         prompts = map(ctx.server.prompts) do prompt::MCPPrompt
-            LittleDict{String,Any}(
+            d = LittleDict{String,Any}(
                 "name" => prompt.name,
                 "description" => prompt.description,
-                "arguments" => [LittleDict{String,Any}(
-                    "name" => arg.name,
-                    "description" => arg.description,
-                    "required" => arg.required
-                ) for arg in prompt.arguments]
+                "arguments" => begin
+                    map(prompt.arguments) do arg
+                        ad = LittleDict{String,Any}(
+                            "name" => arg.name,
+                            "description" => arg.description,
+                            "required" => arg.required
+                        )
+                        !isnothing(arg.title) && (ad["title"] = arg.title)
+                        ad
+                    end
+                end
             )
+            !isnothing(prompt.title) && (d["title"] = prompt.title)
+            !isnothing(prompt.icons) && (d["icons"] = [icon_to_dict(i) for i in prompt.icons])
+            d
         end
 
         result = LittleDict{String,Any}(
@@ -385,7 +398,7 @@ Handle requests to list all available resources on the MCP server.
 function handle_list_resources(ctx::RequestContext, params::ListResourcesParams)::HandlerResult
     try
         resources = map(ctx.server.resources) do resource::MCPResource
-            LittleDict{String,Any}(
+            d = LittleDict{String,Any}(
                 "uri" => string(resource.uri),
                 "name" => resource.name,
                 "mimeType" => resource.mime_type,
@@ -395,6 +408,9 @@ function handle_list_resources(ctx::RequestContext, params::ListResourcesParams)
                     "priority" => get(resource.annotations, "priority", 0.0)
                 )
             )
+            !isnothing(resource.title) && (d["title"] = resource.title)
+            !isnothing(resource.icons) && (d["icons"] = [icon_to_dict(i) for i in resource.icons])
+            d
         end
 
         # Create the result dictionary explicitly
@@ -641,11 +657,14 @@ function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::Handle
                 )
             end
 
-            LittleDict{String,Any}(
+            d = LittleDict{String,Any}(
                 "name" => tool.name,
                 "description" => tool.description,
                 "inputSchema" => schema
             )
+            !isnothing(tool.title) && (d["title"] = tool.title)
+            !isnothing(tool.icons) && (d["icons"] = [icon_to_dict(i) for i in tool.icons])
+            d
         end
 
         result = LittleDict{String,Any}(

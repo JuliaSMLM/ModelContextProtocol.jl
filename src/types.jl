@@ -252,6 +252,41 @@ Base.@kwdef struct ResourceLink <: Content
 end
 
 #==============================================================================
+# 3b. Icon Type (MCP 2025-11-25)
+==============================================================================#
+
+"""
+    MCPIcon(; src::String, mimeType=nothing, sizes=nothing, theme=nothing)
+
+Icon metadata for tools, resources, prompts, and server info (MCP 2025-11-25).
+
+# Fields
+- `src::String`: URI pointing to the icon (http/https URL or data: URI)
+- `mimeType::Union{String,Nothing}`: MIME type override (e.g., "image/png", "image/svg+xml")
+- `sizes::Union{Vector{String},Nothing}`: Size hints (e.g., ["48x48", "any"])
+- `theme::Union{String,Nothing}`: Which background the icon is designed for ("light" or "dark")
+"""
+Base.@kwdef struct MCPIcon
+    src::String
+    mimeType::Union{String,Nothing} = nothing
+    sizes::Union{Vector{String},Nothing} = nothing
+    theme::Union{String,Nothing} = nothing
+end
+
+"""
+    icon_to_dict(icon::MCPIcon) -> LittleDict{String,Any}
+
+Serialize an MCPIcon to a dictionary, omitting nothing fields.
+"""
+function icon_to_dict(icon::MCPIcon)
+    d = LittleDict{String,Any}("src" => icon.src)
+    !isnothing(icon.mimeType) && (d["mimeType"] = icon.mimeType)
+    !isnothing(icon.sizes) && (d["sizes"] = icon.sizes)
+    !isnothing(icon.theme) && (d["theme"] = icon.theme)
+    return d
+end
+
+#==============================================================================
 # 4. Tool Types
 ==============================================================================#
 
@@ -319,6 +354,8 @@ Base.@kwdef struct MCPTool <: Tool
     input_schema::Union{Nothing,AbstractDict} = nothing
     handler::Function
     return_type::Type = Vector{Content}  # Can be Content subtype or Vector{<:Content}
+    title::Union{String,Nothing} = nothing
+    icons::Union{Vector{MCPIcon},Nothing} = nothing
 end
 
 #==============================================================================
@@ -326,7 +363,8 @@ end
 ==============================================================================#
 
 """
-    PromptArgument(; name::String, description::String="", required::Bool=false)
+    PromptArgument(; name::String, description::String="", required::Bool=false,
+                  title::Union{String,Nothing}=nothing)
 
 Define an argument that a prompt template can accept.
 
@@ -334,11 +372,13 @@ Define an argument that a prompt template can accept.
 - `name::String`: The argument name (used in template placeholders)
 - `description::String`: Human-readable description of the argument
 - `required::Bool`: Whether the argument is required when using the prompt
+- `title::Union{String,Nothing}`: Optional human-friendly display name
 """
 Base.@kwdef struct PromptArgument
     name::String
     description::String = ""
     required::Bool = false
+    title::Union{String,Nothing} = nothing
 end
 
 """
@@ -371,9 +411,11 @@ function PromptMessage(content::Union{TextContent, ImageContent, EmbeddedResourc
 end
 
 """
-    MCPPrompt(; name::String, description::String="", 
-            arguments::Vector{PromptArgument}=PromptArgument[], 
-            messages::Vector{PromptMessage}=PromptMessage[])
+    MCPPrompt(; name::String, description::String="",
+            arguments::Vector{PromptArgument}=PromptArgument[],
+            messages::Vector{PromptMessage}=PromptMessage[],
+            title::Union{String,Nothing}=nothing,
+            icons::Union{Vector{MCPIcon},Nothing}=nothing)
 
 Implement a prompt or prompt template as defined in the MCP schema.
 Prompts can include variables that are replaced with arguments when retrieved.
@@ -383,12 +425,16 @@ Prompts can include variables that are replaced with arguments when retrieved.
 - `description::String`: Human-readable description of the prompt's purpose
 - `arguments::Vector{PromptArgument}`: Arguments that this prompt accepts
 - `messages::Vector{PromptMessage}`: The sequence of messages in the prompt
+- `title::Union{String,Nothing}`: Optional human-friendly display name
+- `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
 """
 Base.@kwdef struct MCPPrompt
     name::String
     description::String = ""
     arguments::Vector{PromptArgument} = PromptArgument[]
     messages::Vector{PromptMessage} = PromptMessage[]
+    title::Union{String,Nothing} = nothing
+    icons::Union{Vector{MCPIcon},Nothing} = nothing
 end
 
 """
@@ -439,12 +485,16 @@ struct MCPResource <: Resource
     mime_type::String
     data_provider::Function
     annotations::AbstractDict{String,Any}
+    title::Union{String,Nothing}
+    icons::Union{Vector{MCPIcon},Nothing}
 end
 
 """
     MCPResource(; uri, name::String="", description::String="",
               mime_type::String="application/json", data_provider::Function,
-              annotations::AbstractDict{String,Any}=LittleDict{String,Any}()) -> MCPResource
+              annotations::AbstractDict{String,Any}=LittleDict{String,Any}(),
+              title::Union{String,Nothing}=nothing,
+              icons::Union{Vector{MCPIcon},Nothing}=nothing) -> MCPResource
 
 Create a resource with automatic URI conversion from strings or URIs.
 
@@ -455,23 +505,29 @@ Create a resource with automatic URI conversion from strings or URIs.
 - `mime_type::String`: MIME type of the resource
 - `data_provider::Function`: Function that returns the resource data when called
 - `annotations::AbstractDict{String,Any}`: Additional metadata for the resource
+- `title::Union{String,Nothing}`: Optional human-friendly display name
+- `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
 
 # Returns
 - `MCPResource`: A new resource with the provided configuration
 """
-function MCPResource(; uri, 
-    name::String = "", 
-    description::String = "", 
-    mime_type::String = "application/json", 
-    data_provider::Function, 
-    annotations::AbstractDict{String,Any} = LittleDict{String,Any}())
+function MCPResource(; uri,
+    name::String = "",
+    description::String = "",
+    mime_type::String = "application/json",
+    data_provider::Function,
+    annotations::AbstractDict{String,Any} = LittleDict{String,Any}(),
+    title::Union{String,Nothing} = nothing,
+    icons::Union{Vector{MCPIcon},Nothing} = nothing)
     uri_obj = uri isa URI ? uri : URI(uri)
-    MCPResource(uri_obj, name, description, mime_type, data_provider, annotations)
+    MCPResource(uri_obj, name, description, mime_type, data_provider, annotations, title, icons)
 end
 
 """
     ResourceTemplate(; name::String, uri_template::String,
-                   mime_type::Union{String,Nothing}=nothing, description::String="")
+                   mime_type::Union{String,Nothing}=nothing, description::String="",
+                   title::Union{String,Nothing}=nothing,
+                   icons::Union{Vector{MCPIcon},Nothing}=nothing)
 
 Define a template for dynamically generating resources with parameterized URIs.
 
@@ -480,12 +536,16 @@ Define a template for dynamically generating resources with parameterized URIs.
 - `uri_template::String`: Template string with placeholders for parameters
 - `mime_type::Union{String,Nothing}`: MIME type of the generated resources
 - `description::String`: Human-readable description of the template
+- `title::Union{String,Nothing}`: Optional human-friendly display name
+- `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
 """
 Base.@kwdef struct ResourceTemplate
     name::String
     uri_template::String
     mime_type::Union{String,Nothing} = nothing
     description::String = ""
+    title::Union{String,Nothing} = nothing
+    icons::Union{Vector{MCPIcon},Nothing} = nothing
 end
 
 #==============================================================================
@@ -532,9 +592,11 @@ end
 ==============================================================================#
 
 """
-    ServerConfig(; name::String, version::String="1.0.0", 
+    ServerConfig(; name::String, version::String="1.0.0",
                description::String="", capabilities::Vector{Capability}=Capability[],
-               instructions::String="")
+               instructions::String="",
+               title::Union{String,Nothing}=nothing,
+               icons::Union{Vector{MCPIcon},Nothing}=nothing)
 
 Define configuration settings for an MCP server instance.
 
@@ -544,6 +606,8 @@ Define configuration settings for an MCP server instance.
 - `description::String`: Human-readable server description
 - `capabilities::Vector{Capability}`: Protocol capabilities supported by the server
 - `instructions::String`: Usage instructions for clients
+- `title::Union{String,Nothing}`: Optional human-friendly display name
+- `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
 """
 Base.@kwdef struct ServerConfig
     name::String
@@ -551,6 +615,8 @@ Base.@kwdef struct ServerConfig
     description::String = ""
     capabilities::Vector{Capability} = Capability[]
     instructions::String = ""
+    title::Union{String,Nothing} = nothing
+    icons::Union{Vector{MCPIcon},Nothing} = nothing
 end
 
 """
