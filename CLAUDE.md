@@ -487,11 +487,11 @@ pkill -9 -f "julia.*examples.*"
    - ✅ stdio transport (standard input/output)
    - ✅ Streamable HTTP transport with SSE support
    - ✅ Session management (Mcp-Session-Id headers)
-   - ✅ Protocol version negotiation (only 2025-11-25 supported)
+   - ✅ Protocol version negotiation (supports 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05)
 
 2. **Version Validation**
-   - ✅ Strict protocol version validation (only accepts 2025-11-25)
-   - ✅ Proper error responses for unsupported versions
+   - ✅ Protocol version negotiation per MCP spec
+   - ✅ Feature gating by negotiated version
    - ✅ MCP-Protocol-Version header validation in HTTP transport
 
 3. **JSON-RPC Compliance (2025-11-25)**
@@ -503,14 +503,14 @@ pkill -9 -f "julia.*examples.*"
    - ✅ TextContent - Text-based responses
    - ✅ ImageContent - Binary image content with base64 encoding
    - ✅ EmbeddedResource - Embedded resource content
-   - ✅ ResourceLink - Resource references (NEW in 2025-11-25)
+   - ✅ ResourceLink - Resource references (NEW in 2025-06-18)
 
 5. **Multi-Content Tool Returns**
    - ✅ Single content return: `return TextContent(...)`
    - ✅ Multiple content return: `return [TextContent(...), ImageContent(...)]`
    - ✅ Mixed content types in single response
 
-6. **Security Features** 
+6. **Security Features**
    - ✅ Origin header validation for HTTP transport
    - ✅ Localhost binding by default
    - ✅ Cryptographically secure session IDs (UUID format)
@@ -521,13 +521,22 @@ pkill -9 -f "julia.*examples.*"
    - ✅ Automatic tool/prompt/resource discovery
    - ✅ Isolated module loading for each component file
 
+8. **OAuth 2.1 Authorization Server** (NEW)
+   - ✅ Full OAuth 2.1 Authorization Server implementation
+   - ✅ Dynamic Client Registration (RFC 7591)
+   - ✅ PKCE support (S256 method)
+   - ✅ Protected Resource Metadata (RFC 9728)
+   - ✅ Authorization Server Metadata (RFC 8414)
+   - ✅ GitHub upstream provider
+   - ✅ TestUpstreamProvider for local development
+   - ✅ Token validation middleware
+
 ### ❌ Features Not Yet Implemented (Optional/Future)
 
-1. **OAuth Authorization (Optional)**
-   - ❌ OAuth Resource Server classification  
-   - ❌ Authorization server discovery
-   - ❌ Protected resource metadata
-   - ❌ Resource Indicators (RFC 8707) support
+1. **OAuth Enhancements**
+   - ❌ Resource Indicators (RFC 8707) - audience binding
+   - ❌ Client ID Metadata Documents (CIMD)
+   - ❌ Enterprise-Managed Authorization (Cross App Access/XAA)
 
 2. **Elicitation (Optional)**
    - ❌ Server-to-client user interaction requests
@@ -542,22 +551,17 @@ pkill -9 -f "julia.*examples.*"
 
 4. **Advanced Features (Optional)**
    - ❌ _meta fields on message types (metadata support)
-   - ❌ Audio content type (AudioContent)  
+   - ❌ Audio content type (AudioContent)
    - ❌ Progress notifications with bidirectional updates
    - ❌ Stream resumption with Last-Event-ID
    - ❌ title field support for human-friendly display names
 
-5. **Enterprise Features (Optional)**
-   - ❌ Advanced authentication beyond basic session management
-   - ❌ Fine-grained authorization per tool/resource
-   - ❌ Enterprise SSO integration
-
 ### 🎯 Implementation Priority for Future Work
 
 **High Priority** (Core 2025-11-25 compliance):
-1. _meta field support on core types
-2. title field support for tools/resources/prompts
-3. Audio content type (AudioContent)
+1. Resource Indicators (RFC 8707) for OAuth token audience binding
+2. _meta field support on core types
+3. title field support for tools/resources/prompts
 
 **Medium Priority** (Enhanced functionality):
 1. Progress notification improvements
@@ -565,13 +569,145 @@ pkill -9 -f "julia.*examples.*"
 3. Elicitation basic support
 
 **Low Priority** (Enterprise/Optional):
-1. OAuth authorization support
-2. Advanced authentication
+1. Client ID Metadata Documents
+2. Enterprise-Managed Authorization
 3. Client-side features (roots, sampling)
 
 ### 🧪 Testing Status
-- ✅ Protocol version validation working
-- ✅ JSON-RPC batch rejection working  
+- ✅ Protocol version negotiation working
+- ✅ JSON-RPC batch rejection working
 - ✅ ResourceLink content type working
+- ✅ OAuth server endpoints working
 - ✅ All existing functionality preserved
 - ✅ HTTP transport fully compliant with 2025-11-25
+
+## OAuth Support in Claude Clients (December 2025)
+
+### Claude Code OAuth Support
+
+**Native OAuth support** - Claude Code has built-in OAuth 2.0 support for remote MCP servers.
+
+#### Adding OAuth-Protected Servers
+```bash
+# Add HTTP transport server (OAuth handled automatically)
+claude mcp add --transport http <name> <url>
+
+# Examples:
+claude mcp add --transport http figma https://mcp.figma.com/mcp
+claude mcp add --transport http notion https://mcp.notion.com/mcp
+claude mcp add --transport http gitlab https://gitlab.example.com/api/v4/mcp
+```
+
+#### Authentication Flow
+1. Use `/mcp` command in Claude Code to manage servers
+2. Select server and choose "Authenticate"
+3. Browser opens for OAuth authorization
+4. After authorization, token is stored locally in `~/.mcp-auth`
+5. Claude Code automatically uses tokens for subsequent requests
+
+#### What Claude Code Expects from OAuth Servers
+- **Discovery**: `GET /.well-known/oauth-authorization-server` or `/.well-known/openid-configuration`
+- **DCR**: `POST /register` (Dynamic Client Registration per RFC 7591) - **REQUIRED**
+- **Authorization**: Standard OAuth 2.1 flow with PKCE (S256)
+- **Token**: `POST /token` endpoint
+- **Protected Resource Metadata**: `GET /.well-known/oauth-protected-resource`
+
+#### Known Issues (as of December 2025)
+- OAuth authentication may succeed but MCP reconnection can fail - restart Claude Code as workaround
+- Some servers (like GitHub MCP) have discovery issues - Claude may not follow `resource_metadata` in WWW-Authenticate header
+
+### Claude Desktop OAuth Support
+
+**Remote MCP servers** are supported on Claude Desktop (Pro, Max, Team, Enterprise plans).
+
+#### Configuration
+- Add servers via **Settings > Connectors** (NOT via `claude_desktop_config.json`)
+- Claude Desktop will not connect to remote servers configured directly in config file
+- OAuth flow happens through browser when connecting
+
+### mcp-remote Bridge
+
+For MCP clients that don't support OAuth natively, `mcp-remote` provides a bridge:
+
+```bash
+# Basic usage (for clients that only support stdio)
+npx mcp-remote http://127.0.0.1:3000 --allow-http
+
+# In claude_desktop_config.json (for local development)
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://127.0.0.1:3000", "--allow-http"]
+    }
+  }
+}
+```
+
+**Note**: mcp-remote supports the 2025-03-26 auth spec. For servers requiring DCR, it handles registration automatically. For servers without DCR support, use `--static-oauth-client-metadata` or `--static-oauth-client-info`.
+
+### MCP OAuth 2025-11-25 Spec Requirements
+
+| Feature | Requirement | Our Status |
+|---------|-------------|------------|
+| OAuth 2.1 | MUST | ✅ Implemented |
+| PKCE (S256) | MUST | ✅ Implemented |
+| Authorization Server Metadata (RFC 8414) | MUST for servers | ✅ Implemented |
+| Protected Resource Metadata (RFC 9728) | SHOULD | ✅ Implemented |
+| Dynamic Client Registration (RFC 7591) | SHOULD (Claude requires) | ✅ Implemented |
+| Resource Indicators (RFC 8707) | MUST for clients | ❌ Not yet |
+| Client ID Metadata Documents | SHOULD | ❌ Not yet |
+| HTTPS | MUST (production) | ⚠️ HTTP for dev |
+
+### Testing OAuth with This Package
+
+#### Using TestUpstreamProvider (No External Credentials)
+```bash
+julia --project examples/test_oauth_server.jl
+```
+This starts an OAuth server that auto-approves authentication - perfect for development and testing.
+
+#### Using GitHub as Upstream Provider
+```bash
+export GITHUB_CLIENT_ID="your_client_id"
+export GITHUB_CLIENT_SECRET="your_client_secret"
+julia --project examples/oauth_server_example.jl
+```
+
+#### Testing with Claude Code
+```bash
+# After starting the server:
+claude mcp add --transport http test-oauth http://127.0.0.1:3000
+
+# Then authenticate:
+# Type /mcp, select test-oauth, choose Authenticate
+```
+
+### OAuth Flow Diagram
+```
+Claude Code                    Julia MCP Server                  Upstream (GitHub/Test)
+    |                                |                                   |
+    |-- GET /.well-known/           |                                   |
+    |   oauth-protected-resource -->|                                   |
+    |<-- resource metadata ---------|                                   |
+    |                                |                                   |
+    |-- GET /.well-known/           |                                   |
+    |   oauth-authorization-server->|                                   |
+    |<-- auth server metadata ------|                                   |
+    |                                |                                   |
+    |-- POST /register (DCR) ------>|                                   |
+    |<-- client_id, client_secret --|                                   |
+    |                                |                                   |
+    |-- GET /authorize ------------->|-- redirect to upstream --------->|
+    |                                |                                   |
+    |   [User authenticates in browser with upstream]                   |
+    |                                |                                   |
+    |                                |<-- callback with code ------------|
+    |<-- redirect with auth code ---|                                   |
+    |                                |                                   |
+    |-- POST /token ---------------->|-- exchange code for user info -->|
+    |<-- access_token ---------------|<-- user info --------------------|
+    |                                |                                   |
+    |-- MCP requests with Bearer --->|                                   |
+    |<-- MCP responses --------------|                                   |
+```

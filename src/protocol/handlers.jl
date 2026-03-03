@@ -8,18 +8,21 @@ Define base type for all request handlers.
 abstract type RequestHandler end
 
 """
-    RequestContext(; server::Server, request_id::Union{RequestId,Nothing}=nothing, 
-                 progress_token::Union{ProgressToken,Nothing}=nothing)
+    RequestContext(; server::Server, state::ServerState,
+                   request_id::Union{RequestId,Nothing}=nothing,
+                   progress_token::Union{ProgressToken,Nothing}=nothing)
 
 Store the current request context for MCP protocol handlers.
 
 # Fields
 - `server::Server`: The MCP server instance handling the request
+- `state::ServerState`: The server state (tracks initialization, protocol version, etc.)
 - `request_id::Union{RequestId,Nothing}`: The ID of the current request (if any)
 - `progress_token::Union{ProgressToken,Nothing}`: Optional token for progress reporting
 """
 Base.@kwdef mutable struct RequestContext
     server::Server
+    state::ServerState
     request_id::Union{RequestId,Nothing} = nothing
     progress_token::Union{ProgressToken,Nothing} = nothing
 end
@@ -126,15 +129,15 @@ Handle MCP protocol initialization requests by setting up the server and returni
 - `HandlerResult`: Contains the server's capabilities and configuration
 """
 function handle_initialize(ctx::RequestContext, params::InitializeParams)::HandlerResult
-    # MCP protocol version we support
-    # Per spec: if client requests unsupported version, server MUST respond with
-    # a version it supports (not error). Client then decides if it can work with that.
-    SERVER_PROTOCOL_VERSION = "2025-11-25"
-
-    # Log version negotiation for debugging
+    # Negotiate protocol version per MCP spec
     client_version = params.protocolVersion
-    if !isnothing(client_version) && client_version != SERVER_PROTOCOL_VERSION
-        @debug "Version negotiation" client_requested=client_version server_supports=SERVER_PROTOCOL_VERSION
+    negotiated_version = negotiate_version(client_version)
+
+    # Store negotiated version in server state for feature gating
+    ctx.state.protocol_version = negotiated_version
+
+    if !isnothing(client_version) && client_version != negotiated_version
+        @debug "Version negotiation" client_requested=client_version negotiated=negotiated_version
     end
 
     # Get full capabilities including available tools and resources
@@ -143,14 +146,14 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
         ctx.server
     )
 
-    # Create initialization result with our supported version
+    # Create initialization result with negotiated version
     result = InitializeResult(
         serverInfo=Dict(
             "name" => ctx.server.config.name,
             "version" => ctx.server.config.version
         ),
         capabilities=current_capabilities,
-        protocolVersion=SERVER_PROTOCOL_VERSION,
+        protocolVersion=negotiated_version,
         instructions=ctx.server.config.instructions
     )
 
@@ -695,7 +698,7 @@ function handle_notification(ctx::RequestContext, notification::JSONRPCNotificat
 end
 
 """
-    handle_request(server::Server, request::Request) -> Response
+    handle_request(server::Server, state::ServerState, request::Request) -> Response
 
 Process an MCP protocol request and route it to the appropriate handler based on the request method.
 
@@ -720,9 +723,10 @@ Any exceptions thrown during processing are caught and converted to INTERNAL_ERR
 # Returns
 - `Response`: Either a successful response or an error response depending on the handler result
 """
-function handle_request(server::Server, request::Request)::Response
+function handle_request(server::Server, state::ServerState, request::Request)::Response
     ctx = RequestContext(
         server=server,
+        state=state,
         request_id=request.id,
         progress_token=request.meta.progress_token
     )

@@ -238,30 +238,6 @@
     end
 
     @testset "GitHub OAuth Provider" begin
-        @testset "GitHubAuthConfig" begin
-            config = GitHubAuthConfig(
-                client_id = "test-client-id",
-                allowed_users = Set(["user1", "user2"]),
-                required_org = "TestOrg",
-                cache_ttl_seconds = 600
-            )
-
-            @test config.client_id == "test-client-id"
-            @test "user1" in config.allowed_users
-            @test "user2" in config.allowed_users
-            @test config.required_org == "TestOrg"
-            @test config.cache_ttl_seconds == 600
-        end
-
-        @testset "GitHubAuthConfig defaults" begin
-            config = GitHubAuthConfig()
-
-            @test config.client_id == ""
-            @test isempty(config.allowed_users)
-            @test isnothing(config.required_org)
-            @test config.cache_ttl_seconds == 300
-        end
-
         @testset "GitHubOAuthValidator" begin
             validator = GitHubOAuthValidator(cache_ttl_seconds = 120)
 

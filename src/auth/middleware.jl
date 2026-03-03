@@ -22,7 +22,7 @@ Generate HTTP response for authentication errors.
 # Returns
 - Tuple of (status_code, body, headers)
 """
-function auth_error_response(error_code::Symbol, message::String)
+function auth_error_response(error_code::Symbol, message::String; resource_metadata_url::Union{String,Nothing}=nothing)
     status = if error_code in (:missing_token, :invalid_token, :invalid_format, :expired, :not_yet_valid, :invalid_issuer, :invalid_audience)
         401
     elseif error_code in (:insufficient_scope, :forbidden)
@@ -31,13 +31,28 @@ function auth_error_response(error_code::Symbol, message::String)
         401
     end
 
-    # WWW-Authenticate header per RFC 6750
+    # WWW-Authenticate header per RFC 6750 and RFC 9728
+    # Include resource_metadata URL to help clients discover auth requirements
     www_auth = if error_code == :missing_token
-        "Bearer"
+        if !isnothing(resource_metadata_url)
+            "Bearer resource_metadata=\"$resource_metadata_url\""
+        else
+            "Bearer"
+        end
     elseif error_code == :insufficient_scope
-        "Bearer error=\"insufficient_scope\", error_description=\"$message\""
+        base = "Bearer error=\"insufficient_scope\", error_description=\"$message\""
+        if !isnothing(resource_metadata_url)
+            "$base, resource_metadata=\"$resource_metadata_url\""
+        else
+            base
+        end
     else
-        "Bearer error=\"invalid_token\", error_description=\"$message\""
+        base = "Bearer error=\"invalid_token\", error_description=\"$message\""
+        if !isnothing(resource_metadata_url)
+            "$base, resource_metadata=\"$resource_metadata_url\""
+        else
+            base
+        end
     end
 
     headers = Dict{String,String}(
@@ -94,7 +109,7 @@ function create_auth_middleware(
     validator::TokenValidator = JWTValidator(),
     allowlist::Union{Set{String},Nothing} = nothing,
     enabled::Bool = true
-)::AuthMiddleware
+)
     return AuthMiddleware(
         config = config,
         validator = validator,
@@ -124,7 +139,7 @@ auth = create_simple_auth(Dict(
 function create_simple_auth(
     tokens::Dict{String,String};
     allowlist::Union{Set{String},Nothing} = nothing
-)::AuthMiddleware
+)
     validator = SimpleTokenValidator()
 
     for (token, username) in tokens
@@ -154,7 +169,7 @@ end
 Create a disabled auth middleware (for development/testing).
 All requests will be allowed with an anonymous user.
 """
-function disable_auth()::AuthMiddleware
+function disable_auth()
     return AuthMiddleware(
         config = OAuthConfig(issuer = "none", audience = "none"),
         validator = SimpleTokenValidator(),

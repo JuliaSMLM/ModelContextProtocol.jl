@@ -2,6 +2,8 @@
 # OAuth 2.0 Authorization Framework for MCP
 # Implements MCP 2025-11-25 authorization specification
 
+using Dates: DateTime, now, UTC, Second
+
 """
     AuthProvider
 
@@ -39,6 +41,11 @@ Base.@kwdef struct AuthenticatedUser
     claims::Dict{String,Any} = Dict{String,Any}()
 end
 
+function Base.show(io::IO, user::AuthenticatedUser)
+    name = isnothing(user.username) ? user.subject : user.username
+    print(io, "AuthenticatedUser(", name, "@", user.provider, ")")
+end
+
 """
     OAuthConfig(; issuer::String, audience::String,
                  required_scopes::Vector{String}=String[],
@@ -62,6 +69,10 @@ Base.@kwdef struct OAuthConfig
     introspection_endpoint::Union{String,Nothing} = nothing
 end
 
+function Base.show(io::IO, config::OAuthConfig)
+    print(io, "OAuthConfig(issuer=", config.issuer, ", audience=", config.audience, ")")
+end
+
 """
     AuthResult
 
@@ -77,6 +88,14 @@ end
 # Convenience constructors
 AuthResult(user::AuthenticatedUser) = AuthResult(true, user, nothing, nothing)
 AuthResult(error::String, code::Symbol) = AuthResult(false, nothing, error, code)
+
+function Base.show(io::IO, result::AuthResult)
+    if result.success
+        print(io, "AuthResult(success, ", result.user, ")")
+    else
+        print(io, "AuthResult(failed, :", result.error_code, ")")
+    end
+end
 
 """
     AuthMiddleware(; config::OAuthConfig,
@@ -97,6 +116,12 @@ Base.@kwdef mutable struct AuthMiddleware
     validator::TokenValidator
     allowlist::Union{Set{String},Nothing} = nothing
     enabled::Bool = true
+end
+
+function Base.show(io::IO, auth::AuthMiddleware)
+    status = auth.enabled ? "enabled" : "disabled"
+    allowlist_info = isnothing(auth.allowlist) ? "" : ", $(length(auth.allowlist)) allowed"
+    print(io, "AuthMiddleware(", status, allowlist_info, ")")
 end
 
 """
@@ -121,6 +146,10 @@ Base.@kwdef struct ProtectedResourceMetadata
     bearer_methods_supported::Vector{String} = ["header"]
 end
 
+function Base.show(io::IO, meta::ProtectedResourceMetadata)
+    print(io, "ProtectedResourceMetadata(", meta.resource, ")")
+end
+
 """
     extract_bearer_token(authorization_header::String) -> Union{String,Nothing}
 
@@ -130,9 +159,9 @@ Extract Bearer token from Authorization header.
 - `authorization_header::String`: The Authorization header value
 
 # Returns
-- `Union{String,Nothing}`: The token if present and valid format, nothing otherwise
+The token if present and valid format, `nothing` otherwise.
 """
-function extract_bearer_token(authorization_header::String)::Union{String,Nothing}
+function extract_bearer_token(authorization_header::String)
     if startswith(authorization_header, "Bearer ")
         return strip(authorization_header[8:end])
     end
@@ -140,13 +169,13 @@ function extract_bearer_token(authorization_header::String)::Union{String,Nothin
 end
 
 """
-    validate_token(validator::TokenValidator, token::String, config::OAuthConfig) -> AuthResult
+    validate_token(validator::TokenValidator, token::AbstractString, config::OAuthConfig) -> AuthResult
 
 Validate an OAuth token using the specified validator.
 
 # Arguments
 - `validator::TokenValidator`: The validation strategy to use
-- `token::String`: The token to validate
+- `token::AbstractString`: The token to validate
 - `config::OAuthConfig`: OAuth configuration with expected issuer, audience, etc.
 
 # Returns
@@ -164,9 +193,9 @@ Check if user is in the allowlist.
 - `allowlist::Set{String}`: Set of allowed usernames or subjects
 
 # Returns
-- `Bool`: true if user is allowed
+`true` if user is allowed.
 """
-function check_allowlist(user::AuthenticatedUser, allowlist::Set{String})::Bool
+function check_allowlist(user::AuthenticatedUser, allowlist::Set{String})
     # Check both username and subject
     if !isnothing(user.username) && user.username in allowlist
         return true
@@ -184,12 +213,12 @@ Authenticate an HTTP request using the auth middleware.
 - `authorization_header::Union{String,Nothing}`: The Authorization header value
 
 # Returns
-- `AuthResult`: Authentication result
+`AuthResult` indicating success with user info, or failure with error details.
 """
 function authenticate_request(
     middleware::AuthMiddleware,
     authorization_header::Union{String,Nothing}
-)::AuthResult
+)
     # Skip if auth disabled
     if !middleware.enabled
         return AuthResult(AuthenticatedUser(
@@ -231,3 +260,6 @@ include("token.jl")
 include("middleware.jl")
 include("metadata.jl")
 include("providers/github.jl")
+
+# OAuth 2.1 Authorization Server (MCP 2025-11-25)
+include("oauth_server/oauth_server.jl")

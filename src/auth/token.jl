@@ -2,6 +2,7 @@
 # Token validation implementations
 
 using Base64
+using Dates: datetime2unix
 
 """
     SimpleTokenValidator(; tokens::Dict{String,AuthenticatedUser})
@@ -18,6 +19,10 @@ end
 
 SimpleTokenValidator() = SimpleTokenValidator(Dict{String,AuthenticatedUser}())
 
+function Base.show(io::IO, v::SimpleTokenValidator)
+    print(io, "SimpleTokenValidator(", length(v.tokens), " tokens)")
+end
+
 """
     add_token!(validator::SimpleTokenValidator, token::String, user::AuthenticatedUser)
 
@@ -27,7 +32,7 @@ function add_token!(validator::SimpleTokenValidator, token::String, user::Authen
     validator.tokens[token] = user
 end
 
-function validate_token(validator::SimpleTokenValidator, token::String, config::OAuthConfig)::AuthResult
+function validate_token(validator::SimpleTokenValidator, token::AbstractString, config::OAuthConfig)
     if haskey(validator.tokens, token)
         return AuthResult(validator.tokens[token])
     end
@@ -35,27 +40,39 @@ function validate_token(validator::SimpleTokenValidator, token::String, config::
 end
 
 """
-    JWTValidator(; jwks_cache::Dict{String,Any}=Dict{String,Any}(),
-                  clock_skew_seconds::Int=60)
+    JWTValidator(; clock_skew_seconds::Int=60)
 
-JWT token validator with JWKS support.
+JWT token validator that validates claims (iss, aud, exp, nbf, scope).
+
+!!! warning "No Signature Verification"
+    This validator decodes and validates JWT claims but does **not** verify
+    cryptographic signatures (JWKS/JWK). Tokens from untrusted issuers can
+    be forged. Use `OAuthServerValidator` or `IntrospectionValidator` when
+    accepting tokens from external issuers. Signature verification via JWKS
+    may be added in a future release.
 
 # Fields
-- `jwks_cache::Dict{String,Any}`: Cached JSON Web Key Sets by URI
+- `jwks_cache::Dict{String,Any}`: Reserved for future JWKS support
 - `clock_skew_seconds::Int`: Allowed clock skew for exp/nbf validation
 """
-Base.@kwdef mutable struct JWTValidator <: TokenValidator
-    jwks_cache::Dict{String,Any} = Dict{String,Any}()
-    clock_skew_seconds::Int = 60
+struct JWTValidator <: TokenValidator
+    jwks_cache::Dict{String,Any}
+    clock_skew_seconds::Int
+end
+
+JWTValidator(; clock_skew_seconds::Int=60) = JWTValidator(Dict{String,Any}(), clock_skew_seconds)
+
+function Base.show(io::IO, v::JWTValidator)
+    print(io, "JWTValidator(skew=", v.clock_skew_seconds, "s)")
 end
 
 """
     decode_jwt_payload(token::String) -> Union{Dict{String,Any},Nothing}
 
 Decode JWT payload without verification (for claim inspection).
-Returns nothing if token format is invalid.
+Returns `nothing` if token format is invalid.
 """
-function decode_jwt_payload(token::String)::Union{Dict{String,Any},Nothing}
+function decode_jwt_payload(token::String)
     parts = split(token, '.')
     if length(parts) != 3
         return nothing
@@ -82,7 +99,7 @@ end
 
 Validate JWT claims (iss, aud, exp, nbf).
 """
-function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, clock_skew::Int)::AuthResult
+function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, clock_skew::Int)
     now_ts = round(Int, datetime2unix(now(UTC)))
 
     # Check issuer
@@ -160,10 +177,10 @@ function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, cloc
     return AuthResult(user)
 end
 
-function validate_token(validator::JWTValidator, token::String, config::OAuthConfig)::AuthResult
-    # Decode payload (without signature verification for now)
-    # Full signature verification requires JWKS fetch and crypto operations
-    claims = decode_jwt_payload(token)
+function validate_token(validator::JWTValidator, token::AbstractString, config::OAuthConfig)
+    # WARNING: Decodes payload WITHOUT signature verification.
+    # Do not use with untrusted issuers. See JWTValidator docstring.
+    claims = decode_jwt_payload(String(token))
 
     if isnothing(claims)
         return AuthResult("Invalid JWT format", :invalid_format)
@@ -174,7 +191,7 @@ function validate_token(validator::JWTValidator, token::String, config::OAuthCon
 end
 
 """
-    IntrospectionValidator(; http_client::Any=nothing)
+    IntrospectionValidator(; client_id=nothing, client_secret=nothing)
 
 Token validator using OAuth 2.0 Token Introspection (RFC 7662).
 Used for opaque tokens that cannot be validated locally.
@@ -183,12 +200,20 @@ Used for opaque tokens that cannot be validated locally.
 - `client_id::Union{String,Nothing}`: Client ID for introspection auth
 - `client_secret::Union{String,Nothing}`: Client secret for introspection auth
 """
-Base.@kwdef mutable struct IntrospectionValidator <: TokenValidator
-    client_id::Union{String,Nothing} = nothing
-    client_secret::Union{String,Nothing} = nothing
+struct IntrospectionValidator <: TokenValidator
+    client_id::Union{String,Nothing}
+    client_secret::Union{String,Nothing}
 end
 
-function validate_token(validator::IntrospectionValidator, token::String, config::OAuthConfig)::AuthResult
+IntrospectionValidator(; client_id=nothing, client_secret=nothing) =
+    IntrospectionValidator(client_id, client_secret)
+
+function Base.show(io::IO, v::IntrospectionValidator)
+    has_creds = !isnothing(v.client_id)
+    print(io, "IntrospectionValidator(", has_creds ? "with credentials" : "no credentials", ")")
+end
+
+function validate_token(validator::IntrospectionValidator, token::AbstractString, config::OAuthConfig)
     if isnothing(config.introspection_endpoint)
         return AuthResult("Introspection endpoint not configured", :configuration_error)
     end
@@ -203,7 +228,7 @@ function validate_token(validator::IntrospectionValidator, token::String, config
             push!(headers, "Authorization" => "Basic $auth")
         end
 
-        body = "token=$(HTTP.URIs.escapeuri(token))"
+        body = "token=$(HTTP.URIs.escapeuri(String(token)))"
 
         response = HTTP.post(
             config.introspection_endpoint,
@@ -247,6 +272,12 @@ function validate_token(validator::IntrospectionValidator, token::String, config
         return AuthResult(user)
 
     catch e
-        return AuthResult("Introspection failed: $e", :introspection_error)
+        if e isa HTTP.StatusError
+            return AuthResult("Introspection request failed: HTTP $(e.status)", :introspection_error)
+        elseif e isa HTTP.RequestError
+            return AuthResult("Introspection request failed: $(e.error)", :introspection_error)
+        else
+            rethrow(e)
+        end
     end
 end

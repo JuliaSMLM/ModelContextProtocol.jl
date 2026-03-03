@@ -1,7 +1,8 @@
 @testset "Error Handling" begin
     # Test resource not found error
     server = Server(ServerConfig(name="test"))
-    ctx = RequestContext(server=server)
+    state = ServerState()
+    ctx = RequestContext(server=server, state=state)
     result = handle_read_resource(ctx, ReadResourceParams(uri="invalid://uri"))
     @test result.error.code == -32000  # RESOURCE_NOT_FOUND
 
@@ -49,6 +50,7 @@ end
     )
 
     server = Server(config)
+    state = ServerState()
     register!(server, test_resource)
     register!(server, test_tool)
     register!(server, test_prompt)
@@ -64,7 +66,7 @@ end
         )
     )
 
-    ctx = RequestContext(server=server, request_id=init_req.id)
+    ctx = RequestContext(server=server, state=state, request_id=init_req.id)
     result = handle_initialize(ctx, init_req.params)
 
     @test result isa HandlerResult
@@ -79,7 +81,7 @@ end
         params=ReadResourceParams(uri="test://example")
     )
 
-    ctx = RequestContext(server=server, request_id=read_req.id)
+    ctx = RequestContext(server=server, state=state, request_id=read_req.id)
     result = handle_read_resource(ctx, read_req.params)
 
     @test result isa HandlerResult

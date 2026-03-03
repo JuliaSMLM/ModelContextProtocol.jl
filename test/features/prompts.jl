@@ -11,13 +11,14 @@
     )
 
     server = Server(ServerConfig(name="test"))
+    state = ServerState()
     register!(server, test_prompt)  # Register the test prompt
-    
+
     @test test_prompt.messages[1].content.text == "Test prompt with {arg1}"
-    
+
     # Test prompt template with arguments
     args = Dict("arg1" => "World")
-    ctx = RequestContext(server=server, request_id=1)
+    ctx = RequestContext(server=server, state=state, request_id=1)
     result = handle_get_prompt(ctx, GetPromptParams(name="test-prompt", arguments=args))
     
     @test result isa HandlerResult

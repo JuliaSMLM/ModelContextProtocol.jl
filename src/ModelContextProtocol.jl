@@ -71,6 +71,7 @@ include("utils/logging.jl")
 
 # 7. Implementation
 include("protocol/jsonrpc.jl")
+include("protocol/versioning.jl")
 include("core/capabilities.jl")
 include("core/server.jl")
 include("core/init.jl")
@@ -125,7 +126,21 @@ export
     create_protected_resource_metadata, create_github_resource_metadata,
     authenticate_request, validate_token, extract_bearer_token,
 
-    # GitHub OAuth Provider
-    GitHubOAuthValidator, GitHubAuthConfig, create_github_auth, clear_cache!
+    # GitHub OAuth Provider (Token Validation)
+    GitHubOAuthValidator, create_github_auth, clear_cache!,
+
+    # OAuth 2.1 Authorization Server (MCP 2025-11-25)
+    OAuthServer, OAuthServerConfig, OAuthServerValidator,
+    GitHubUpstreamProvider, TestUpstreamProvider, UpstreamOAuthProvider,
+    TokenStorage, InMemoryTokenStorage,
+    create_oauth_auth_middleware, create_oauth_resource_metadata,
+    # Dynamic Client Registration (RFC 7591)
+    RegisteredClient,
+    # PKCE utilities
+    validate_pkce, generate_code_verifier, compute_code_challenge,
+
+    # Protocol versioning (for feature-gated handlers)
+    LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
+    FEATURE_VERSIONS, supports
 
 end # module

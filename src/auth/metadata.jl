@@ -2,6 +2,20 @@
 # Protected Resource Metadata per RFC 9728 and MCP 2025-11-25 spec
 
 """
+    WELL_KNOWN_PATH
+
+Standard path for Protected Resource Metadata.
+"""
+const WELL_KNOWN_PATH::String = "/.well-known/oauth-protected-resource"
+
+"""
+    GitHubAuthorizationServer
+
+Pre-configured authorization server URL for GitHub OAuth.
+"""
+const GitHubAuthorizationServer::String = "https://github.com/login/oauth"
+
+"""
     create_protected_resource_metadata(resource_url::String,
                                        authorization_servers::Vector{String};
                                        scopes::Vector{String}=String[]) -> ProtectedResourceMetadata
@@ -26,7 +40,7 @@ function create_protected_resource_metadata(
     resource_url::String,
     authorization_servers::Vector{String};
     scopes::Vector{String} = String[]
-)::ProtectedResourceMetadata
+)
     return ProtectedResourceMetadata(
         resource = resource_url,
         authorization_servers = authorization_servers,
@@ -40,7 +54,7 @@ end
 
 Serialize Protected Resource Metadata to JSON for HTTP response.
 """
-function metadata_to_json(metadata::ProtectedResourceMetadata)::String
+function metadata_to_json(metadata::ProtectedResourceMetadata)
     return JSON3.write(Dict{String,Any}(
         "resource" => metadata.resource,
         "authorization_servers" => metadata.authorization_servers,
@@ -50,19 +64,12 @@ function metadata_to_json(metadata::ProtectedResourceMetadata)::String
 end
 
 """
-    WELL_KNOWN_PATH
-
-Standard path for Protected Resource Metadata.
-"""
-const WELL_KNOWN_PATH = "/.well-known/oauth-protected-resource"
-
-"""
     handle_well_known_request(metadata::ProtectedResourceMetadata) -> Tuple{Int,String,Dict{String,String}}
 
 Handle a request to the .well-known/oauth-protected-resource endpoint.
 
 # Returns
-- Tuple of (status_code, body, headers)
+Tuple of (status_code, body, headers).
 """
 function handle_well_known_request(metadata::ProtectedResourceMetadata)
     body = metadata_to_json(metadata)
@@ -72,13 +79,6 @@ function handle_well_known_request(metadata::ProtectedResourceMetadata)
     )
     return (200, body, headers)
 end
-
-"""
-    GitHubAuthorizationServer
-
-Pre-configured authorization server metadata for GitHub OAuth.
-"""
-const GitHubAuthorizationServer = "https://github.com/login/oauth"
 
 """
     create_github_resource_metadata(resource_url::String;
@@ -101,7 +101,7 @@ metadata = create_github_resource_metadata(
 function create_github_resource_metadata(
     resource_url::String;
     scopes::Vector{String} = ["read:user"]
-)::ProtectedResourceMetadata
+)
     return create_protected_resource_metadata(
         resource_url,
         [GitHubAuthorizationServer],

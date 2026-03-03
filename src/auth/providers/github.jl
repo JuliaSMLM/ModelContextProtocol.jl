@@ -1,12 +1,14 @@
 # src/auth/providers/github.jl
 # GitHub OAuth provider for MCP authentication
 
+using Dates: DateTime, now, UTC, Second
+
 """
     GITHUB_API_URL
 
 Base URL for GitHub API.
 """
-const GITHUB_API_URL = "https://api.github.com"
+const GITHUB_API_URL::String = "https://api.github.com"
 
 """
     GitHubOAuthValidator(; cache_ttl_seconds::Int=300)
@@ -17,19 +19,36 @@ Validates tokens by calling GitHub's /user API endpoint.
 # Fields
 - `cache_ttl_seconds::Int`: How long to cache user info (default: 5 minutes)
 - `user_cache::Dict{String,Tuple{AuthenticatedUser,DateTime}}`: Cache of validated tokens
+- `cache_lock::ReentrantLock`: Lock for thread-safe cache access
 """
-Base.@kwdef mutable struct GitHubOAuthValidator <: TokenValidator
-    cache_ttl_seconds::Int = 300
-    user_cache::Dict{String,Tuple{AuthenticatedUser,DateTime}} = Dict{String,Tuple{AuthenticatedUser,DateTime}}()
+struct GitHubOAuthValidator <: TokenValidator
+    cache_ttl_seconds::Int
+    user_cache::Dict{String,Tuple{AuthenticatedUser,DateTime}}
+    cache_lock::ReentrantLock
+end
+
+function GitHubOAuthValidator(; cache_ttl_seconds::Int=300)
+    GitHubOAuthValidator(
+        cache_ttl_seconds,
+        Dict{String,Tuple{AuthenticatedUser,DateTime}}(),
+        ReentrantLock()
+    )
+end
+
+function Base.show(io::IO, v::GitHubOAuthValidator)
+    cached = lock(v.cache_lock) do
+        length(v.user_cache)
+    end
+    print(io, "GitHubOAuthValidator(ttl=", v.cache_ttl_seconds, "s, cached=", cached, ")")
 end
 
 """
     fetch_github_user(token::String) -> Union{Dict{String,Any},Nothing}
 
 Fetch user information from GitHub API using an access token.
-Returns nothing if the token is invalid or the request fails.
+Returns `nothing` if the token is invalid or the request fails.
 """
-function fetch_github_user(token::String)::Union{Dict{String,Any},Nothing}
+function fetch_github_user(token::String)
     try
         response = HTTP.get(
             "$GITHUB_API_URL/user",
@@ -45,11 +64,15 @@ function fetch_github_user(token::String)::Union{Dict{String,Any},Nothing}
         end
         return nothing
     catch e
-        if e isa HTTP.StatusError && e.status == 401
-            return nothing  # Invalid token
+        if e isa HTTP.StatusError
+            # 401 = invalid token, other status codes are also failures
+            return nothing
+        elseif e isa HTTP.RequestError
+            @warn "GitHub API request failed" exception=(e, catch_backtrace())
+            return nothing
+        else
+            rethrow(e)
         end
-        @warn "GitHub API request failed" exception=e
-        return nothing
     end
 end
 
@@ -58,7 +81,7 @@ end
 
 Check if the authenticated user is a member of the specified GitHub organization.
 """
-function check_github_org_membership(token::String, org::String)::Bool
+function check_github_org_membership(token::String, org::String)
     try
         response = HTTP.get(
             "$GITHUB_API_URL/user/memberships/orgs/$org",
@@ -70,32 +93,45 @@ function check_github_org_membership(token::String, org::String)::Bool
         )
         return response.status == 200
     catch e
-        if e isa HTTP.StatusError && e.status in (404, 403)
-            return false  # Not a member or org not found
+        if e isa HTTP.StatusError
+            # 404 = not a member, 403 = org not found or no permission
+            return false
+        elseif e isa HTTP.RequestError
+            @warn "GitHub org membership check failed" exception=(e, catch_backtrace())
+            return false
+        else
+            rethrow(e)
         end
-        @warn "GitHub org membership check failed" exception=e
-        return false
     end
 end
 
 """
-    validate_token(validator::GitHubOAuthValidator, token::String, config::OAuthConfig) -> AuthResult
+    validate_token(validator::GitHubOAuthValidator, token::AbstractString, config::OAuthConfig) -> AuthResult
 
 Validate a GitHub OAuth access token by calling GitHub's API.
 """
-function validate_token(validator::GitHubOAuthValidator, token::String, config::OAuthConfig)::AuthResult
-    # Check cache first
-    if haskey(validator.user_cache, token)
-        user, cached_at = validator.user_cache[token]
-        if (now(UTC) - cached_at).value / 1000 < validator.cache_ttl_seconds
-            return AuthResult(user)
-        else
-            delete!(validator.user_cache, token)
+function validate_token(validator::GitHubOAuthValidator, token::AbstractString, config::OAuthConfig)
+    token_str = String(token)
+
+    # Check cache first (thread-safe)
+    cached_result = lock(validator.cache_lock) do
+        if haskey(validator.user_cache, token_str)
+            user, cached_at = validator.user_cache[token_str]
+            if now(UTC) - cached_at < Second(validator.cache_ttl_seconds)
+                return AuthResult(user)
+            else
+                delete!(validator.user_cache, token_str)
+            end
         end
+        return nothing
+    end
+
+    if !isnothing(cached_result)
+        return cached_result
     end
 
     # Fetch user from GitHub
-    user_data = fetch_github_user(token)
+    user_data = fetch_github_user(token_str)
 
     if isnothing(user_data)
         return AuthResult("Invalid GitHub token", :invalid_token)
@@ -107,20 +143,12 @@ function validate_token(validator::GitHubOAuthValidator, token::String, config::
         return AuthResult("GitHub user has no login", :invalid_token)
     end
 
-    # Build scopes from token (GitHub doesn't expose scopes in /user response)
-    # The actual scopes are determined at token creation time
-    scopes = String[]
-
-    # Check required scopes if specified in config
-    # Note: GitHub access tokens don't expose their scopes via API,
-    # so we can only verify permissions by trying operations
-
     # Build authenticated user
     user = AuthenticatedUser(
         subject = string(get(user_data, "id", username)),
         provider = "github",
         username = username,
-        scopes = scopes,
+        scopes = String[],  # GitHub doesn't expose scopes in /user response
         claims = Dict{String,Any}(
             "login" => username,
             "id" => get(user_data, "id", nothing),
@@ -131,31 +159,12 @@ function validate_token(validator::GitHubOAuthValidator, token::String, config::
         )
     )
 
-    # Cache the result
-    validator.user_cache[token] = (user, now(UTC))
+    # Cache the result (thread-safe)
+    lock(validator.cache_lock) do
+        validator.user_cache[token_str] = (user, now(UTC))
+    end
 
     return AuthResult(user)
-end
-
-"""
-    GitHubAuthConfig(; client_id::String,
-                      allowed_users::Set{String}=Set{String}(),
-                      required_org::Union{String,Nothing}=nothing,
-                      cache_ttl_seconds::Int=300)
-
-GitHub OAuth configuration for MCP server authentication.
-
-# Fields
-- `client_id::String`: GitHub OAuth App client ID (for documentation/reference)
-- `allowed_users::Set{String}`: Set of allowed GitHub usernames (empty = allow all authenticated)
-- `required_org::Union{String,Nothing}`: Require membership in this GitHub organization
-- `cache_ttl_seconds::Int`: How long to cache validated tokens
-"""
-Base.@kwdef struct GitHubAuthConfig
-    client_id::String = ""
-    allowed_users::Set{String} = Set{String}()
-    required_org::Union{String,Nothing} = nothing
-    cache_ttl_seconds::Int = 300
 end
 
 """
@@ -196,7 +205,7 @@ function create_github_auth(;
     allowed_users::Union{Vector{String},Set{String}} = String[],
     required_org::Union{String,Nothing} = nothing,
     cache_ttl_seconds::Int = 300
-)::AuthMiddleware
+)
     # Convert to Set if needed
     allowlist = if allowed_users isa Set
         allowed_users
@@ -233,12 +242,21 @@ Wrapper validator that adds organization membership checking.
 - `base_validator::GitHubOAuthValidator`: The underlying GitHub token validator
 - `required_org::Union{String,Nothing}`: Required organization membership
 """
-Base.@kwdef struct GitHubOAuthValidatorWithOrg <: TokenValidator
+struct GitHubOAuthValidatorWithOrg <: TokenValidator
     base_validator::GitHubOAuthValidator
-    required_org::Union{String,Nothing} = nothing
+    required_org::Union{String,Nothing}
 end
 
-function validate_token(validator::GitHubOAuthValidatorWithOrg, token::String, config::OAuthConfig)::AuthResult
+function GitHubOAuthValidatorWithOrg(; base_validator::GitHubOAuthValidator, required_org=nothing)
+    GitHubOAuthValidatorWithOrg(base_validator, required_org)
+end
+
+function Base.show(io::IO, v::GitHubOAuthValidatorWithOrg)
+    org_info = isnothing(v.required_org) ? "" : ", org=$(v.required_org)"
+    print(io, "GitHubOAuthValidatorWithOrg(", v.base_validator, org_info, ")")
+end
+
+function validate_token(validator::GitHubOAuthValidatorWithOrg, token::AbstractString, config::OAuthConfig)
     # First validate the token with base validator
     result = validate_token(validator.base_validator, token, config)
 
@@ -248,7 +266,7 @@ function validate_token(validator::GitHubOAuthValidatorWithOrg, token::String, c
 
     # Check org membership if required
     if !isnothing(validator.required_org)
-        if !check_github_org_membership(token, validator.required_org)
+        if !check_github_org_membership(String(token), validator.required_org)
             return AuthResult(
                 "User is not a member of required organization: $(validator.required_org)",
                 :forbidden
@@ -265,7 +283,9 @@ end
 Clear the token validation cache.
 """
 function clear_cache!(validator::GitHubOAuthValidator)
-    empty!(validator.user_cache)
+    lock(validator.cache_lock) do
+        empty!(validator.user_cache)
+    end
 end
 
 function clear_cache!(validator::GitHubOAuthValidatorWithOrg)

@@ -563,14 +563,16 @@ Track the internal state of an MCP server during operation.
 - `running::Bool`: Whether the server main loop is active
 - `last_request_id::Int`: Last used request ID for server-initiated requests
 - `pending_requests::Dict{RequestId,String}`: Map of request IDs to method names
+- `protocol_version::Union{String,Nothing}`: Negotiated protocol version with client
 """
 mutable struct ServerState
     initialized::Bool
     running::Bool
     last_request_id::Int
     pending_requests::Dict{RequestId, String}  # method name for each pending request
-    
-    ServerState() = new(false, false, 0, Dict())
+    protocol_version::Union{String, Nothing}   # negotiated protocol version
+
+    ServerState() = new(false, false, 0, Dict(), nothing)
 end
 
 # Server type moved to server_types.jl to resolve Transport dependency

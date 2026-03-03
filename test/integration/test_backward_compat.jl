@@ -79,13 +79,13 @@ using JSON3
     end
 
     @testset "Protocol Version Negotiation" begin
-        # Per MCP spec: Server MUST respond with a version it supports (not error).
-        # Client then decides if it can work with that version.
+        # Per MCP spec: If server supports client's version, respond with same version.
+        # Otherwise respond with server's latest and let client decide.
         config = ServerConfig(name = "test-server")
         server = Server(config)
         state = ModelContextProtocol.ServerState()
 
-        # Test with old protocol version - server responds with its version, not error
+        # Test with supported old version - server responds with SAME version
         old_protocol_msg = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
         response = ModelContextProtocol.process_message(server, state, old_protocol_msg)
 
@@ -93,8 +93,22 @@ using JSON3
         parsed = JSON3.read(response)
         @test parsed.jsonrpc == "2.0"
         @test parsed.id == 1
-        # Server responds with its supported version (not error)
         @test haskey(parsed, :result)
-        @test parsed.result.protocolVersion == "2025-11-25"
+        # Server responds with client's requested version (backwards compatible)
+        @test parsed.result.protocolVersion == "2024-11-05"
+
+        # Test with 2025-06-18 - should also be supported
+        state2 = ModelContextProtocol.ServerState()
+        june_msg = """{"jsonrpc":"2.0","method":"initialize","id":2,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        response2 = ModelContextProtocol.process_message(server, state2, june_msg)
+        parsed2 = JSON3.read(response2)
+        @test parsed2.result.protocolVersion == "2025-06-18"
+
+        # Test with unknown version - server responds with its latest
+        state3 = ModelContextProtocol.ServerState()
+        unknown_msg = """{"jsonrpc":"2.0","method":"initialize","id":3,"params":{"protocolVersion":"9999-99-99","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        response3 = ModelContextProtocol.process_message(server, state3, unknown_msg)
+        parsed3 = JSON3.read(response3)
+        @test parsed3.result.protocolVersion == "2025-11-25"
     end
 end
