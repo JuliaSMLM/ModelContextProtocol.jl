@@ -20,7 +20,7 @@ jobs:
         with:
           version: '1.11'
       
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       
       - name: Build Julia package
         run: |
@@ -162,7 +162,7 @@ jobs:
         with:
           version: '1.11'
       
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       
       - name: Build Julia package
         run: |
