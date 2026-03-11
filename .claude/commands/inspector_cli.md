@@ -95,7 +95,7 @@ npx @modelcontextprotocol/inspector --cli \
 For debugging Julia servers that aren't working with Inspector CLI, use direct JSON-RPC testing:
 
 ### 1. Protocol Information
-- **Required Version**: `2025-06-18` (not `2024-11-05`)
+- **Required Version**: `2025-11-25` (not `2024-11-05`)
 - **Inspector sends**: Proper initialization with correct version
 - **Message sequence**: initialize → notifications/initialized → method call
 
@@ -103,11 +103,11 @@ For debugging Julia servers that aren't working with Inspector CLI, use direct J
 
 ```bash
 # Single request
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | \
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}' | \
   julia --project examples/test_inspector.jl 2>/dev/null | jq .
 
 # Multiple requests
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | \
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' | \
   julia --project examples/test_inspector.jl 2>/dev/null | jq -s .
 ```
 
@@ -115,12 +115,12 @@ echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"202
 
 ```bash
 # List tools
-(echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'; \
+(echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'; \
  echo '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}') | \
   julia --project examples/test_inspector.jl 2>/dev/null | tail -1 | jq .
 
 # Call a tool
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"Hello!"}},"id":2}' | \
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"Hello!"}},"id":2}' | \
   julia --project examples/test_inspector.jl 2>/dev/null | tail -1 | jq .
 ```
 
@@ -128,11 +128,11 @@ echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"202
 
 ```bash
 # List resources
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"resources/list","params":{},"id":2}' | \
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"resources/list","params":{},"id":2}' | \
   julia --project examples/test_inspector.jl 2>/dev/null | tail -1 | jq .
 
 # Read a resource
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"test://hello"},"id":2}' | \
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"test://hello"},"id":2}' | \
   julia --project examples/test_inspector.jl 2>/dev/null | tail -1 | jq .
 ```
 
@@ -140,11 +140,11 @@ echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"202
 
 ```bash
 # List prompts
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"prompts/list","params":{},"id":2}' | \
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"prompts/list","params":{},"id":2}' | \
   julia --project examples/test_inspector.jl 2>/dev/null | tail -1 | jq .
 
 # Get a prompt (with arguments)
-echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"horror"}},"id":2}' | \
+echo -e '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}\n{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"movie_analysis","arguments":{"genre":"horror"}},"id":2}' | \
   julia --project examples/time_server.jl 2>/dev/null | tail -1 | jq .
 
 # Note: The Inspector CLI currently has a bug with prompt arguments. 
@@ -174,16 +174,16 @@ Missing either header will result in `406 Not Acceptable` error.
 # Initialize (save session ID from response)
 curl -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | jq .
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | jq .
 
 # Extract and save session ID
 SESSION_ID=$(curl -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
   -s -D - | grep -i "mcp-session-id" | cut -d' ' -f2 | tr -d '\r')
 
 # List tools (use session ID from init)
@@ -222,7 +222,7 @@ Create a reusable test script in the project's tmp/ folder:
 cd "$(dirname "$0")/.."
 
 SERVER="julia --project examples/test_inspector.jl"
-PROTOCOL="2025-06-18"
+PROTOCOL="2025-11-25"
 
 # Create request file in tmp/
 cat > tmp/mcp_test.json << EOF
@@ -243,7 +243,7 @@ rm -f tmp/mcp_test.json
 ### 1. Check Server Output
 ```bash
 # See all output including errors
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | \
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | \
   julia --project examples/test_inspector.jl 2>&1
 ```
 
@@ -272,7 +272,7 @@ rm -f tmp/mcp_debug.log tmp/debug_server.jl
 
 ### 3. Test Inspector Protocol Sequence
 The Inspector CLI sends this sequence:
-1. `{"method":"initialize","params":{"protocolVersion":"2025-06-18",...},"id":0}`
+1. `{"method":"initialize","params":{"protocolVersion":"2025-11-25",...},"id":0}`
 2. `{"method":"notifications/initialized","jsonrpc":"2.0"}` (notification)
 3. `{"method":"tools/list","jsonrpc":"2.0","id":1}`
 
@@ -285,7 +285,7 @@ The Inspector CLI sends this sequence:
 
 ### Issue: Protocol Version Mismatch
 **Error**: "Unsupported protocol version"
-**Solution**: Use `2025-06-18` not `2024-11-05`
+**Solution**: Use `2025-11-25` not `2024-11-05`
 
 ### Issue: Empty Tool Lists
 **Cause**: Tools not registered before server starts

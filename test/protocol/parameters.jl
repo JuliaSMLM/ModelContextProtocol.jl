@@ -14,10 +14,12 @@
         description = "Test null parameters",
         tools = [test_tool]
     )
-    
+    state = ServerState()
+
     # Create a request context
     ctx = ModelContextProtocol.RequestContext(
         server = server,
+        state = state,
         request_id = 1
     )
     

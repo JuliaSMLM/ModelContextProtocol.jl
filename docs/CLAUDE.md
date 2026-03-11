@@ -70,7 +70,7 @@ deploydocs(
 Julia implementation of the Model Context Protocol (MCP) for seamless LLM-application integration.
 
 ## Features
-- Full MCP 2025-06-18 protocol support
+- Full MCP 2025-11-25 protocol support
 - stdio and HTTP/SSE transports
 - Tools, Resources, and Prompts
 - Multi-content returns
@@ -155,7 +155,7 @@ curl -X POST http://127.0.0.1:3000/ ...
 # MCP Protocol Details
 
 ## Protocol Version
-ModelContextProtocol.jl implements MCP specification version `2025-06-18`.
+ModelContextProtocol.jl implements MCP specification version `2025-11-25`.
 
 ## JSON-RPC 2.0
 All communication uses JSON-RPC 2.0...
@@ -304,7 +304,7 @@ julia> length(server.tools)
    - Link to sections: `[User Guide](@ref)`
 
 3. **Protocol Details**:
-   - Always mention protocol version `2025-06-18`
+   - Always mention protocol version `2025-11-25`
    - Show JSON examples for protocol messages
    - Include curl commands for testing
 
@@ -363,7 +363,7 @@ Documentation builds and deploys via GitHub Actions:
 ## Documentation Standards
 
 ### For MCP-Specific Docs
-- Always specify protocol version `2025-06-18`
+- Always specify protocol version `2025-11-25`
 - Include both stdio and HTTP examples
 - Show Inspector CLI and curl testing methods
 - Document session management for HTTP

@@ -5,10 +5,13 @@ using JSON3
 using UUIDs: uuid4
 
 """
-    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
+    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/",
+                   auth::Union{AuthMiddleware,Nothing}=nothing,
+                   resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing,
+                   oauth_server::Union{OAuthServer,Nothing}=nothing)
 
-Transport implementation following the MCP Streamable HTTP specification (2025-06-18).
-Supports Server-Sent Events (SSE) for streaming and session management.
+Transport implementation following the MCP Streamable HTTP specification (2025-11-25).
+Supports Server-Sent Events (SSE) for streaming, session management, and OAuth authentication.
 
 # Fields
 - `host::String`: Host address to bind to (default: "127.0.0.1")
@@ -20,6 +23,48 @@ Supports Server-Sent Events (SSE) for streaming and session management.
 - `active_streams::Dict{String,HTTP.Stream}`: Active streaming connections
 - `request_queue::Channel{Tuple{String,String}}`: Queue for incoming requests (id, message)
 - `response_channels::Dict{String,Channel{String}}`: Response channels per request
+- `auth::Union{AuthMiddleware,Nothing}`: Optional authentication middleware (for token validation)
+- `resource_metadata::Union{ProtectedResourceMetadata,Nothing}`: Protected resource metadata for discovery
+- `oauth_server::Union{OAuthServer,Nothing}`: OAuth 2.1 Authorization Server (MCP 2025-11-25)
+
+# Example with GitHub OAuth Authorization Server
+```julia
+# Create GitHub upstream provider
+github = GitHubUpstreamProvider(
+    client_id = ENV["GITHUB_CLIENT_ID"],
+    client_secret = ENV["GITHUB_CLIENT_SECRET"]
+)
+
+# Create OAuth server (handles /authorize, /callback, /token)
+oauth = OAuthServer(
+    issuer = "https://mcp.example.com",
+    upstream = github,
+    allowed_users = Set(["user1", "user2"])
+)
+
+transport = HttpTransport(
+    host = "0.0.0.0",
+    port = 8080,
+    oauth_server = oauth
+)
+```
+
+# Example with simple token validation (no OAuth server)
+```julia
+auth = create_github_auth(
+    allowed_users = ["user1", "user2"]
+)
+
+transport = HttpTransport(
+    host = "0.0.0.0",
+    port = 8080,
+    auth = auth,
+    resource_metadata = create_github_resource_metadata(
+        "https://mcp.example.com",
+        scopes = ["read:user"]
+    )
+)
+```
 """
 mutable struct HttpTransport <: Transport
     host::String
@@ -39,14 +84,21 @@ mutable struct HttpTransport <: Transport
     protocol_version::String  # MCP protocol version
     event_counter::Int64  # SSE event IDs
     allowed_origins::Vector{String}  # CORS security
-    
-    function HttpTransport(; 
-        host::String="127.0.0.1", 
-        port::Int=8080, 
+    auth::Union{AuthMiddleware,Nothing}  # OAuth authentication
+    resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 metadata
+    current_user::Union{AuthenticatedUser,Nothing}  # Current authenticated user
+    oauth_server::Union{OAuthServer,Nothing}  # OAuth 2.1 Authorization Server
+
+    function HttpTransport(;
+        host::String="127.0.0.1",
+        port::Int=8080,
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
-        protocol_version::String="2025-06-18",
-        session_required::Bool=false
+        protocol_version::String="2025-11-25",
+        session_required::Bool=false,
+        auth::Union{AuthMiddleware,Nothing}=nothing,
+        resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing,
+        oauth_server::Union{OAuthServer,Nothing}=nothing
     )
         new(
             host,
@@ -65,7 +117,11 @@ mutable struct HttpTransport <: Transport
             session_required,
             protocol_version,
             0,  # Event counter starts at 0
-            allowed_origins
+            allowed_origins,
+            auth,
+            resource_metadata,
+            nothing,  # No authenticated user initially
+            oauth_server
         )
     end
 end
@@ -262,13 +318,116 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     method = HTTP.method(request)
     target = request.target
     path = HTTP.URI(target).path
-    
+
+    # Handle .well-known/oauth-protected-resource discovery endpoint (RFC 9728)
+    if path == WELL_KNOWN_PATH && method == "GET"
+        if !isnothing(transport.resource_metadata)
+            status, body, headers = handle_well_known_request(transport.resource_metadata)
+            HTTP.setstatus(stream, status)
+            for (k, v) in headers
+                HTTP.setheader(stream, k => v)
+            end
+            HTTP.setheader(stream, "Content-Length" => string(length(body)))
+            HTTP.startwrite(stream)
+            write(stream, body)
+        else
+            HTTP.setstatus(stream, 404)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            HTTP.setheader(stream, "Content-Length" => "9")
+            HTTP.startwrite(stream)
+            write(stream, "Not Found")
+        end
+        return nothing
+    end
+
+    # Handle OAuth 2.1 Authorization Server endpoints
+    # These are handled before authentication since they implement the auth flow itself
+    if !isnothing(transport.oauth_server) && is_oauth_endpoint(transport.oauth_server, path)
+        # Parse query parameters from target
+        uri = HTTP.URI(target)
+        query_params = Dict{String,String}()
+        if !isempty(uri.query)
+            for param in split(uri.query, '&')
+                parts = split(param, '=', limit=2)
+                if length(parts) == 2
+                    query_params[HTTP.unescapeuri(parts[1])] = HTTP.unescapeuri(parts[2])
+                elseif length(parts) == 1
+                    query_params[HTTP.unescapeuri(parts[1])] = ""
+                end
+            end
+        end
+
+        # Read body for POST requests
+        body = method == "POST" ? String(read(stream)) : ""
+
+        # Collect headers
+        request_headers = Dict{String,String}()
+        for header in HTTP.headers(request)
+            request_headers[header.first] = header.second
+        end
+
+        # Handle the OAuth request
+        status, response_body, response_headers = handle_oauth_request(
+            transport.oauth_server,
+            method,
+            path,
+            query_params,
+            body,
+            request_headers
+        )
+
+        # Send response
+        HTTP.setstatus(stream, status)
+        for (k, v) in response_headers
+            HTTP.setheader(stream, k => v)
+        end
+        HTTP.setheader(stream, "Content-Length" => string(length(response_body)))
+        HTTP.startwrite(stream)
+        if !isempty(response_body)
+            write(stream, response_body)
+        end
+        return nothing
+    end
+
     # Handle both POST and GET requests to our endpoint
     if path != transport.endpoint
         HTTP.setstatus(stream, 404)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         write(stream, "Not Found")
         return nothing
+    end
+
+    # Authentication check (if auth middleware is configured)
+    if !isnothing(transport.auth)
+        auth_header_raw = HTTP.header(request, "Authorization", "")
+        auth_header = isempty(auth_header_raw) ? nothing : String(auth_header_raw)
+        auth_result = authenticate_request(transport.auth, auth_header)
+
+        if !auth_result.success
+            # Return appropriate auth error response
+            # Include resource_metadata URL if available for RFC 9728 discovery
+            resource_metadata_url = if !isnothing(transport.resource_metadata)
+                "$(transport.resource_metadata.resource)/.well-known/oauth-protected-resource"
+            else
+                nothing
+            end
+            status, body, headers = auth_error_response(
+                auth_result.error_code,
+                auth_result.error;
+                resource_metadata_url=resource_metadata_url
+            )
+            HTTP.setstatus(stream, status)
+            for (k, v) in headers
+                HTTP.setheader(stream, k => v)
+            end
+            HTTP.setheader(stream, "Content-Length" => string(length(body)))
+            HTTP.startwrite(stream)
+            write(stream, body)
+            return nothing
+        end
+
+        # Store authenticated user for this request
+        transport.current_user = auth_result.user
     end
     
     # Handle GET requests for SSE notification stream
@@ -793,9 +952,87 @@ function end_response(transport::HttpTransport)::Nothing
     nothing
 end
 
+"""
+    get_authenticated_user(transport::HttpTransport) -> Union{AuthenticatedUser,Nothing}
+
+Get the currently authenticated user for this transport.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+
+# Returns
+- `Union{AuthenticatedUser,Nothing}`: The authenticated user, or nothing if no auth
+"""
+function get_authenticated_user(transport::HttpTransport)::Union{AuthenticatedUser,Nothing}
+    return transport.current_user
+end
+
+"""
+    is_auth_enabled(transport::HttpTransport) -> Bool
+
+Check if authentication is enabled for this transport.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+
+# Returns
+- `Bool`: true if auth is enabled, false otherwise
+"""
+function is_auth_enabled(transport::HttpTransport)::Bool
+    return !isnothing(transport.auth) && transport.auth.enabled
+end
+
+"""
+    create_oauth_auth_middleware(oauth_server::OAuthServer) -> AuthMiddleware
+
+Create an AuthMiddleware configured to validate tokens issued by the given OAuth server.
+
+# Arguments
+- `oauth_server::OAuthServer`: The OAuth server that issues tokens
+
+# Returns
+- `AuthMiddleware`: Configured middleware for token validation
+"""
+function create_oauth_auth_middleware(oauth_server::OAuthServer)
+    config = OAuthConfig(
+        issuer = oauth_server.config.issuer,
+        audience = oauth_server.config.issuer
+    )
+    validator = OAuthServerValidator(oauth_server.storage)
+    return AuthMiddleware(
+        config = config,
+        validator = validator,
+        allowlist = oauth_server.allowed_users,
+        enabled = true
+    )
+end
+
+"""
+    create_oauth_resource_metadata(oauth_server::OAuthServer; scopes::Vector{String}=String[]) -> ProtectedResourceMetadata
+
+Create Protected Resource Metadata (RFC 9728) for the given OAuth server.
+
+# Arguments
+- `oauth_server::OAuthServer`: The OAuth server
+- `scopes::Vector{String}`: Scopes supported by the resource (default: empty)
+
+# Returns
+- `ProtectedResourceMetadata`: Metadata for the protected resource
+"""
+function create_oauth_resource_metadata(oauth_server::OAuthServer; scopes::Vector{String}=String[])
+    return ProtectedResourceMetadata(
+        resource = oauth_server.config.issuer,
+        authorization_servers = [oauth_server.config.issuer],
+        scopes_supported = scopes,
+        bearer_methods_supported = ["header"]
+    )
+end
+
 # Pretty printing
 function Base.show(io::IO, transport::HttpTransport)
     status = transport.connected ? "connected" : "disconnected"
     active = length(transport.active_streams)
-    print(io, "HttpTransport(http://$(transport.host):$(transport.port)$(transport.endpoint), $status, $active active)")
+    auth_status = is_auth_enabled(transport) ? ", auth enabled" : ""
+    oauth_status = !isnothing(transport.oauth_server) ? ", OAuth AS" : ""
+    print(io, "HttpTransport(http://$(transport.host):$(transport.port)$(transport.endpoint), $status, $active active$auth_status$oauth_status)")
 end

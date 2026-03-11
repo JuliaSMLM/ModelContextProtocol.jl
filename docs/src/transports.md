@@ -38,7 +38,7 @@ using ModelContextProtocol: HttpTransport
 transport = HttpTransport(
     host = "127.0.0.1",
     port = 3000,
-    protocol_version = "2025-06-18"
+    protocol_version = "2025-11-25"
 )
 
 # Create server
@@ -63,7 +63,7 @@ transport = HttpTransport(
     host = "127.0.0.1",           # Bind address (localhost by default)
     port = 3000,                  # Port number
     endpoint = "/",               # Base endpoint path
-    protocol_version = "2025-06-18",  # MCP protocol version
+    protocol_version = "2025-11-25",  # MCP protocol version
     session_required = true,      # Require session validation
     allowed_origins = ["http://localhost:8080"],  # CORS origins
     enable_sse = true            # Enable Server-Sent Events
@@ -82,14 +82,14 @@ HTTP transport uses session-based communication for security and state tracking:
 # Initialize and get session ID
 curl -X POST http://localhost:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}' \
   -i
 
 # Use session ID in subsequent requests  
 curl -X POST http://localhost:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -H 'Mcp-Session-Id: <session-id-from-response>' \
   -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}'
 ```
@@ -174,7 +174,7 @@ using Sockets
 
 #### Protocol Version Mismatches
 
-- Use `MCP-Protocol-Version: 2025-06-18` header in all requests
+- Use `MCP-Protocol-Version: 2025-11-25` header in all requests
 - Check server logs for protocol version negotiation messages
 - Ensure client and server support the same protocol version
 

@@ -68,13 +68,13 @@ function parse_message(json::String)::MCPMessage
         )
     end
     
-    # MCP protocol 2025-06-18 removes support for JSON-RPC batching
+    # MCP protocol 2025-11-25 removes support for JSON-RPC batching
     if raw isa Array || raw isa Vector
         return JSONRPCError(
             id = nothing,
             error = ErrorInfo(
                 code = ErrorCodes.INVALID_REQUEST,
-                message = "JSON-RPC batching not supported in MCP protocol 2025-06-18"
+                message = "JSON-RPC batching not supported in MCP protocol 2025-11-25"
             )
         )
     end
@@ -85,7 +85,7 @@ function parse_message(json::String)::MCPMessage
             id = nothing,
             error = ErrorInfo(
                 code = ErrorCodes.INVALID_REQUEST,
-                message = "JSON-RPC batching not supported in MCP protocol 2025-06-18"
+                message = "JSON-RPC batching not supported in MCP protocol 2025-11-25"
             )
         )
     end

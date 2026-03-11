@@ -70,13 +70,13 @@
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2025-06-18",
+                    "protocolVersion" => "2025-11-25",
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test", "version" => "1.0")
                 ),
@@ -155,13 +155,13 @@
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
              "Origin" => "http://localhost:3000",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2025-06-18",
+                    "protocolVersion" => "2025-11-25",
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test", "version" => "1.0")
                 ),
@@ -177,13 +177,13 @@
                 "http://127.0.0.1:$port/",
                 ["Content-Type" => "application/json",
                  "Origin" => "http://evil.com",
-                 "MCP-Protocol-Version" => "2025-06-18",
+                 "MCP-Protocol-Version" => "2025-11-25",
                  "Accept" => "application/json, text/event-stream"],
                 JSON3.write(Dict(
                     "jsonrpc" => "2.0",
                     "method" => "initialize",
                     "params" => Dict(
-                        "protocolVersion" => "2025-06-18",
+                        "protocolVersion" => "2025-11-25",
                         "capabilities" => Dict(),
                         "clientInfo" => Dict("name" => "test", "version" => "1.0")
                     ),
@@ -218,7 +218,7 @@
 
         port = 15090 + rand(1:1000)
 
-        transport = HttpTransport(port=port, protocol_version="2025-06-18")
+        transport = HttpTransport(port=port, protocol_version="2025-11-25")
 
         server = mcp_server(
             name = "version-test",
@@ -252,11 +252,11 @@
         result = JSON3.read(String(init_response.body))
         @test haskey(result, "result")
         # Server responds with its supported version (not error)
-        @test result["result"]["protocolVersion"] == "2025-06-18"
+        @test result["result"]["protocolVersion"] == "2025-11-25"
 
         session_id = HTTP.header(init_response, "Mcp-Session-Id", "")
 
-        # Test 2: Client requests older version, server still responds with its version
+        # Test 2: Client requests older supported version, server responds with SAME version
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
@@ -276,8 +276,8 @@
         @test response.status == 200
         result = JSON3.read(String(response.body))
         @test haskey(result, "result")
-        # Server responds with its version, client decides compatibility
-        @test result["result"]["protocolVersion"] == "2025-06-18"
+        # Server responds with client's requested version (backwards compatible)
+        @test result["result"]["protocolVersion"] == "2024-11-05"
 
         # Clean up
         server.active = false
@@ -330,13 +330,13 @@
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
-             "MCP-Protocol-Version" => "2025-06-18",
+             "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
             JSON3.write(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
-                    "protocolVersion" => "2025-06-18",
+                    "protocolVersion" => "2025-11-25",
                     "capabilities" => Dict(),
                     "clientInfo" => Dict("name" => "test", "version" => "1.0")
                 ),

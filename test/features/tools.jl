@@ -48,8 +48,10 @@
     )
     
     # Create request context
+    state = ServerState()
     ctx = ModelContextProtocol.RequestContext(
         server = server,
+        state = state,
         request_id = "test-1"
     )
     
@@ -165,7 +167,8 @@ end
         version = "1.0.0"
     )
     server = Server(config)
-    
+    state = ServerState()
+
     # Register tools
     tools = [
             # Tool that returns success CallToolResult
@@ -243,6 +246,7 @@ end
     @testset "Success CallToolResult" begin
         ctx = RequestContext(
             server = server,
+            state = state,
             request_id = 1
         )
         
@@ -265,6 +269,7 @@ end
     @testset "Error CallToolResult" begin
         ctx = RequestContext(
             server = server,
+            state = state,
             request_id = 2
         )
         
@@ -287,6 +292,7 @@ end
     @testset "Multi-content CallToolResult" begin
         ctx = RequestContext(
             server = server,
+            state = state,
             request_id = 3
         )
         
@@ -328,10 +334,12 @@ end
         description = "Test server with no-params tool",
         tools = [no_params_tool]
     )
+    state = ServerState()
 
     # Test tool list response
     ctx = ModelContextProtocol.RequestContext(
         server = server,
+        state = state,
         request_id = 1
     )
 
@@ -397,9 +405,11 @@ end
             version = "1.0.0",
             tools = [tool]
         )
+        state = ServerState()
 
         ctx = ModelContextProtocol.RequestContext(
             server = server,
+            state = state,
             request_id = 1
         )
 
@@ -459,9 +469,11 @@ end
             version = "1.0.0",
             tools = [tool]
         )
+        state = ServerState()
 
         ctx = ModelContextProtocol.RequestContext(
             server = server,
+            state = state,
             request_id = 1
         )
 
@@ -504,9 +516,11 @@ end
             version = "1.0.0",
             tools = [tool]
         )
+        state = ServerState()
 
         ctx = ModelContextProtocol.RequestContext(
             server = server,
+            state = state,
             request_id = 1
         )
 

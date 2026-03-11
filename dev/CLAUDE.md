@@ -240,6 +240,6 @@ println("Response: ", response)
 - Save all generated data for later analysis
 - Document findings with println statements
 - Clean up old outputs periodically
-- Test with protocol version `2025-06-18`
+- Test with protocol version `2025-11-25`
 - Use `127.0.0.1` instead of `localhost` for HTTP tests
 - Always include both Accept headers for HTTP: `application/json, text/event-stream`

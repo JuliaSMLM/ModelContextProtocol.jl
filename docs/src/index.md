@@ -4,7 +4,7 @@ Julia implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 
 ## Features
 
-- ✅ **Core MCP 2025-06-18 Protocol** - Server-side implementation with tools, resources, and prompts
+- ✅ **Core MCP 2025-11-25 Protocol** - Server-side implementation with tools, resources, and prompts
 - ✅ **Multiple Transports** - stdio (default) and HTTP with Server-Sent Events
 - ✅ **Multi-Content Responses** - Tools can return text, images, and embedded resources
 - ✅ **Auto-Registration** - Automatic component discovery from directory structure
@@ -86,7 +86,7 @@ start!(server)
 
 ## Protocol Compliance
 
-ModelContextProtocol.jl implements the MCP specification version `2025-06-18`, including:
+ModelContextProtocol.jl implements the MCP specification version `2025-11-25`, including:
 
 - JSON-RPC 2.0 message protocol
 - Tool discovery and invocation
@@ -197,7 +197,7 @@ npx @modelcontextprotocol/inspector http://127.0.0.1:3000/
 # Initialize connection
 curl -X POST http://127.0.0.1:3000/ \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
 
 # List available tools
 curl -X POST http://127.0.0.1:3000/ \

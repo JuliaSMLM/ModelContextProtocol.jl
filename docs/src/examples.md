@@ -458,7 +458,7 @@ sleep 5
 # Test initialization
 curl -X POST http://127.0.0.1:8765/ \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
 
 # Save session ID from response, then test tool listing
 curl -X POST http://127.0.0.1:8765/ \

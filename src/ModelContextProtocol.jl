@@ -54,29 +54,33 @@ include("types.jl")
 # 2. Protocol Messages
 include("protocol/messages.jl")
 
-# 3. Transport Layer
+# 3. Authentication (OAuth 2.0 framework - needed by HTTP transport)
+include("auth/auth.jl")
+
+# 4. Transport Layer
 include("transports/base.jl")
 include("transports/stdio.jl")
 include("transports/http.jl")
 
-# 4. Server Type (depends on Transport)
+# 5. Server Type (depends on Transport)
 include("server_types.jl")
 
-# 5. Utils
+# 6. Utils
 include("utils/errors.jl")
 include("utils/logging.jl")
 
-# 5. Implementation
+# 7. Implementation
 include("protocol/jsonrpc.jl")
+include("protocol/versioning.jl")
 include("core/capabilities.jl")
 include("core/server.jl")
 include("core/init.jl")
 include("protocol/handlers.jl")
 
-# 6. Serialization (needs all types)
+# 8. Serialization (needs all types)
 include("utils/serialization.jl")
 
-# 7. Features (types are now in types.jl, no separate feature files needed)
+# 9. Features (types are now in types.jl, no separate feature files needed)
 
 # 9. API documentation
 include("api.jl")
@@ -106,10 +110,37 @@ export
     Transport,  # Abstract type for type annotations
     StdioTransport, HttpTransport,
     connect,  # For HTTP transport initialization
+    get_authenticated_user, is_auth_enabled,  # HTTP auth helpers
     
     # Advanced features
     Server,  # For type annotations in user code
     subscribe!, unsubscribe!,  # Resource subscription management
-    content2dict  # Utility for debugging/testing
+    content2dict,  # Utility for debugging/testing
+
+    # Authentication (OAuth 2.0)
+    AuthProvider, TokenValidator, AuthenticatedUser,
+    OAuthConfig, AuthResult, AuthMiddleware,
+    ProtectedResourceMetadata,
+    SimpleTokenValidator, JWTValidator, IntrospectionValidator,
+    create_auth_middleware, create_simple_auth, disable_auth,
+    create_protected_resource_metadata, create_github_resource_metadata,
+    authenticate_request, validate_token, extract_bearer_token,
+
+    # GitHub OAuth Provider (Token Validation)
+    GitHubOAuthValidator, create_github_auth, clear_cache!,
+
+    # OAuth 2.1 Authorization Server (MCP 2025-11-25)
+    OAuthServer, OAuthServerConfig, OAuthServerValidator,
+    GitHubUpstreamProvider, TestUpstreamProvider, UpstreamOAuthProvider,
+    TokenStorage, InMemoryTokenStorage,
+    create_oauth_auth_middleware, create_oauth_resource_metadata,
+    # Dynamic Client Registration (RFC 7591)
+    RegisteredClient,
+    # PKCE utilities
+    validate_pkce, generate_code_verifier, compute_code_challenge,
+
+    # Protocol versioning (for feature-gated handlers)
+    LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
+    FEATURE_VERSIONS, supports
 
 end # module
