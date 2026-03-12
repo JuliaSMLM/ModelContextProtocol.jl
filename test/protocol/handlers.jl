@@ -159,4 +159,98 @@ end
         @test !haskey(d_min, "sizes")
         @test !haskey(d_min, "theme")
     end
+
+    @testset "Multiple icons on a single component" begin
+        light_icon = MCPIcon(src="https://example.com/light.png", theme="light")
+        dark_icon = MCPIcon(src="https://example.com/dark.png", theme="dark")
+        tool = MCPTool(
+            name="multi_icon_tool",
+            description="Tool with light and dark icons",
+            parameters=[],
+            handler=(args) -> TextContent(text="ok"),
+            title="Multi-Icon Tool",
+            icons=[light_icon, dark_icon]
+        )
+        server = mcp_server(name="test", version="1.0.0", tools=[tool])
+        ctx = RequestContext(server=server, request_id=1)
+        result = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams())
+        tool_dict = result.response.result["tools"][1]
+        @test length(tool_dict["icons"]) == 2
+        @test tool_dict["icons"][1]["theme"] == "light"
+        @test tool_dict["icons"][2]["theme"] == "dark"
+    end
+
+    @testset "Prompts without title/icons omit fields" begin
+        prompt = MCPPrompt(
+            name="plain_prompt",
+            description="No title or icons",
+            arguments=[PromptArgument(name="x", description="param")],
+            messages=[PromptMessage(content=TextContent(text="Hello {x}"))]
+        )
+        server = mcp_server(name="test", version="1.0.0", prompts=[prompt])
+        ctx = RequestContext(server=server, request_id=1)
+        result = ModelContextProtocol.handle_list_prompts(ctx, ModelContextProtocol.ListPromptsParams())
+        prompt_dict = result.response.result["prompts"][1]
+        @test !haskey(prompt_dict, "title")
+        @test !haskey(prompt_dict, "icons")
+        @test !haskey(prompt_dict["arguments"][1], "title")
+    end
+
+    @testset "Resources without title/icons omit fields" begin
+        resource = MCPResource(
+            uri="test://plain",
+            name="plain_resource",
+            description="No title or icons",
+            data_provider=() -> Dict("x" => 1)
+        )
+        server = mcp_server(name="test", version="1.0.0", resources=[resource])
+        ctx = RequestContext(server=server, request_id=1)
+        result = handle_list_resources(ctx, ListResourcesParams())
+        res_dict = result.response.result["resources"][1]
+        @test !haskey(res_dict, "title")
+        @test !haskey(res_dict, "icons")
+    end
+
+    @testset "ResourceTemplate title and icons fields" begin
+        icon = MCPIcon(src="https://example.com/tpl.png", mimeType="image/png")
+        tpl = ResourceTemplate(
+            name="titled_template",
+            uri_template="test://items/{id}",
+            description="A template with title",
+            title="My Template",
+            icons=[icon]
+        )
+        @test tpl.title == "My Template"
+        @test length(tpl.icons) == 1
+        @test tpl.icons[1].src == "https://example.com/tpl.png"
+
+        # Without title/icons
+        tpl_plain = ResourceTemplate(
+            name="plain_template",
+            uri_template="test://items/{id}"
+        )
+        @test isnothing(tpl_plain.title)
+        @test isnothing(tpl_plain.icons)
+    end
+
+    @testset "Server with multiple icons in server info" begin
+        icons = [
+            MCPIcon(src="https://example.com/sm.png", sizes=["16x16"]),
+            MCPIcon(src="https://example.com/lg.png", sizes=["128x128"]),
+            MCPIcon(src="https://example.com/any.svg", sizes=["any"], mimeType="image/svg+xml")
+        ]
+        server = mcp_server(name="multi-icon-server", version="1.0.0", title="Multi Icon", icons=icons)
+        ctx = RequestContext(server=server, request_id=1)
+        init_params = InitializeParams(
+            capabilities=ClientCapabilities(),
+            clientInfo=Implementation(),
+            protocolVersion="2025-06-18"
+        )
+        result = handle_initialize(ctx, init_params)
+        server_info = result.response.result.serverInfo
+        @test server_info["title"] == "Multi Icon"
+        @test length(server_info["icons"]) == 3
+        @test server_info["icons"][3]["mimeType"] == "image/svg+xml"
+        @test server_info["icons"][3]["sizes"] == ["any"]
+    end
 end
