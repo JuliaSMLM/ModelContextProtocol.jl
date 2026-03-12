@@ -167,18 +167,20 @@ function default_capabilities()
 end
 
 """
-    mcp_server(; name::String, version::String="1.0.0", 
+    mcp_server(; name::String, version::String="1.0.0",
              tools::Union{Vector{MCPTool},MCPTool,Nothing}=nothing,
-             resources::Union{Vector{MCPResource},MCPResource,Nothing}=nothing, 
+             resources::Union{Vector{MCPResource},MCPResource,Nothing}=nothing,
              prompts::Union{Vector{MCPPrompt},MCPPrompt,Nothing}=nothing,
-             description::String="", 
+             description::String="",
              capabilities::Vector{Capability}=default_capabilities(),
-             auto_register_dir::Union{String,Nothing}=nothing) -> Server
+             auto_register_dir::Union{String,Nothing}=nothing,
+             title::Union{String,Nothing}=nothing,
+             icons::Union{Vector{MCPIcon},Nothing}=nothing) -> Server
 
 Primary entry point for creating and configuring a Model Context Protocol (MCP) server.
 
 # Arguments
-- `name::String`: Unique identifier for the server instance 
+- `name::String`: Unique identifier for the server instance
 - `version::String`: Your server implementation version (defaults to "1.0.0") - YOUR server's version, not the MCP protocol version
 - `tools`: Tools to expose to the model
 - `resources`: Resources available to the model
@@ -186,6 +188,8 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 - `description::String`: Optional server description
 - `capabilities::Vector{Capability}`: Server capability configuration
 - `auto_register_dir`: Directory to auto-register components from
+- `title::Union{String,Nothing}`: Optional human-friendly display name for the server
+- `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for the server
 
 # Returns
 - `Server`: A configured server instance ready to handle MCP client connections
@@ -195,6 +199,7 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 server = mcp_server(
     name = "my-server",
     version = "1.0.0",  # Your server version
+    title = "My MCP Server",
     description = "Demo server with time tool",
     tools = MCPTool(
         name = "get_time",
@@ -208,20 +213,24 @@ start!(server)
 """
 function mcp_server(;
     name::String,
-    version::String = "1.0.0",  # Default server version for convenience 
+    version::String = "1.0.0",
     tools::Union{Vector{MCPTool}, MCPTool, Nothing} = nothing,
     resources::Union{Vector{MCPResource}, MCPResource, Nothing} = nothing,
-    prompts::Union{Vector{MCPPrompt}, MCPPrompt, Nothing} = nothing,  # Added prompts parameter
+    prompts::Union{Vector{MCPPrompt}, MCPPrompt, Nothing} = nothing,
     description::String = "",
     capabilities::Vector{Capability} = default_capabilities(),
-    auto_register_dir::Union{String, Nothing} = nothing  # Added auto_register_dir parameter
+    auto_register_dir::Union{String, Nothing} = nothing,
+    title::Union{String, Nothing} = nothing,
+    icons::Union{Vector{MCPIcon}, Nothing} = nothing
 )
     # Create server config
     config = ServerConfig(
         name = name,
         version = version,
         description = description,
-        capabilities = capabilities
+        capabilities = capabilities,
+        title = title,
+        icons = icons
     )
     
     # Create server
