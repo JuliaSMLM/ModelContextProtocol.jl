@@ -10,6 +10,11 @@ using Dates: datetime2unix
 Simple token validator using a static mapping of tokens to users.
 Useful for API keys and development/testing.
 
+!!! note "Development use"
+    Lookups are plain dictionary comparisons (not constant-time) and tokens are held
+    in memory in plaintext. Intended for development and trusted static API keys, not
+    as a general-purpose production token store.
+
 # Fields
 - `tokens::Dict{String,AuthenticatedUser}`: Map of valid tokens to user info
 """
@@ -102,19 +107,21 @@ Validate JWT claims (iss, aud, exp, nbf).
 function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, clock_skew::Int)
     now_ts = round(Int, datetime2unix(now(UTC)))
 
-    # Check issuer
-    if haskey(claims, "iss")
-        if claims["iss"] != config.issuer
+    # Issuer: when an issuer is configured the token MUST carry a matching `iss`.
+    # Fail closed if it is absent (a forged unsigned token must not pass by omission).
+    if !isempty(config.issuer)
+        iss = get(claims, "iss", nothing)
+        if iss === nothing || iss != config.issuer
             return AuthResult("Invalid issuer", :invalid_issuer)
         end
     end
 
-    # Check audience
-    if haskey(claims, "aud")
-        aud = claims["aud"]
-        valid_aud = if aud isa String
+    # Audience: when an audience is configured the token MUST carry a matching `aud`.
+    if !isempty(config.audience)
+        aud = get(claims, "aud", nothing)
+        valid_aud = if aud isa AbstractString
             aud == config.audience
-        elseif aud isa Vector
+        elseif aud isa AbstractVector
             config.audience in aud
         else
             false
@@ -124,12 +131,13 @@ function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, cloc
         end
     end
 
-    # Check expiration
-    if haskey(claims, "exp")
-        exp = claims["exp"]
-        if exp isa Number && now_ts > exp + clock_skew
-            return AuthResult("Token expired", :expired)
-        end
+    # Expiration is REQUIRED and must be in the future (no non-expiring tokens).
+    exp = get(claims, "exp", nothing)
+    if !(exp isa Number)
+        return AuthResult("Token missing expiration", :invalid_token)
+    end
+    if now_ts > exp + clock_skew
+        return AuthResult("Token expired", :expired)
     end
 
     # Check not-before
@@ -177,11 +185,41 @@ function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, cloc
     return AuthResult(user)
 end
 
-function validate_token(validator::JWTValidator, token::AbstractString, config::OAuthConfig)
-    # WARNING: Decodes payload WITHOUT signature verification.
-    # Do not use with untrusted issuers. See JWTValidator docstring.
-    claims = decode_jwt_payload(String(token))
+"""
+    decode_jwt_header(token::String) -> Union{Dict{String,Any},Nothing}
 
+Decode the JWT header (first segment) without verification. Returns `nothing` if
+the token format is invalid.
+"""
+function decode_jwt_header(token::String)
+    parts = split(token, '.')
+    length(parts) == 3 || return nothing
+    try
+        header_b64 = parts[1]
+        padding = mod(4 - mod(length(header_b64), 4), 4)
+        header_b64 = replace(header_b64 * repeat("=", padding), "-" => "+", "_" => "/")
+        return JSON3.read(String(base64decode(header_b64)), Dict{String,Any})
+    catch
+        return nothing
+    end
+end
+
+function validate_token(validator::JWTValidator, token::AbstractString, config::OAuthConfig)
+    # WARNING: Decodes payload WITHOUT cryptographic signature verification.
+    # Do not use with untrusted issuers. See JWTValidator docstring.
+    tok = String(token)
+
+    # Reject "alg: none" (unsigned) tokens outright. Even though we don't verify
+    # signatures yet, accepting alg=none is a classic JWT authentication bypass.
+    header = decode_jwt_header(tok)
+    if !isnothing(header)
+        alg = String(get(header, "alg", ""))
+        if isempty(alg) || lowercase(alg) == "none"
+            return AuthResult("Unsupported or missing JWT algorithm", :invalid_token)
+        end
+    end
+
+    claims = decode_jwt_payload(tok)
     if isnothing(claims)
         return AuthResult("Invalid JWT format", :invalid_format)
     end
@@ -245,6 +283,29 @@ function validate_token(validator::IntrospectionValidator, token::AbstractString
         # Check if token is active
         if !get(result, "active", false)
             return AuthResult("Token is not active", :invalid_token)
+        end
+
+        # Audience / issuer binding: a token that is active at the AS but was minted
+        # for a different resource must not be accepted here. Enforce when the
+        # introspection response carries the claim (RFC 7662 responses vary).
+        if !isempty(config.issuer)
+            iss = get(result, "iss", nothing)
+            if iss !== nothing && iss != config.issuer
+                return AuthResult("Invalid issuer", :invalid_issuer)
+            end
+        end
+        if !isempty(config.audience)
+            aud = get(result, "aud", nothing)
+            if aud !== nothing
+                ok = aud isa AbstractString ? aud == config.audience :
+                     aud isa AbstractVector ? config.audience in aud : false
+                ok || return AuthResult("Invalid audience", :invalid_audience)
+            end
+        end
+        if haskey(result, "exp") && result["exp"] isa Number
+            if round(Int, datetime2unix(now(UTC))) > result["exp"]
+                return AuthResult("Token expired", :expired)
+            end
         end
 
         # Build user from introspection response

@@ -23,48 +23,50 @@ Generate HTTP response for authentication errors.
 - Tuple of (status_code, body, headers)
 """
 function auth_error_response(error_code::Symbol, message::String; resource_metadata_url::Union{String,Nothing}=nothing)
-    status = if error_code in (:missing_token, :invalid_token, :invalid_format, :expired, :not_yet_valid, :invalid_issuer, :invalid_audience)
-        401
-    elseif error_code in (:insufficient_scope, :forbidden)
-        403
+    # Map internal validator codes to an HTTP status and a GENERIC, client-facing
+    # OAuth error. We deliberately do NOT echo the specific reason (expired vs.
+    # wrong issuer vs. malformed vs. which scope) — that would be a token/policy
+    # oracle. `message` is retained for the caller / server-side logging only.
+    is_scope = error_code === :insufficient_scope
+    is_forbidden = is_scope || error_code === :forbidden
+    status = is_forbidden ? 403 : 401
+
+    oauth_error = if is_forbidden
+        "insufficient_scope"
+    elseif error_code === :missing_token
+        "invalid_request"
     else
-        401
+        "invalid_token"
+    end
+    description = if is_forbidden
+        "The request requires higher privileges than the access token provides."
+    elseif error_code === :missing_token
+        "Authentication required."
+    else
+        "The access token is missing, invalid, or expired."
     end
 
-    # WWW-Authenticate header per RFC 6750 and RFC 9728
-    # Include resource_metadata URL to help clients discover auth requirements
-    www_auth = if error_code == :missing_token
-        if !isnothing(resource_metadata_url)
-            "Bearer resource_metadata=\"$resource_metadata_url\""
-        else
-            "Bearer"
-        end
-    elseif error_code == :insufficient_scope
-        base = "Bearer error=\"insufficient_scope\", error_description=\"$message\""
-        if !isnothing(resource_metadata_url)
-            "$base, resource_metadata=\"$resource_metadata_url\""
-        else
-            base
-        end
-    else
-        base = "Bearer error=\"invalid_token\", error_description=\"$message\""
-        if !isnothing(resource_metadata_url)
-            "$base, resource_metadata=\"$resource_metadata_url\""
-        else
-            base
-        end
+    # WWW-Authenticate per RFC 6750 / 9728. Every value comes from a fixed
+    # vocabulary or server-controlled config (resource_metadata_url), so there is
+    # no untrusted interpolation to escape.
+    params = String[]
+    if error_code !== :missing_token
+        push!(params, "error=\"$(oauth_error)\"")
+        push!(params, "error_description=\"$(description)\"")
     end
+    if !isnothing(resource_metadata_url)
+        push!(params, "resource_metadata=\"$(resource_metadata_url)\"")
+    end
+    www_auth = isempty(params) ? "Bearer" : "Bearer " * join(params, ", ")
 
     headers = Dict{String,String}(
         "WWW-Authenticate" => www_auth,
         "Content-Type" => "application/json"
     )
-
     body = JSON3.write(Dict(
-        "error" => String(error_code),
-        "error_description" => message
+        "error" => oauth_error,
+        "error_description" => description
     ))
-
     return (status, body, headers)
 end
 
@@ -81,15 +83,18 @@ end
 
 """
     create_auth_middleware(config::OAuthConfig;
-                          validator::TokenValidator=JWTValidator(),
+                          validator::TokenValidator,
                           allowlist::Union{Set{String},Nothing}=nothing,
                           enabled::Bool=true) -> AuthMiddleware
 
-Create an authentication middleware for HTTP transport.
+Create an authentication middleware for the HTTP transport.
 
 # Arguments
 - `config::OAuthConfig`: OAuth configuration
-- `validator::TokenValidator`: Token validation strategy (default: JWTValidator)
+- `validator::TokenValidator`: Token validation strategy (REQUIRED — no default, so
+  an unsafe validator is never selected implicitly. Note `JWTValidator` does not verify
+  signatures; prefer `IntrospectionValidator` or `GitHubOAuthValidator` for tokens from
+  external issuers.)
 - `allowlist::Union{Set{String},Nothing}`: Optional allowlist of usernames/subjects
 - `enabled::Bool`: Whether auth is enabled (default: true)
 
@@ -106,7 +111,7 @@ auth = create_auth_middleware(
 """
 function create_auth_middleware(
     config::OAuthConfig;
-    validator::TokenValidator = JWTValidator(),
+    validator::TokenValidator,
     allowlist::Union{Set{String},Nothing} = nothing,
     enabled::Bool = true
 )

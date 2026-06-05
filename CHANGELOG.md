@@ -30,11 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   username allowlist and org-membership check).
 - Protected Resource Metadata discovery (RFC 9728) at `/.well-known/oauth-protected-resource`
   (served publicly); `401`/`403` responses carry an RFC 6750 `WWW-Authenticate` header pointing to it.
-- Helpers exported: `create_simple_auth`, `create_auth_middleware`, `disable_auth`,
-  `create_protected_resource_metadata`, `create_github_resource_metadata`, `authenticate_request`,
-  `extract_bearer_token`, `get_authenticated_user`, `is_auth_enabled`.
-- This is the **Resource Server** slice of the OAuth work (PR #27); the OAuth 2.1 **Authorization
-  Server** (token issuance — DCR, PKCE) remains a separate follow-up.
+- **Per-request auth context**: the authenticated user is threaded per request into
+  `RequestContext.authenticated_user` (no shared transport state, so concurrent requests can't
+  race on identity). Tool handlers may opt into a context-aware form `handler(args, ctx)` (plain
+  `handler(args)` still works) to read it.
+- Helpers exported: `create_simple_auth`, `create_auth_middleware` (requires an explicit
+  validator — no unsafe default), `disable_auth`, `create_protected_resource_metadata`,
+  `create_github_resource_metadata`, `authenticate_request`, `extract_bearer_token`, `is_auth_enabled`.
+- **Security posture** (validators fail closed): `JWTValidator` rejects `alg=none`, requires a
+  valid `exp`, and enforces `iss`/`aud` when configured; `IntrospectionValidator` binds `iss`/`aud`
+  when present; `GitHubOAuthValidator` requires `state == "active"` for org membership; auth error
+  responses are generic (no token/policy oracle).
+- This is the **Resource Server** slice of the OAuth work (PR #27). Deferred follow-ups: JWKS
+  signature verification for `JWTValidator`, SSE session-principal binding + stream expiry,
+  per-tool scope enforcement, case-insensitive allowlists, and the OAuth 2.1 **Authorization
+  Server** (token issuance — DCR, PKCE).
 
 ### Changed
 

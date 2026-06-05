@@ -91,7 +91,14 @@ function check_github_org_membership(token::String, org::String)
                 "X-GitHub-Api-Version" => "2022-11-28"
             ]
         )
-        return response.status == 200
+        response.status == 200 || return false
+        # A 200 can still be a *pending* invitation; only "active" membership grants access.
+        membership = try
+            JSON3.read(String(response.body), Dict{String,Any})
+        catch
+            return false
+        end
+        return get(membership, "state", "") == "active"
     catch e
         if e isa HTTP.StatusError
             # 404 = not a member, 403 = org not found or no permission

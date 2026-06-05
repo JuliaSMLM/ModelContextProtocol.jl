@@ -320,3 +320,71 @@
         end
     end
 end
+
+@testset "OAuth Resource Server hardening" begin
+    _b64url(s) = replace(base64encode(s), "+" => "-", "/" => "_", "=" => "")
+    _mkjwt(header, payload) = "$(_b64url(JSON3.write(header))).$(_b64url(JSON3.write(payload))).sig"
+    cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
+    v = JWTValidator()
+    future = round(Int, datetime2unix(now(UTC))) + 3600
+    past = round(Int, datetime2unix(now(UTC))) - 3600
+
+    @testset "create_auth_middleware requires an explicit validator" begin
+        @test_throws UndefKeywordError create_auth_middleware(cfg)
+        @test create_auth_middleware(cfg; validator = v) isa AuthMiddleware
+    end
+
+    @testset "JWT validator fails closed" begin
+        # alg=none is rejected outright (classic bypass)
+        @test validate_token(v, _mkjwt(Dict("alg"=>"none"),
+            Dict("iss"=>"https://issuer.example","aud"=>"my-mcp","exp"=>future,"sub"=>"u")), cfg).error_code == :invalid_token
+        # Missing exp rejected (no non-expiring tokens)
+        @test validate_token(v, _mkjwt(Dict("alg"=>"RS256"),
+            Dict("iss"=>"https://issuer.example","aud"=>"my-mcp","sub"=>"u")), cfg).error_code == :invalid_token
+        # Expired rejected
+        @test validate_token(v, _mkjwt(Dict("alg"=>"RS256"),
+            Dict("iss"=>"https://issuer.example","aud"=>"my-mcp","exp"=>past,"sub"=>"u")), cfg).error_code == :expired
+        # Wrong / missing issuer rejected when configured
+        @test validate_token(v, _mkjwt(Dict("alg"=>"RS256"),
+            Dict("iss"=>"https://evil","aud"=>"my-mcp","exp"=>future,"sub"=>"u")), cfg).error_code == :invalid_issuer
+        @test validate_token(v, _mkjwt(Dict("alg"=>"RS256"),
+            Dict("aud"=>"my-mcp","exp"=>future,"sub"=>"u")), cfg).error_code == :invalid_issuer
+        # Wrong audience rejected
+        @test validate_token(v, _mkjwt(Dict("alg"=>"RS256"),
+            Dict("iss"=>"https://issuer.example","aud"=>"other","exp"=>future,"sub"=>"u")), cfg).error_code == :invalid_audience
+        # Fully valid claims pass (claims-only; signatures still not verified)
+        ok = validate_token(v, _mkjwt(Dict("alg"=>"RS256"),
+            Dict("iss"=>"https://issuer.example","aud"=>"my-mcp","exp"=>future,"sub"=>"u","preferred_username"=>"alice")), cfg)
+        @test ok.success
+        @test ok.user.username == "alice"
+    end
+end
+
+@testset "Per-request auth context + ctx-aware handlers" begin
+    server = mcp_server(name = "ctx-test", description = "", tools = [
+        MCPTool(name = "whoami", description = "echo the authenticated user",
+                handler = (args, ctx) -> TextContent(text = isnothing(ctx.authenticated_user) ? "anon" : ctx.authenticated_user.username),
+                parameters = ToolParameter[]),
+        MCPTool(name = "plain", description = "no ctx",
+                handler = (args) -> TextContent(text = "ok"),
+                parameters = ToolParameter[]),
+    ])
+    state = ServerState()
+    whoami(user) = JSON3.read(process_message(server, state,
+        """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"whoami","arguments":{}},"id":1}""";
+        authenticated_user = user)).result.content[1].text
+
+    # Plain handler(args) still works
+    rplain = JSON3.read(process_message(server, state,
+        """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"plain","arguments":{}},"id":1}"""))
+    @test rplain.result.content[1].text == "ok"
+
+    # ctx-aware handler sees the per-request user; interleaving must not leak identity
+    alice = AuthenticatedUser(subject = "1", provider = "test", username = "alice")
+    bob   = AuthenticatedUser(subject = "2", provider = "test", username = "bob")
+    @test whoami(nothing) == "anon"
+    @test whoami(alice) == "alice"
+    @test whoami(bob) == "bob"
+    @test whoami(alice) == "alice"
+    @test whoami(nothing) == "anon"
+end
