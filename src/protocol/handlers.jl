@@ -25,7 +25,7 @@ Base.@kwdef mutable struct RequestContext
     state::ServerState = ServerState()
     request_id::Union{RequestId,Nothing} = nothing
     progress_token::Union{ProgressToken,Nothing} = nothing
-    authenticated_user::Union{AuthenticatedUser,Nothing} = nothing  # per-request identity from HTTP auth, else nothing
+    authenticated_user::Union{AuthenticatedUser,Nothing} = nothing  # per-request identity from HTTP auth, else nothing; treat as read-only (may be shared from a validator cache)
 end
 
 """

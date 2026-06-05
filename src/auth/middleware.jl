@@ -105,6 +105,7 @@ auth = create_auth_middleware(
         issuer = "https://github.com",
         audience = "my-mcp-server"
     ),
+    validator = IntrospectionValidator(client_id = "id", client_secret = "secret"),
     allowlist = Set(["user1", "user2"])
 )
 ```

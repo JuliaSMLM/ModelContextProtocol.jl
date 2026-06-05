@@ -212,11 +212,12 @@ function validate_token(validator::JWTValidator, token::AbstractString, config::
     # Reject "alg: none" (unsigned) tokens outright. Even though we don't verify
     # signatures yet, accepting alg=none is a classic JWT authentication bypass.
     header = decode_jwt_header(tok)
-    if !isnothing(header)
-        alg = String(get(header, "alg", ""))
-        if isempty(alg) || lowercase(alg) == "none"
-            return AuthResult("Unsupported or missing JWT algorithm", :invalid_token)
-        end
+    if isnothing(header)
+        return AuthResult("Invalid JWT format", :invalid_format)
+    end
+    alg = get(header, "alg", nothing)
+    if !(alg isa AbstractString) || isempty(alg) || lowercase(String(alg)) == "none"
+        return AuthResult("Unsupported or missing JWT algorithm", :invalid_token)
     end
 
     claims = decode_jwt_payload(tok)
@@ -288,19 +289,20 @@ function validate_token(validator::IntrospectionValidator, token::AbstractString
         # Audience / issuer binding: a token that is active at the AS but was minted
         # for a different resource must not be accepted here. Enforce when the
         # introspection response carries the claim (RFC 7662 responses vary).
+        # When an issuer/audience is configured the introspection response MUST carry a
+        # matching claim — fail closed if absent, so a token minted for another resource
+        # (active at a shared AS) cannot be replayed here.
         if !isempty(config.issuer)
             iss = get(result, "iss", nothing)
-            if iss !== nothing && iss != config.issuer
+            if iss === nothing || iss != config.issuer
                 return AuthResult("Invalid issuer", :invalid_issuer)
             end
         end
         if !isempty(config.audience)
             aud = get(result, "aud", nothing)
-            if aud !== nothing
-                ok = aud isa AbstractString ? aud == config.audience :
-                     aud isa AbstractVector ? config.audience in aud : false
-                ok || return AuthResult("Invalid audience", :invalid_audience)
-            end
+            ok = aud isa AbstractString ? aud == config.audience :
+                 aud isa AbstractVector ? config.audience in aud : false
+            ok || return AuthResult("Invalid audience", :invalid_audience)
         end
         if haskey(result, "exp") && result["exp"] isa Number
             if round(Int, datetime2unix(now(UTC))) > result["exp"]
