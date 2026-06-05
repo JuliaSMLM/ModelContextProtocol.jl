@@ -60,9 +60,10 @@ greet_tool = MCPTool(
 )
 
 # Create Streamable HTTP transport
+# protocol_version defaults to LATEST_PROTOCOL_VERSION; the server negotiates
+# down to whatever a client requests (see negotiate_version).
 transport = HttpTransport(
-    port = 3000,
-    protocol_version = "2025-06-18"  # Current MCP protocol
+    port = 3000
 )
 
 # Create server with tools
