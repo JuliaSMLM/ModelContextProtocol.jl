@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HttpTransport` now defaults `protocol_version` to `LATEST_PROTOCOL_VERSION` (`2025-11-25`)
   and accepts any version in `SUPPORTED_PROTOCOL_VERSIONS` for the `MCP-Protocol-Version` header.
 
+### Fixed
+
+- Tool handlers returning a `Dict`, `String`, or `Tuple{Vector{UInt8},String}` are now
+  auto-wrapped into `Content` regardless of the declared `return_type`, matching the
+  documented contract — previously these converted only when `return_type == TextContent`,
+  so the default `Vector{Content}` raised `ArgumentError`. Fixes #34.
+
 ### Notes
 
 - This is the version-negotiation slice extracted from the larger OAuth 2.1 / 2025-11-25 work

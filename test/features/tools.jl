@@ -523,3 +523,81 @@ end
         @test !("count" in schema["required"])
     end
 end
+
+@testset "Convenience return conversions (issue #34)" begin
+    # A tool returning a raw Dict or String with the DEFAULT return_type
+    # (Vector{Content}) must auto-wrap per the documented contract, not error.
+    server = mcp_server(name = "convert-test", description = "")
+    register!(server, MCPTool(
+        name = "dict_tool",
+        description = "returns a Dict",
+        handler = (args) -> Dict("answer" => 42, "ok" => true),
+        parameters = ToolParameter[],
+    ))
+    register!(server, MCPTool(
+        name = "string_tool",
+        description = "returns a String",
+        handler = (args) -> "plain text result",
+        parameters = ToolParameter[],
+    ))
+
+    @testset "Dict return wraps in JSON TextContent" begin
+        ctx = RequestContext(server = server, request_id = 1)
+        result = handle_call_tool(ctx, CallToolParams(name = "dict_tool", arguments = nothing))
+
+        @test isnothing(result.error)
+        @test result.response.result isa CallToolResult
+        @test result.response.result.is_error == false
+        @test length(result.response.result.content) == 1
+        @test result.response.result.content[1]["type"] == "text"
+        # The text is the JSON encoding of the returned Dict
+        parsed = JSON3.read(result.response.result.content[1]["text"])
+        @test parsed.answer == 42
+        @test parsed.ok == true
+    end
+
+    @testset "String return wraps in TextContent" begin
+        ctx = RequestContext(server = server, request_id = 2)
+        result = handle_call_tool(ctx, CallToolParams(name = "string_tool", arguments = nothing))
+
+        @test isnothing(result.error)
+        @test result.response.result isa CallToolResult
+        @test result.response.result.is_error == false
+        @test length(result.response.result.content) == 1
+        @test result.response.result.content[1]["type"] == "text"
+        @test result.response.result.content[1]["text"] == "plain text result"
+    end
+
+    @testset "Image tuple return wraps in ImageContent" begin
+        register!(server, MCPTool(
+            name = "image_tool",
+            description = "returns raw image bytes + mime",
+            handler = (args) -> (UInt8[0x89, 0x50, 0x4e, 0x47], "image/png"),
+            parameters = ToolParameter[],
+        ))
+        ctx = RequestContext(server = server, request_id = 3)
+        result = handle_call_tool(ctx, CallToolParams(name = "image_tool", arguments = nothing))
+
+        @test isnothing(result.error)
+        @test result.response.result.is_error == false
+        @test length(result.response.result.content) == 1
+        @test result.response.result.content[1]["type"] == "image"
+        @test haskey(result.response.result.content[1], "data")
+    end
+
+    @testset "Converted content is still validated against a typed return_type" begin
+        # Declaring Vector{ImageContent} but returning a Dict (-> TextContent) must
+        # surface an error, not silently produce text.
+        register!(server, MCPTool(
+            name = "typed_mismatch_tool",
+            description = "declares an image vector but returns a Dict",
+            handler = (args) -> Dict("not" => "an image"),
+            parameters = ToolParameter[],
+            return_type = Vector{ImageContent},
+        ))
+        ctx = RequestContext(server = server, request_id = 4)
+        result = handle_call_tool(ctx, CallToolParams(name = "typed_mismatch_tool", arguments = nothing))
+
+        @test !isnothing(result.error)
+    end
+end
