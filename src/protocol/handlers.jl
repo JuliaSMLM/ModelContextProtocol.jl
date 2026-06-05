@@ -25,6 +25,7 @@ Base.@kwdef mutable struct RequestContext
     state::ServerState = ServerState()
     request_id::Union{RequestId,Nothing} = nothing
     progress_token::Union{ProgressToken,Nothing} = nothing
+    authenticated_user::Union{AuthenticatedUser,Nothing} = nothing  # per-request identity from HTTP auth, else nothing
 end
 
 """
@@ -549,8 +550,11 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
             end
         end
         
-        # Call the tool handler with the arguments
-        result = tool.handler(args)
+        # Call the tool handler. Handlers may opt into a context-aware form
+        # `handler(args, ctx)` to access `ctx.authenticated_user` etc.; the plain
+        # `handler(args)` form keeps working. Dispatch by applicability (not by
+        # catching MethodError, which would mask errors thrown inside a handler).
+        result = applicable(tool.handler, args, ctx) ? tool.handler(args, ctx) : tool.handler(args)
         
         # Check if the handler returned a complete CallToolResult
         if result isa CallToolResult
@@ -746,12 +750,14 @@ Any exceptions thrown during processing are caught and converted to INTERNAL_ERR
 # Returns
 - `Response`: Either a successful response or an error response depending on the handler result
 """
-function handle_request(server::Server, state::ServerState, request::Request)::Response
+function handle_request(server::Server, state::ServerState, request::Request;
+                        authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Response
     ctx = RequestContext(
         server=server,
         state=state,
         request_id=request.id,
-        progress_token=request.meta.progress_token
+        progress_token=request.meta.progress_token,
+        authenticated_user=authenticated_user
     )
 
     try

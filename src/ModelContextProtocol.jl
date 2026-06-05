@@ -130,6 +130,6 @@ export
     create_protected_resource_metadata, create_github_resource_metadata,
     authenticate_request, validate_token, extract_bearer_token,
     GitHubOAuthValidator, create_github_auth, clear_cache!,
-    get_authenticated_user, is_auth_enabled
+    is_auth_enabled
 
 end # module

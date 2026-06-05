@@ -5,6 +5,20 @@ using JSON3
 using UUIDs: uuid4
 
 """
+    QueuedHttpRequest(id, body, user)
+
+Envelope for a request on the HTTP work queue. Carries the per-request
+authenticated `user` (or `nothing`) from the concurrent connection handler to the
+single server loop, so auth identity travels with the request rather than via
+shared transport state.
+"""
+struct QueuedHttpRequest
+    id::String
+    body::String
+    user::Union{AuthenticatedUser,Nothing}
+end
+
+"""
     HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
 
 Transport implementation following the MCP Streamable HTTP specification (2025-06-18).
@@ -18,7 +32,7 @@ Supports Server-Sent Events (SSE) for streaming and session management.
 - `connected::Bool`: Connection status
 - `server_task::Union{Task,Nothing}`: Server task handle
 - `active_streams::Dict{String,HTTP.Stream}`: Active streaming connections
-- `request_queue::Channel{Tuple{String,String}}`: Queue for incoming requests (id, message)
+- `request_queue::Channel{QueuedHttpRequest}`: Queue for incoming requests (id, body, auth user)
 - `response_channels::Dict{String,Channel{String}}`: Response channels per request
 """
 mutable struct HttpTransport <: Transport
@@ -30,10 +44,11 @@ mutable struct HttpTransport <: Transport
     server_task::Union{Task,Nothing}
     active_streams::Dict{String,HTTP.Stream}
     sse_streams::Dict{String,HTTP.Stream}  # SSE connections
-    request_queue::Channel{Tuple{String,String}}
+    request_queue::Channel{QueuedHttpRequest}
     response_channels::Dict{String,Channel{String}}
     notification_queue::Channel{String}  # For SSE notifications
     current_request_id::Union{String,Nothing}
+    current_request_auth::Union{AuthenticatedUser,Nothing}  # Auth user of the message just read; set in the single server loop, never across connections
     session_id::Union{String,Nothing}  # Session management
     session_required::Bool  # Whether session is required after init
     protocol_version::String  # MCP protocol version
@@ -41,7 +56,6 @@ mutable struct HttpTransport <: Transport
     allowed_origins::Vector{String}  # CORS security
     auth::Union{AuthMiddleware,Nothing}  # OAuth Resource Server token validation (nothing = disabled)
     resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 Protected Resource Metadata
-    current_user::Union{AuthenticatedUser,Nothing}  # Authenticated user for the in-flight request
 
     function HttpTransport(;
         host::String="127.0.0.1",
@@ -62,18 +76,18 @@ mutable struct HttpTransport <: Transport
             nothing,
             Dict{String,HTTP.Stream}(),
             Dict{String,HTTP.Stream}(),  # SSE streams
-            Channel{Tuple{String,String}}(32),  # Buffer up to 32 requests
+            Channel{QueuedHttpRequest}(32),  # Buffer up to 32 requests
             Dict{String,Channel{String}}(),
             Channel{String}(100),  # Notification queue
-            nothing,
+            nothing,  # current_request_id
+            nothing,  # current_request_auth
             nothing,  # No session initially
             session_required,
             protocol_version,
             0,  # Event counter starts at 0
             allowed_origins,
             auth,
-            resource_metadata,
-            nothing  # No authenticated user initially
+            resource_metadata
         )
     end
 end
@@ -304,6 +318,9 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     # OAuth Resource Server: require a valid bearer token when auth is configured.
     # Applies to every request to the MCP endpoint (POST and SSE GET); the
     # well-known discovery endpoint above is exempt so clients can bootstrap.
+    # The validated user travels with the request via QueuedHttpRequest (below),
+    # not via shared transport state, so concurrent requests can't clobber it.
+    authenticated_user = nothing
     if !isnothing(transport.auth)
         auth_header_raw = HTTP.header(request, "Authorization", "")
         auth_header = isempty(auth_header_raw) ? nothing : String(auth_header_raw)
@@ -328,7 +345,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             write(stream, body)
             return nothing
         end
-        transport.current_user = auth_result.user
+        authenticated_user = auth_result.user
     end
 
     # Handle GET requests for SSE notification stream
@@ -488,7 +505,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             HTTP.startwrite(stream)  # Ensure headers are sent
             
             # Still queue the notification for processing
-            put!(transport.request_queue, ("notification-" * string(uuid4()), body))
+            put!(transport.request_queue, QueuedHttpRequest("notification-" * string(uuid4()), body, authenticated_user))
             return nothing
         end
         
@@ -501,7 +518,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         transport.active_streams[request_id] = stream
         
         # Queue the request for processing
-        put!(transport.request_queue, (request_id, body))
+        put!(transport.request_queue, QueuedHttpRequest(request_id, body, authenticated_user))
         
         # Wait for the single response
         try
@@ -713,12 +730,15 @@ function read_message(transport::HttpTransport)::Union{String,Nothing}
     
     try
         # Block until request is available
-        request_id, message = take!(transport.request_queue)
-        
-        # Store the current request ID for response correlation
-        transport.current_request_id = request_id
-        
-        return message
+        env = take!(transport.request_queue)
+
+        # Store the current request ID for response correlation, and the
+        # per-request authenticated user (consumed by the single server loop via
+        # pending_auth_context before the next read — never shared across connections).
+        transport.current_request_id = env.id
+        transport.current_request_auth = env.user
+
+        return env.body
     catch e
         if e isa InvalidStateException && !isopen(transport.request_queue)
             # Channel is closed, transport is shutting down
@@ -862,19 +882,15 @@ function Base.show(io::IO, transport::HttpTransport)
 end
 
 """
-    get_authenticated_user(transport::HttpTransport) -> Union{AuthenticatedUser,Nothing}
+    pending_auth_context(transport::HttpTransport) -> Union{AuthenticatedUser,Nothing}
 
-Return the user authenticated for the in-flight request, or `nothing` when auth is
-disabled or the request was unauthenticated.
-
-# Arguments
-- `transport::HttpTransport`: The transport instance
-
-# Returns
-- `Union{AuthenticatedUser,Nothing}`: The authenticated user, or `nothing`
+Return the authenticated user of the message most recently read from the queue (set
+in `read_message`, consumed immediately by the single server loop). This is how the
+per-request identity reaches `RequestContext.authenticated_user`; handlers should read
+it from the request context, not from the transport.
 """
-function get_authenticated_user(transport::HttpTransport)::Union{AuthenticatedUser,Nothing}
-    return transport.current_user
+function pending_auth_context(transport::HttpTransport)::Union{AuthenticatedUser,Nothing}
+    return transport.current_request_auth
 end
 
 """

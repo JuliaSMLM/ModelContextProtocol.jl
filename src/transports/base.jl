@@ -36,6 +36,16 @@ Read a single message from the transport.
 function read_message end
 
 """
+    pending_auth_context(transport::Transport) -> Union{Nothing,Any}
+
+Return the authenticated user associated with the message most recently read from
+`transport`, or `nothing` when the transport has no per-request authentication
+(e.g. stdio). Transports that authenticate requests override this; the default is
+`nothing`.
+"""
+pending_auth_context(::Transport) = nothing
+
+"""
     write_message(transport::Transport, message::String) -> Nothing
 
 Write a message to the transport.
