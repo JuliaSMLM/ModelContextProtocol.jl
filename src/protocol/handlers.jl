@@ -71,45 +71,40 @@ function serialize_resource_contents(resource::ResourceContents)
 end
 
 """
-    convert_to_content_type(result::Any, return_type::Type) -> Content
+    convert_to_content_type(result::Any) -> Any
 
-Convert various return types to the appropriate MCP Content type.
+Apply the documented convenience conversions for tool handler return values:
+a `Dict` becomes JSON wrapped in `TextContent`, a `String` becomes `TextContent`,
+and a `Tuple{Vector{UInt8},String}` becomes `ImageContent`.
+
+These conversions are independent of the tool's declared `return_type` (the
+caller validates the converted result against `return_type` afterwards), so the
+documented behavior holds for the default `return_type = Vector{Content}` too.
 
 # Arguments
-- `result::Any`: The result value to convert
-- `return_type::Type`: The target Content type to convert to
+- `result::Any`: The raw value returned by a tool handler
 
 # Returns
-- `Content`: The converted Content object or the original result if no conversion is applicable
+- `Any`: A `Content` object for the convenience cases above; otherwise `result` unchanged
 """
-function convert_to_content_type(result::Any, return_type::Type)
-    # Dict to TextContent conversion
-    if result isa Dict && return_type == TextContent
-        return TextContent(
-            type = "text",
-            text = JSON3.write(result)
-        )
+function convert_to_content_type(result::Any)
+    # Dict -> JSON string wrapped in TextContent
+    if result isa AbstractDict
+        return TextContent(type = "text", text = JSON3.write(result))
     end
-    
-    # String to TextContent conversion
-    if result isa String && return_type == TextContent
-        return TextContent(
-            type = "text",
-            text = result
-        )
+
+    # String -> TextContent
+    if result isa AbstractString
+        return TextContent(type = "text", text = String(result))
     end
-    
-    # For ImageContent, if we have the raw data as Vector{UInt8} and a mime_type string
-    if result isa Tuple{Vector{UInt8}, String} && return_type == ImageContent
+
+    # (raw bytes, mime type) -> ImageContent
+    if result isa Tuple{Vector{UInt8}, String}
         data, mime_type = result
-        return ImageContent(
-            type = "image",
-            data = data,
-            mime_type = mime_type
-        )
+        return ImageContent(type = "image", data = data, mime_type = mime_type)
     end
-    
-    # If no conversion is needed or applicable, return as is
+
+    # Not a convenience type; leave as-is for the caller to validate against return_type
     return result
 end
 
@@ -562,8 +557,8 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
             )
         end
         
-        # Apply automatic conversion to the expected return type
-        result = convert_to_content_type(result, tool.return_type)
+        # Apply the documented convenience conversions (Dict/String/bytes -> Content)
+        result = convert_to_content_type(result)
 
         # Check if result is a vector of content or single content
         is_vector = result isa Vector && all(x -> x isa Content, result)
