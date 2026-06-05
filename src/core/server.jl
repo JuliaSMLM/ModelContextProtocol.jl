@@ -70,10 +70,10 @@ function process_message(server::Server, state::ServerState, message::String)::U
     try
         if parsed isa JSONRPCRequest
             # Handle request
-            response = handle_request(server, parsed)
+            response = handle_request(server, state, parsed)
             return serialize_message(response) # Make sure to serialize the response
-        elseif parsed isa JSONRPCNotification 
-            handle_notification(RequestContext(server=server), parsed)
+        elseif parsed isa JSONRPCNotification
+            handle_notification(RequestContext(server=server, state=state), parsed)
             return nothing
         end
     catch e

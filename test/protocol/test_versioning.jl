@@ -97,4 +97,24 @@
         parsed_unknown = JSON3.read(resp_unknown)
         @test parsed_unknown.result.protocolVersion == LATEST_PROTOCOL_VERSION
     end
+
+    @testset "Negotiated version is stored in ServerState" begin
+        config = ServerConfig(name = "state-version-test")
+        server = Server(config)
+
+        # Before initialization the version is unset
+        state = ServerState()
+        @test isnothing(state.protocol_version)
+
+        # A supported client version is stored verbatim for later feature gating
+        init_supported = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        process_message(server, state, init_supported)
+        @test state.protocol_version == "2025-06-18"
+
+        # An unknown client version falls back to latest, and that is stored
+        state2 = ServerState()
+        init_unknown = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"1999-01-01","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        process_message(server, state2, init_unknown)
+        @test state2.protocol_version == LATEST_PROTOCOL_VERSION
+    end
 end

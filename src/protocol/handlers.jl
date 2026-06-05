@@ -8,18 +8,21 @@ Define base type for all request handlers.
 abstract type RequestHandler end
 
 """
-    RequestContext(; server::Server, request_id::Union{RequestId,Nothing}=nothing, 
-                 progress_token::Union{ProgressToken,Nothing}=nothing)
+    RequestContext(; server::Server, state::ServerState=ServerState(),
+                   request_id::Union{RequestId,Nothing}=nothing,
+                   progress_token::Union{ProgressToken,Nothing}=nothing)
 
 Store the current request context for MCP protocol handlers.
 
 # Fields
 - `server::Server`: The MCP server instance handling the request
+- `state::ServerState`: The persistent server state, carrying the negotiated protocol version for feature gating (see `supports`)
 - `request_id::Union{RequestId,Nothing}`: The ID of the current request (if any)
 - `progress_token::Union{ProgressToken,Nothing}`: Optional token for progress reporting
 """
 Base.@kwdef mutable struct RequestContext
     server::Server
+    state::ServerState = ServerState()
     request_id::Union{RequestId,Nothing} = nothing
     progress_token::Union{ProgressToken,Nothing} = nothing
 end
@@ -131,6 +134,9 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
     # and let the client decide whether it can proceed. See `negotiate_version`.
     client_version = params.protocolVersion
     negotiated_version = negotiate_version(client_version)
+
+    # Persist the negotiated version so later handlers can feature-gate via supports(...)
+    ctx.state.protocol_version = negotiated_version
 
     if !isnothing(client_version) && client_version != negotiated_version
         @debug "Version negotiation" client_requested=client_version negotiated=negotiated_version
@@ -713,12 +719,13 @@ function handle_notification(ctx::RequestContext, notification::JSONRPCNotificat
 end
 
 """
-    handle_request(server::Server, request::Request) -> Response
+    handle_request(server::Server, state::ServerState, request::Request) -> Response
 
 Process an MCP protocol request and route it to the appropriate handler based on the request method.
 
 # Arguments
 - `server::Server`: The MCP server instance handling the request
+- `state::ServerState`: The persistent server state, threaded into the request context (carries the negotiated protocol version)
 - `request::Request`: The parsed JSON-RPC request to process
 
 # Behavior
@@ -738,9 +745,10 @@ Any exceptions thrown during processing are caught and converted to INTERNAL_ERR
 # Returns
 - `Response`: Either a successful response or an error response depending on the handler result
 """
-function handle_request(server::Server, request::Request)::Response
+function handle_request(server::Server, state::ServerState, request::Request)::Response
     ctx = RequestContext(
         server=server,
+        state=state,
         request_id=request.id,
         progress_token=request.meta.progress_token
     )
