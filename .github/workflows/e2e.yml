@@ -1,0 +1,30 @@
+name: E2E
+# End-to-end protocol tests: spawn the shipped example servers as real
+# subprocesses and drive the MCP handshake as an external client. These are
+# skipped by the regular CI matrix (they pay full JIT startup per server) and
+# run here nightly, plus on demand via the Actions "Run workflow" button.
+on:
+  schedule:
+    - cron: '0 7 * * *'   # nightly at 07:00 UTC
+  workflow_dispatch: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  e2e:
+    name: End-to-end protocol tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
+      actions: write
+      contents: read
+    env:
+      MCP_TEST_E2E: "true"   # force the E2E suite even though CI=true on Actions
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1

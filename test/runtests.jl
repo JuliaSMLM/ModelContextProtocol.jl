@@ -15,6 +15,12 @@ using ModelContextProtocol: user, assistant  # For role constants
 using ModelContextProtocol: PromptCapability  # For server tests
 using ModelContextProtocol: MCPLogger  # For logging tests
 
+# End-to-end tests spawn the example servers as real subprocesses (slow JIT
+# startup), so they run locally by default and are skipped on CI. Force either
+# way with MCP_TEST_E2E. GitHub Actions sets CI=true, which Pkg.test inherits.
+const ON_CI   = get(ENV, "CI", "false") == "true"
+const RUN_E2E = get(ENV, "MCP_TEST_E2E", ON_CI ? "false" : "true") == "true"
+
 @testset "ModelContextProtocol.jl" begin
     include("core/types.jl")
     include("core/server.jl")
@@ -32,4 +38,10 @@ using ModelContextProtocol: MCPLogger  # For logging tests
     include("transports/test_http.jl")
     include("transports/test_streamable_http.jl")
     include("integration/full_server.jl")
+
+    if RUN_E2E
+        include("e2e/test_protocol_e2e.jl")
+    else
+        @info "Skipping E2E protocol tests (local-only; set MCP_TEST_E2E=true to run, e.g. in the nightly CI job)"
+    end
 end
