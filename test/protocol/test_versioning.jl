@@ -97,4 +97,47 @@
         parsed_unknown = JSON3.read(resp_unknown)
         @test parsed_unknown.result.protocolVersion == LATEST_PROTOCOL_VERSION
     end
+
+    @testset "Negotiated version is stored in ServerState" begin
+        config = ServerConfig(name = "state-version-test")
+        server = Server(config)
+
+        # Before initialization the version is unset
+        state = ServerState()
+        @test isnothing(state.protocol_version)
+
+        # A supported client version is stored verbatim for later feature gating
+        init_supported = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        process_message(server, state, init_supported)
+        @test state.protocol_version == "2025-06-18"
+
+        # An unknown client version falls back to latest, and that is stored
+        state2 = ServerState()
+        init_unknown = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"1999-01-01","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
+        process_message(server, state2, init_unknown)
+        @test state2.protocol_version == LATEST_PROTOCOL_VERSION
+    end
+
+    @testset "Negotiated version propagates to later request handlers" begin
+        config = ServerConfig(name = "propagation-test")
+        server = Server(config)
+        state = ServerState()
+
+        # Initialize negotiates and stores the version on the shared, persistent state
+        init = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1.0"}}}"""
+        process_message(server, state, init)
+        @test state.protocol_version == "2025-06-18"
+
+        # A later request reuses the SAME state. The context built for it (exactly as
+        # handle_request threads it) carries the negotiated version, so a handler can
+        # feature-gate on it via supports(...).
+        later_ctx = RequestContext(server = server, state = state, request_id = 2)
+        @test later_ctx.state.protocol_version == "2025-06-18"
+        @test supports(later_ctx.state.protocol_version, :resource_links)   # a 2025-06-18 feature
+        @test !supports(later_ctx.state.protocol_version, :tasks)           # a 2025-11-25 feature
+
+        # Subsequent non-initialize requests on the same state do not disturb it
+        process_message(server, state, """{"jsonrpc":"2.0","method":"ping","id":3}""")
+        @test state.protocol_version == "2025-06-18"
+    end
 end

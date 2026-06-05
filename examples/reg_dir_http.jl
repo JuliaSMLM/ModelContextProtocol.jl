@@ -36,8 +36,7 @@ server = mcp_server(
 transport = HttpTransport(
     host = "127.0.0.1",
     port = 3004,
-    endpoint = "/",
-    protocol_version = "2025-06-18"
+    endpoint = "/"
 )
 
 # Set the transport on the server
