@@ -629,7 +629,7 @@ Track the internal state of an MCP server during operation.
 - `running::Bool`: Whether the server main loop is active
 - `last_request_id::Int`: Last used request ID for server-initiated requests
 - `pending_requests::Dict{RequestId,String}`: Map of request IDs to method names
-- `protocol_version::Union{String,Nothing}`: MCP protocol version negotiated during initialization (see `negotiate_version`), or `nothing` before the client initializes
+- `protocol_version::Union{String,Nothing}`: MCP protocol version negotiated during initialization (see `negotiate_version`), or `nothing` before the client initializes. Server-global, not data-raced: all handler execution is serialized through `run_server_loop`. As with `session_id`, the transport is single-session, so a repeat `initialize` overwrites this ("last initialize wins")
 """
 mutable struct ServerState
     initialized::Bool
