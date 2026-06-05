@@ -54,6 +54,9 @@ include("types.jl")
 # 2. Protocol Messages
 include("protocol/messages.jl")
 
+# 2b. Protocol version negotiation (dependency-free; used by transport + handlers)
+include("protocol/versioning.jl")
+
 # 3. Transport Layer
 include("transports/base.jl")
 include("transports/stdio.jl")
@@ -110,6 +113,10 @@ export
     # Advanced features
     Server,  # For type annotations in user code
     subscribe!, unsubscribe!,  # Resource subscription management
-    content2dict  # Utility for debugging/testing
+    content2dict,  # Utility for debugging/testing
+
+    # Protocol version negotiation and feature gating (MCP 2025-11-25)
+    LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, FEATURE_VERSIONS,
+    negotiate_version, supports, is_supported_version
 
 end # module

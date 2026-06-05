@@ -25,6 +25,7 @@ using ModelContextProtocol: MCPLogger  # For logging tests
     include("protocol/jsonrpc.jl")
     include("protocol/handlers.jl")
     include("protocol/parameters.jl")
+    include("protocol/test_versioning.jl")
     include("utils/serialization.jl")
     include("utils/logging.jl")
     include("transports/test_stdio.jl")

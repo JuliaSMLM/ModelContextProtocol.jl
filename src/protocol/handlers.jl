@@ -126,15 +126,14 @@ Handle MCP protocol initialization requests by setting up the server and returni
 - `HandlerResult`: Contains the server's capabilities and configuration
 """
 function handle_initialize(ctx::RequestContext, params::InitializeParams)::HandlerResult
-    # MCP protocol version we support
-    # Per spec: if client requests unsupported version, server MUST respond with
-    # a version it supports (not error). Client then decides if it can work with that.
-    SERVER_PROTOCOL_VERSION = "2025-06-18"
-
-    # Log version negotiation for debugging
+    # Negotiate the protocol version per the MCP spec: if the client requests a
+    # version we support, echo it back; otherwise respond with our latest version
+    # and let the client decide whether it can proceed. See `negotiate_version`.
     client_version = params.protocolVersion
-    if !isnothing(client_version) && client_version != SERVER_PROTOCOL_VERSION
-        @debug "Version negotiation" client_requested=client_version server_supports=SERVER_PROTOCOL_VERSION
+    negotiated_version = negotiate_version(client_version)
+
+    if !isnothing(client_version) && client_version != negotiated_version
+        @debug "Version negotiation" client_requested=client_version negotiated=negotiated_version
     end
 
     # Get full capabilities including available tools and resources
@@ -143,7 +142,7 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
         ctx.server
     )
 
-    # Create initialization result with our supported version
+    # Create initialization result with the negotiated version
     server_info = Dict{String,Any}(
         "name" => ctx.server.config.name,
         "version" => ctx.server.config.version
@@ -154,7 +153,7 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
     result = InitializeResult(
         serverInfo=server_info,
         capabilities=current_capabilities,
-        protocolVersion=SERVER_PROTOCOL_VERSION,
+        protocolVersion=negotiated_version,
         instructions=ctx.server.config.instructions
     )
 
