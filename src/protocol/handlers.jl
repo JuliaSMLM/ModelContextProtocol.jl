@@ -573,7 +573,13 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
         elseif result isa Content
             # Single content - check if it matches declared type or if Vector was expected
             if tool.return_type <: Vector
-                # If Vector was expected but single content returned, wrap it
+                # A Vector was expected but a single Content was returned: wrap it,
+                # but only if it satisfies the vector's declared element type (so a
+                # convenience-converted value can't silently violate e.g. Vector{ImageContent}).
+                elt = eltype(tool.return_type)
+                if !(result isa elt)
+                    throw(ArgumentError("Tool returned $(typeof(result)), expected element of $(tool.return_type)"))
+                end
                 result = [result]
                 is_vector = true
             elseif !(result isa tool.return_type)
