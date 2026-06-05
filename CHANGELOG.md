@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-05
+
+### Added
+
+#### Protocol Version Negotiation (MCP 2025-11-25)
+- Server now advertises and negotiates the **2025-11-25** protocol version, with backward
+  compatibility for `2025-06-18`, `2025-03-26`, and `2024-11-05`.
+- New `src/protocol/versioning.jl` module providing the negotiation/feature-gating framework:
+  - `LATEST_PROTOCOL_VERSION`, `SUPPORTED_PROTOCOL_VERSIONS`, `FEATURE_VERSIONS`
+  - `negotiate_version(client_version)` — echo a supported version, else fall back to latest
+  - `supports(version, feature)` — feature gating by negotiated version
+  - `is_supported_version(version)`
+- All six symbols are exported for use in handlers and downstream code.
+
+### Changed
+
+- `handle_initialize` now responds with the **negotiated** protocol version instead of a
+  hardcoded `2025-06-18`. Clients requesting a supported version get it echoed back; unknown
+  versions fall back to `LATEST_PROTOCOL_VERSION`.
+- `HttpTransport` now defaults `protocol_version` to `LATEST_PROTOCOL_VERSION` (`2025-11-25`)
+  and accepts any version in `SUPPORTED_PROTOCOL_VERSIONS` for the `MCP-Protocol-Version` header.
+
+### Notes
+
+- This is the version-negotiation slice extracted from the larger OAuth 2.1 / 2025-11-25 work
+  (PR #27). Threading the negotiated version through `ServerState` for per-request feature
+  gating, and the OAuth authorization server, are deferred to follow-up PRs.
+
 ## [0.3.0] - 2025-11-16
 
 ### Breaking Changes

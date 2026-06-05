@@ -212,13 +212,13 @@
     end
     
     @testset "Protocol Version Negotiation" begin
-        # Per MCP spec: version negotiation happens at JSON-RPC level.
-        # Server MUST respond with a version it supports (not error).
-        # Client then decides if it can work with that version.
+        # Per MCP spec: version negotiation happens at the JSON-RPC level.
+        # If the client requests a version we support, the server echoes it back;
+        # otherwise it responds with its latest supported version.
 
         port = 15090 + rand(1:1000)
 
-        transport = HttpTransport(port=port, protocol_version="2025-06-18")
+        transport = HttpTransport(port=port)
 
         server = mcp_server(
             name = "version-test",
@@ -231,7 +231,7 @@
         server_task = @async start!(server)
         sleep(2)
 
-        # Test 1: Client requests newer version, server responds with its version
+        # Test 1: Client requests the latest supported version; server echoes it back
         init_response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
@@ -251,12 +251,12 @@
         @test init_response.status == 200
         result = JSON3.read(String(init_response.body))
         @test haskey(result, "result")
-        # Server responds with its supported version (not error)
-        @test result["result"]["protocolVersion"] == "2025-06-18"
+        # Server echoes back the negotiated (supported) version
+        @test result["result"]["protocolVersion"] == "2025-11-25"
 
         session_id = HTTP.header(init_response, "Mcp-Session-Id", "")
 
-        # Test 2: Client requests older version, server still responds with its version
+        # Test 2: Client requests an older but still-supported version; server echoes it
         response = HTTP.post(
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
@@ -276,8 +276,8 @@
         @test response.status == 200
         result = JSON3.read(String(response.body))
         @test haskey(result, "result")
-        # Server responds with its version, client decides compatibility
-        @test result["result"]["protocolVersion"] == "2025-06-18"
+        # Server echoes back the negotiated (older, supported) version
+        @test result["result"]["protocolVersion"] == "2024-11-05"
 
         # Clean up
         server.active = false

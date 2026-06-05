@@ -373,7 +373,7 @@
         result = JSON3.read(String(response.body))
         @test result["status"] == "ok"
         @test haskey(result, "protocol_version")
-        @test result["protocol_version"] == "2025-06-18"
+        @test result["protocol_version"] == LATEST_PROTOCOL_VERSION
 
         # Also test with no Accept header at all
         response = HTTP.get("http://127.0.0.1:$port/")

@@ -45,7 +45,7 @@ mutable struct HttpTransport <: Transport
         port::Int=8080, 
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
-        protocol_version::String="2025-06-18",
+        protocol_version::String=LATEST_PROTOCOL_VERSION,
         session_required::Bool=false
     )
         new(
@@ -309,12 +309,13 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     end
     
     # MCP-Protocol-Version header check
-    # Per spec: version negotiation happens at JSON-RPC level (initialize request/response).
-    # The header is for subsequent requests after negotiation. We log mismatches but don't
-    # error - the JSON-RPC layer handles version negotiation properly.
+    # Per spec: version negotiation happens at the JSON-RPC level (initialize request/response).
+    # The header is for subsequent requests after negotiation. Any version in our supported
+    # set is accepted; we only log when the client sends a version we don't recognize. The
+    # JSON-RPC layer handles version negotiation properly.
     client_protocol_version = HTTP.header(request, "MCP-Protocol-Version", "")
-    if !isempty(client_protocol_version) && client_protocol_version != transport.protocol_version
-        @debug "Client protocol version differs from server" client=client_protocol_version server=transport.protocol_version
+    if !isempty(client_protocol_version) && !is_supported_version(client_protocol_version)
+        @debug "Client requested unsupported protocol version" client=client_protocol_version supported=SUPPORTED_PROTOCOL_VERSIONS
     end
     
     # Security: Validate Origin header if configured
