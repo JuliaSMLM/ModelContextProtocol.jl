@@ -39,14 +39,19 @@ mutable struct HttpTransport <: Transport
     protocol_version::String  # MCP protocol version
     event_counter::Int64  # SSE event IDs
     allowed_origins::Vector{String}  # CORS security
-    
-    function HttpTransport(; 
-        host::String="127.0.0.1", 
-        port::Int=8080, 
+    auth::Union{AuthMiddleware,Nothing}  # OAuth Resource Server token validation (nothing = disabled)
+    resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 Protected Resource Metadata
+    current_user::Union{AuthenticatedUser,Nothing}  # Authenticated user for the in-flight request
+
+    function HttpTransport(;
+        host::String="127.0.0.1",
+        port::Int=8080,
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
         protocol_version::String=LATEST_PROTOCOL_VERSION,
-        session_required::Bool=false
+        session_required::Bool=false,
+        auth::Union{AuthMiddleware,Nothing}=nothing,
+        resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing
     )
         new(
             host,
@@ -65,7 +70,10 @@ mutable struct HttpTransport <: Transport
             session_required,
             protocol_version,
             0,  # Event counter starts at 0
-            allowed_origins
+            allowed_origins,
+            auth,
+            resource_metadata,
+            nothing  # No authenticated user initially
         )
     end
 end
@@ -262,7 +270,29 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     method = HTTP.method(request)
     target = request.target
     path = HTTP.URI(target).path
-    
+
+    # OAuth Resource Server: serve Protected Resource Metadata discovery (RFC 9728).
+    # Public endpoint — intentionally reachable without authentication.
+    if method == "GET" && path == WELL_KNOWN_PATH
+        if !isnothing(transport.resource_metadata)
+            status, body, headers = handle_well_known_request(transport.resource_metadata)
+            HTTP.setstatus(stream, status)
+            for (k, v) in headers
+                HTTP.setheader(stream, k => v)
+            end
+            HTTP.setheader(stream, "Content-Length" => string(length(body)))
+            HTTP.startwrite(stream)
+            write(stream, body)
+        else
+            HTTP.setstatus(stream, 404)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            HTTP.setheader(stream, "Content-Length" => "9")
+            HTTP.startwrite(stream)
+            write(stream, "Not Found")
+        end
+        return nothing
+    end
+
     # Handle both POST and GET requests to our endpoint
     if path != transport.endpoint
         HTTP.setstatus(stream, 404)
@@ -270,7 +300,37 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         write(stream, "Not Found")
         return nothing
     end
-    
+
+    # OAuth Resource Server: require a valid bearer token when auth is configured.
+    # Applies to every request to the MCP endpoint (POST and SSE GET); the
+    # well-known discovery endpoint above is exempt so clients can bootstrap.
+    if !isnothing(transport.auth)
+        auth_header_raw = HTTP.header(request, "Authorization", "")
+        auth_header = isempty(auth_header_raw) ? nothing : String(auth_header_raw)
+        auth_result = authenticate_request(transport.auth, auth_header)
+        if !auth_result.success
+            resource_metadata_url = if !isnothing(transport.resource_metadata)
+                "$(transport.resource_metadata.resource)/.well-known/oauth-protected-resource"
+            else
+                nothing
+            end
+            status, body, headers = auth_error_response(
+                auth_result.error_code,
+                auth_result.error;
+                resource_metadata_url=resource_metadata_url
+            )
+            HTTP.setstatus(stream, status)
+            for (k, v) in headers
+                HTTP.setheader(stream, k => v)
+            end
+            HTTP.setheader(stream, "Content-Length" => string(length(body)))
+            HTTP.startwrite(stream)
+            write(stream, body)
+            return nothing
+        end
+        transport.current_user = auth_result.user
+    end
+
     # Handle GET requests for SSE notification stream
     if method == "GET"
         accept_header = HTTP.header(request, "Accept", "")
@@ -799,4 +859,35 @@ function Base.show(io::IO, transport::HttpTransport)
     status = transport.connected ? "connected" : "disconnected"
     active = length(transport.active_streams)
     print(io, "HttpTransport(http://$(transport.host):$(transport.port)$(transport.endpoint), $status, $active active)")
+end
+
+"""
+    get_authenticated_user(transport::HttpTransport) -> Union{AuthenticatedUser,Nothing}
+
+Return the user authenticated for the in-flight request, or `nothing` when auth is
+disabled or the request was unauthenticated.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+
+# Returns
+- `Union{AuthenticatedUser,Nothing}`: The authenticated user, or `nothing`
+"""
+function get_authenticated_user(transport::HttpTransport)::Union{AuthenticatedUser,Nothing}
+    return transport.current_user
+end
+
+"""
+    is_auth_enabled(transport::HttpTransport) -> Bool
+
+Return whether OAuth Resource Server token validation is enabled on this transport.
+
+# Arguments
+- `transport::HttpTransport`: The transport instance
+
+# Returns
+- `Bool`: true if an enabled `AuthMiddleware` is configured
+"""
+function is_auth_enabled(transport::HttpTransport)::Bool
+    return !isnothing(transport.auth) && transport.auth.enabled
 end

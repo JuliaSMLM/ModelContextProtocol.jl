@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `is_supported_version(version)`
 - All six symbols are exported for use in handlers and downstream code.
 
+#### OAuth Resource Server (MCP 2025-11-25 authorization)
+- Optional bearer-token authentication for the Streamable HTTP transport via new
+  `HttpTransport(; auth, resource_metadata)` keywords. The default is unauthenticated (unchanged).
+- Token validators: `SimpleTokenValidator` (static dev tokens), `JWTValidator` (validates JWT
+  *claims* — **does not verify signatures**; see its docstring warning), `IntrospectionValidator`
+  (RFC 7662), and `GitHubOAuthValidator` (validates GitHub tokens via the API, with optional
+  username allowlist and org-membership check).
+- Protected Resource Metadata discovery (RFC 9728) at `/.well-known/oauth-protected-resource`
+  (served publicly); `401`/`403` responses carry an RFC 6750 `WWW-Authenticate` header pointing to it.
+- Helpers exported: `create_simple_auth`, `create_auth_middleware`, `disable_auth`,
+  `create_protected_resource_metadata`, `create_github_resource_metadata`, `authenticate_request`,
+  `extract_bearer_token`, `get_authenticated_user`, `is_auth_enabled`.
+- This is the **Resource Server** slice of the OAuth work (PR #27); the OAuth 2.1 **Authorization
+  Server** (token issuance — DCR, PKCE) remains a separate follow-up.
+
 ### Changed
 
 - `handle_initialize` now responds with the **negotiated** protocol version instead of a
@@ -38,9 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- This is the version-negotiation slice extracted from the larger OAuth 2.1 / 2025-11-25 work
-  (PR #27). Threading the negotiated version through `ServerState` for per-request feature
-  gating, and the OAuth authorization server, are deferred to follow-up PRs.
+- 0.5.0 is being assembled incrementally from the larger OAuth 2.1 / 2025-11-25 work (PR #27):
+  protocol negotiation, `ServerState`-based feature gating, and the OAuth Resource Server have
+  landed. The OAuth 2.1 **Authorization Server** (token issuance — DCR, PKCE) remains a follow-up.
 
 ## [0.3.0] - 2025-11-16
 
