@@ -324,6 +324,9 @@ Implement a tool that can be invoked by clients in the MCP protocol.
 - `input_schema::Union{Nothing,AbstractDict}`: Raw JSON Schema for complex parameter types
 - `handler::Function`: Function that implements the tool's functionality
 - `return_type::Type`: Expected return type of the handler (defaults to Vector{Content})
+- `annotations::Union{Nothing,Dict{String,Any}}`: Optional tool annotations (behavioral
+  hints for clients), e.g. `Dict("readOnlyHint" => true, "destructiveHint" => false,
+  "idempotentHint" => true, "openWorldHint" => false). Emitted verbatim in `tools/list`.
 
 # Parameter Definition
 Tools can define parameters in two ways:
@@ -356,6 +359,7 @@ Base.@kwdef struct MCPTool <: Tool
     return_type::Type = Vector{Content}  # Can be Content subtype or Vector{<:Content}
     title::Union{String,Nothing} = nothing
     icons::Union{Vector{MCPIcon},Nothing} = nothing
+    annotations::Union{Nothing,Dict{String,Any}} = nothing
 end
 
 #==============================================================================
