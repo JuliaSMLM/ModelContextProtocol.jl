@@ -327,6 +327,9 @@ Implement a tool that can be invoked by clients in the MCP protocol.
 - `annotations::Union{Nothing,Dict{String,Any}}`: Optional tool annotations (behavioral
   hints for clients), e.g. `Dict("readOnlyHint" => true, "destructiveHint" => false,
   "idempotentHint" => true, "openWorldHint" => false). Emitted verbatim in `tools/list`.
+- `output_schema::Union{Nothing,AbstractDict}`: Optional JSON Schema for the tool's
+  structured result, emitted as `outputSchema` in `tools/list`. Pair it with a
+  `CallToolResult(structured_content=…)` so clients can validate the structured output.
 
 # Parameter Definition
 Tools can define parameters in two ways:
@@ -360,6 +363,7 @@ Base.@kwdef struct MCPTool <: Tool
     title::Union{String,Nothing} = nothing
     icons::Union{Vector{MCPIcon},Nothing} = nothing
     annotations::Union{Nothing,Dict{String,Any}} = nothing
+    output_schema::Union{Nothing,AbstractDict} = nothing
 end
 
 #==============================================================================

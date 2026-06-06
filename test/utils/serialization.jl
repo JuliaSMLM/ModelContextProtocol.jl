@@ -124,3 +124,22 @@
         end
     end
 end
+
+@testset "CallToolResult structuredContent serialization" begin
+    with_sc = CallToolResult(
+        content = [Dict{String,Any}("type" => "text", "text" => "hi")],
+        structured_content = Dict("answer" => 42),
+    )
+    without_sc = CallToolResult(
+        content = [Dict{String,Any}("type" => "text", "text" => "hi")],
+    )
+    j_with = JSON3.read(JSON3.write(with_sc), Dict{String,Any})
+    j_without = JSON3.read(JSON3.write(without_sc), Dict{String,Any})
+
+    # structured_content is emitted as `structuredContent`, omitted when nothing
+    @test j_with["structuredContent"]["answer"] == 42
+    @test !haskey(j_without, "structuredContent")
+    # existing fields are unaffected
+    @test haskey(j_with, "content")
+    @test j_with["is_error"] == false
+end

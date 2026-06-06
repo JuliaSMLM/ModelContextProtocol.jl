@@ -110,6 +110,26 @@ end
         @test tool_dict["annotations"]["openWorldHint"] == false
     end
 
+    @testset "Tools list includes outputSchema" begin
+        schema = Dict{String,Any}(
+            "type" => "object",
+            "properties" => Dict{String,Any}("answer" => Dict{String,Any}("type" => "integer")),
+        )
+        tool = MCPTool(
+            name="schema_tool",
+            description="A tool with an output schema",
+            parameters=[],
+            handler=(args) -> TextContent(text="ok"),
+            output_schema=schema,
+        )
+        server = mcp_server(name="test", version="1.0.0", tools=[tool])
+        ctx = RequestContext(server=server, request_id=1)
+        result = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams())
+        tool_dict = result.response.result["tools"][1]
+        @test tool_dict["outputSchema"]["type"] == "object"
+        @test haskey(tool_dict["outputSchema"]["properties"], "answer")
+    end
+
     @testset "Prompts list includes title and icons" begin
         icon = MCPIcon(src="data:image/png;base64,abc", sizes=["48x48"])
         prompt = MCPPrompt(
@@ -164,6 +184,7 @@ end
         @test !haskey(tool_dict, "title")
         @test !haskey(tool_dict, "icons")
         @test !haskey(tool_dict, "annotations")
+        @test !haskey(tool_dict, "outputSchema")
     end
 
     @testset "MCPIcon serialization" begin
