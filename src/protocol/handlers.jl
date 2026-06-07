@@ -29,6 +29,38 @@ Base.@kwdef mutable struct RequestContext
 end
 
 """
+    send_progress(ctx::RequestContext, progress::Real;
+                  total::Union{Real,Nothing}=nothing,
+                  message::Union{String,Nothing}=nothing) -> Bool
+
+Emit an MCP `notifications/progress` for the current request. A tool handler that
+accepts the `RequestContext` (its second argument) can call this during a long
+operation to report progress.
+
+Returns `false` (a no-op) when the client did not supply a `progressToken` or no
+transport is connected, so it is always safe to call. Send an increasing
+`progress`; include `total` for a determinate bar and `message` for a status line.
+"""
+function send_progress(ctx::RequestContext, progress::Real;
+                       total::Union{Real,Nothing}=nothing,
+                       message::Union{String,Nothing}=nothing)::Bool
+    (ctx.progress_token === nothing || ctx.server.transport === nothing) && return false
+    params = Dict{String,Any}(
+        "progressToken" => ctx.progress_token,
+        "progress" => Float64(progress),
+    )
+    total !== nothing && (params["total"] = Float64(total))
+    message !== nothing && (params["message"] = message)
+    try
+        write_message(ctx.server.transport,
+                      serialize_message(JSONRPCNotification(method="notifications/progress", params=params)))
+        return true
+    catch
+        return false
+    end
+end
+
+"""
     HandlerResult(; response::Union{Response,Nothing}=nothing, 
                 error::Union{ErrorInfo,Nothing}=nothing)
 
@@ -551,8 +583,9 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
         end
         
         # Call the tool handler. Handlers may opt into a context-aware form
-        # `handler(args, ctx)` to access `ctx.authenticated_user` etc.; the plain
-        # `handler(args)` form keeps working. Dispatch by applicability (not by
+        # `handler(args, ctx)` to access the RequestContext — `ctx.authenticated_user`,
+        # progress reporting via `send_progress(ctx, ...)`, the request id, etc.; the
+        # plain `handler(args)` form keeps working. Dispatch by applicability (not by
         # catching MethodError, which would mask errors thrown inside a handler).
         result = applicable(tool.handler, args, ctx) ? tool.handler(args, ctx) : tool.handler(args)
         

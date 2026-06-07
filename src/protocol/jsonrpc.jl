@@ -158,11 +158,22 @@ function parse_request(raw::JSON3.Object)::Request
     else
         nothing
     end
-    
+
+    # Extract the optional progress token from params._meta.progressToken so a
+    # handler can report progress for this request (see RequestContext / send_progress).
+    progress_token = nothing
+    if haskey(raw, :params) && !isempty(raw.params) && haskey(raw.params, :_meta)
+        meta = raw.params._meta
+        if haskey(meta, :progressToken)
+            progress_token = meta.progressToken
+        end
+    end
+
     JSONRPCRequest(
         id = raw.id,
         method = method,
-        params = typed_params
+        params = typed_params,
+        meta = RequestMeta(progress_token = progress_token)
     )
 end
 
