@@ -112,6 +112,7 @@ export
     
     # Advanced features
     Server,  # For type annotations in user code
+    RequestContext, send_progress,  # Progress reporting from tool handlers
     subscribe!, unsubscribe!,  # Resource subscription management
     content2dict,  # Utility for debugging/testing
 
