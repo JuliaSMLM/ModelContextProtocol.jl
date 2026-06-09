@@ -1,9 +1,11 @@
 name: E2E
-# End-to-end protocol tests: spawn the shipped example servers as real
-# subprocesses and drive the MCP handshake as an external client. These are
-# skipped by the regular CI matrix (they pay full JIT startup per server) and
-# run here nightly, plus on demand via the Actions "Run workflow" button.
+# End-to-end protocol tests: spawn the shipped example servers (and the wire-
+# conformance fixture) as real subprocesses and drive them as an external
+# client — full bodies and HTTP headers, the things in-process tests can't
+# see. Skipped by the regular CI matrix (they pay full JIT startup per
+# server); run here on every PR, nightly, and on demand.
 on:
+  pull_request: {}
   schedule:
     - cron: '0 7 * * *'   # nightly at 07:00 UTC
   workflow_dispatch: {}
