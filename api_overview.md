@@ -21,7 +21,7 @@
 
 ## Overview
 
-ModelContextProtocol.jl provides a Julia implementation of the Model Context Protocol (MCP) version 2025-06-18, enabling standardized communication between AI applications and external tools, resources, and data sources.
+ModelContextProtocol.jl provides a Julia implementation of the Model Context Protocol (MCP) version 2025-11-25 (negotiating per client down to 2024-11-05), enabling standardized communication between AI applications and external tools, resources, and data sources. Notable capabilities: structured tool output (`output_schema`/`structuredContent`), tool annotations, audio content and `resource_link` content blocks, progress notifications from context-aware handlers (`handler = (args, ctx) -> ...` + `send_progress`), runtime `logging/setLevel`, and an OAuth Resource Server for the HTTP transport (`create_github_auth`, `HttpTransport(; auth, resource_metadata)`).
 
 ### Version Information
 
@@ -29,7 +29,7 @@ ModelContextProtocol.jl provides a Julia implementation of the Model Context Pro
 
 | Version Type | Example | Who Sets It | Purpose |
 |-------------|---------|------------|----------|
-| **Protocol Version** | `"2025-06-18"` | MCP Specification | Protocol compatibility (fixed) |
+| **Protocol Version** | `"2025-11-25"` | MCP Specification | Negotiated per client at initialize (down to `2024-11-05`) |
 | **Server Version** | `"1.0.0"` | You (developer) | Your server's version |
 
 ```julia

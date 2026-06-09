@@ -9,7 +9,7 @@ A Julia implementation of the [Model Context Protocol](https://github.com/modelc
 
 ## Overview
 
-The Model Context Protocol allows applications to provide context and capabilities to LLMs in a standardized way. This package implements the full MCP specification in Julia, with `mcp_server()` as the main entry point for creating and configuring servers.
+The Model Context Protocol allows applications to provide context and capabilities to LLMs in a standardized way. This package implements the MCP **2025-11-25** specification in Julia (negotiating down to `2024-11-05` for older clients), with `mcp_server()` as the main entry point for creating and configuring servers.
 
 The `mcp_server()` function provides a flexible interface to:
 - Create MCP servers with custom names and configurations
@@ -21,7 +21,7 @@ Example:
 ```julia
 server = mcp_server(
     name = "my-server",
-    version = "2024-11-05",
+    version = "1.0.0",            # YOUR server's version (the MCP protocol version is negotiated)
     tools = my_tool,              # Single tool or vector of tools
     resources = my_resource,      # Single resource or vector of resources
     prompts = my_prompt,          # Single prompt or vector of prompts
@@ -30,11 +30,19 @@ server = mcp_server(
 )
 ```
 
-The package enables you to:
-- Create MCP servers that expose tools, resources, and prompts
-- Define custom tools that LLMs can interact with
-- Organize and auto-register components from directory structures
-- Handle all MCP protocol messages and lifecycle events
+## Features
+
+- **Protocol 2025-11-25** with version negotiation back to `2024-11-05`
+- **Transports**: stdio (default) and Streamable HTTP with SSE and session management
+- **Content types**: text, image, audio, embedded resources, and `resource_link` references
+- **Structured tool output**: declare an `output_schema`, return `structuredContent`
+- **Tool annotations**: behavioral hints (`readOnlyHint`, `destructiveHint`, …) for client trust decisions
+- **Progress notifications**: long-running tools report progress via context-aware handlers
+- **OAuth Resource Server** (HTTP): bearer-token validation (GitHub tokens, JWT claims, RFC 7662
+  introspection) with RFC 9728 discovery metadata
+- **Logging control**: clients adjust verbosity at runtime via `logging/setLevel`; opt-in
+  per-request lifecycle logs
+- **Auto-registration** of components from a directory layout
 
 ## Core Components
 
@@ -184,6 +192,44 @@ The package will automatically scan the directory structure and register all com
 - `prompts/`: Contains prompt definitions (MCPPrompt instances)
 
 Each component file should export one or more instances of the appropriate type. They will be automatically discovered and registered with the server.
+
+### Remote Server over HTTP (with optional GitHub-token auth)
+
+```julia
+using ModelContextProtocol
+
+server = mcp_server(name = "remote-server", version = "1.0.0", tools = my_tools)
+
+# Token-gate the endpoint (optional): clients send `Authorization: Bearer <GitHub PAT>`
+auth = create_github_auth(allowed_users = ["your-github-username"])
+meta = create_github_resource_metadata("http://your-host:3000")
+
+server.transport = HttpTransport(host = "0.0.0.0", port = 3000,
+                                 auth = auth, resource_metadata = meta)
+connect(server.transport)
+start!(server)
+```
+
+Connect Claude Desktop to a remote server with `npx mcp-remote http://your-host:3000 --allow-http`.
+
+### Progress from Long-Running Tools
+
+Handlers may accept a second context argument and stream progress while they work:
+
+```julia
+slow_tool = MCPTool(
+    name = "process",
+    description = "Process a dataset with progress updates",
+    parameters = [],
+    handler = (args, ctx) -> begin
+        for i in 1:10
+            send_progress(ctx, i; total = 10, message = "step $i")  # no-op if client sent no progressToken
+            # ... do work ...
+        end
+        TextContent(text = "done")
+    end
+)
+```
 
 ## Using with Claude
 
