@@ -133,4 +133,45 @@ export
     GitHubOAuthValidator, create_github_auth, clear_cache!,
     is_auth_enabled
 
+# Precompile the request hot path (parse -> dispatch -> serialize) so a fresh server
+# answers its first real request without paying runtime JIT. Sockets can't precompile;
+# this covers everything up to the transport write.
+using PrecompileTools: @setup_workload, @compile_workload
+
+@setup_workload begin
+    _pc_tool = MCPTool(
+        name = "echo",
+        description = "precompile echo",
+        parameters = [ToolParameter(name = "message", description = "msg", type = "string", required = true)],
+        handler = args -> TextContent(text = String(args["message"])),
+    )
+    _pc_prompt = MCPPrompt(
+        name = "pc_prompt",
+        description = "precompile prompt",
+        arguments = [PromptArgument(name = "x", description = "x")],
+        messages = [PromptMessage(content = TextContent(text = "hello {x}"))],
+    )
+    _pc_resource = MCPResource(uri = "precompile://r", name = "r", data_provider = () -> Dict("ok" => true))
+    _pc_msgs = [
+        """{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"pc","version":"1"}},"id":1}""",
+        """{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}""",
+        """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}},"id":3}""",
+        """{"jsonrpc":"2.0","method":"prompts/list","params":{},"id":4}""",
+        """{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"pc_prompt","arguments":{"x":"y"}},"id":5}""",
+        """{"jsonrpc":"2.0","method":"resources/list","params":{},"id":6}""",
+        """{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"precompile://r"},"id":7}""",
+        """{"jsonrpc":"2.0","method":"ping","id":8}""",
+    ]
+    @compile_workload begin
+        _pc_server = mcp_server(
+            name = "precompile", version = "1.0.0",
+            tools = [_pc_tool], prompts = [_pc_prompt], resources = [_pc_resource],
+        )
+        _pc_state = ServerState()
+        for m in _pc_msgs
+            process_message(_pc_server, _pc_state, m)
+        end
+    end
+end
+
 end # module
