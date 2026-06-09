@@ -299,3 +299,112 @@ end
         @test server_info["icons"][3]["sizes"] == ["any"]
     end
 end
+
+@testset "Progress notifications" begin
+    @testset "send_progress is a no-op without a token" begin
+        server = mcp_server(name="test", version="1.0.0")
+        ctx = RequestContext(server=server)  # no progress_token, no transport
+        @test send_progress(ctx, 1) == false
+    end
+
+    @testset "send_progress is a no-op without a transport" begin
+        server = mcp_server(name="test", version="1.0.0")  # transport defaults to nothing
+        ctx = RequestContext(server=server, progress_token="tok")
+        @test send_progress(ctx, 1) == false
+    end
+
+    @testset "send_progress writes a notifications/progress message" begin
+        server = mcp_server(name="test", version="1.0.0")
+        buf = IOBuffer()
+        server.transport = StdioTransport(output=buf)
+        ctx = RequestContext(server=server, progress_token="tok-1")
+
+        @test send_progress(ctx, 3; total=10, message="working") == true
+
+        notif = JSON3.read(String(take!(buf)))
+        @test notif["jsonrpc"] == "2.0"
+        @test notif["method"] == "notifications/progress"
+        @test notif["params"]["progressToken"] == "tok-1"
+        @test notif["params"]["progress"] == 3.0
+        @test notif["params"]["total"] == 10.0
+        @test notif["params"]["message"] == "working"
+    end
+
+    @testset "send_progress omits total/message when not given" begin
+        server = mcp_server(name="test", version="1.0.0")
+        buf = IOBuffer()
+        server.transport = StdioTransport(output=buf)
+        ctx = RequestContext(server=server, progress_token=7)  # integer token
+
+        @test send_progress(ctx, 1.5) == true
+
+        notif = JSON3.read(String(take!(buf)))
+        @test notif["params"]["progressToken"] == 7
+        @test notif["params"]["progress"] == 1.5
+        @test !haskey(notif["params"], "total")
+        @test !haskey(notif["params"], "message")
+    end
+
+    @testset "handle_call_tool passes the context to a two-argument handler" begin
+        tool = MCPTool(
+            name="ctx_tool",
+            description="Echoes the progress token from its context",
+            parameters=[],
+            handler=(args, ctx) -> TextContent(text=string(ctx.progress_token))
+        )
+        server = mcp_server(name="test", version="1.0.0", tools=[tool])
+        ctx = RequestContext(server=server, request_id=1, progress_token="abc")
+        result = handle_call_tool(ctx, CallToolParams(name="ctx_tool"))
+        @test result.response.result.content[1]["text"] == "abc"
+    end
+
+    @testset "handle_call_tool still calls one-argument handlers" begin
+        tool = MCPTool(
+            name="plain_handler",
+            description="Ignores any context",
+            parameters=[],
+            handler=(args) -> TextContent(text="one-arg")
+        )
+        server = mcp_server(name="test", version="1.0.0", tools=[tool])
+        ctx = RequestContext(server=server, request_id=1, progress_token="ignored")
+        result = handle_call_tool(ctx, CallToolParams(name="plain_handler"))
+        @test result.response.result.content[1]["text"] == "one-arg"
+    end
+
+    @testset "parse_request extracts params._meta.progressToken" begin
+        raw = """
+        {"jsonrpc":"2.0","id":1,"method":"tools/call",
+         "params":{"name":"x","arguments":{},"_meta":{"progressToken":"pt-9"}}}
+        """
+        req = ModelContextProtocol.parse_message(raw)
+        @test req isa JSONRPCRequest
+        @test req.meta.progress_token == "pt-9"
+    end
+
+    @testset "parse_request leaves progress token nothing when absent" begin
+        raw = """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"x","arguments":{}}}"""
+        req = ModelContextProtocol.parse_message(raw)
+        @test req isa JSONRPCRequest
+        @test req.meta.progress_token === nothing
+    end
+
+    @testset "send_progress routes to the HTTP notification queue, not the response" begin
+        # On HTTP, write_message delivers to the calling request's response channel, so
+        # routing progress there would be returned as (and corrupt) the response. The
+        # transport-polymorphic send_notification sends it over the SSE queue instead.
+        transport = HttpTransport(port=8099)
+        transport.connected = true  # mark connected without binding a port
+        server = mcp_server(name="test", version="1.0.0")
+        server.transport = transport
+        ctx = RequestContext(server=server, progress_token="http-tok")
+
+        @test send_progress(ctx, 2; total=5) == true
+        @test isready(transport.notification_queue)   # delivered out-of-band (SSE)
+        @test isempty(transport.response_channels)     # response path untouched
+        notif = JSON3.read(take!(transport.notification_queue))
+        @test notif["method"] == "notifications/progress"
+        @test notif["params"]["progressToken"] == "http-tok"
+        @test notif["params"]["progress"] == 2.0
+        @test notif["params"]["total"] == 5.0
+    end
+end

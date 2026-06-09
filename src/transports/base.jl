@@ -63,6 +63,26 @@ Write a message to the transport.
 function write_message end
 
 """
+    send_notification(transport::Transport, message::String) -> Nothing
+
+Deliver a server-to-client JSON-RPC notification over `transport`.
+
+The default writes the message directly — correct for stdio, where notifications and
+responses share one stream. Transports that multiplex per-request responses (e.g. HTTP,
+where `write_message` routes to the *calling request's* response channel) override this to
+send notifications over a separate out-of-band channel, so a mid-request notification
+never corrupts that request's response.
+
+# Arguments
+- `transport::Transport`: The transport instance to send over
+- `message::String`: The serialized JSON-RPC notification
+
+# Returns
+- `Nothing`
+"""
+send_notification(transport::Transport, message::String) = write_message(transport, message)
+
+"""
     close(transport::Transport) -> Nothing
 
 Close the transport connection and clean up resources.
