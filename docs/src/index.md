@@ -4,14 +4,18 @@ Julia implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 
 ## Features
 
-- ✅ **Core MCP 2025-06-18 Protocol** - Server-side implementation with tools, resources, and prompts
-- ✅ **Multiple Transports** - stdio (default) and HTTP with Server-Sent Events
-- ✅ **Multi-Content Responses** - Tools can return text, images, and embedded resources
-- ✅ **Auto-Registration** - Automatic component discovery from directory structure
-- ✅ **Type-Safe** - Leverages Julia's type system for robust implementations
-- ✅ **Session Management** - Secure session handling for HTTP transport
+- ✅ **MCP 2025-11-25 Protocol** - server-side implementation with version negotiation back to `2024-11-05`
+- ✅ **Multiple Transports** - stdio (default) and Streamable HTTP with Server-Sent Events and session management
+- ✅ **All Content Types** - text, images, audio, embedded resources, and `resource_link` references
+- ✅ **Structured Tool Output** - `output_schema` declarations with `structuredContent` results
+- ✅ **Tool Annotations** - behavioral hints (`readOnlyHint`, `destructiveHint`, …) for client trust decisions
+- ✅ **Progress Notifications** - long-running tools report progress through context-aware handlers
+- ✅ **OAuth Resource Server** - bearer-token validation for HTTP (GitHub tokens, JWT claims, RFC 7662 introspection) with RFC 9728 discovery
+- ✅ **Logging Control** - runtime `logging/setLevel` plus opt-in per-request lifecycle logs
+- ✅ **Auto-Registration** - automatic component discovery from directory structure
+- ✅ **Type-Safe** - leverages Julia's type system for robust implementations
 
-**Note:** This is a server-side implementation. Client features (roots, sampling), OAuth, and some optional features (elicitation, audio content) are not yet implemented.
+**Note:** This is a server-side implementation. Client features (roots, sampling), spec Tasks, elicitation, and the OAuth *Authorization Server* (token issuance) are not yet implemented.
 
 ## Installation
 
@@ -57,14 +61,15 @@ start!(server)
 For web-based integrations, use the HTTP transport:
 
 ```julia
-# Create server with HTTP transport
+# Create server, then attach an HTTP transport
 server = mcp_server(
     name = "http-server",
     version = "1.0.0",
-    tools = [...],  # Your tools here
-    transport = HttpTransport(host = "127.0.0.1", port = 3000)
+    tools = [...]  # Your tools here
 )
 
+server.transport = HttpTransport(host = "127.0.0.1", port = 3000)
+connect(server.transport)
 start!(server)
 
 # Test with curl
@@ -86,14 +91,15 @@ start!(server)
 
 ## Protocol Compliance
 
-ModelContextProtocol.jl implements the MCP specification version `2025-06-18`, including:
+ModelContextProtocol.jl implements the MCP specification version `2025-11-25` and negotiates
+with clients speaking `2025-06-18`, `2025-03-26`, or `2024-11-05`. This includes:
 
-- JSON-RPC 2.0 message protocol
-- Tool discovery and invocation
-- Resource management with subscriptions
-- Prompt templates with arguments
-- Session management for HTTP transport
-- Content negotiation and multi-format responses
+- JSON-RPC 2.0 message protocol (batching rejected per spec)
+- Tool discovery and invocation, structured output, annotations, `_meta`
+- Resource management with subscriptions and `resource_link` references
+- Prompt templates with arguments and media content
+- Progress notifications (`notifications/progress`) and logging (`logging/setLevel`)
+- Session management and OAuth Resource Server authentication for HTTP transport
 
 ## Basic Concepts
 
@@ -138,14 +144,7 @@ resource = MCPResource(
     name = "Application Config",
     description = "Current application configuration",
     mime_type = "application/json",
-    handler = function(uri)
-        config_data = read("config.json", String)
-        return TextResourceContents(
-            uri = uri,
-            text = config_data,
-            mime_type = "application/json"
-        )
-    end
+    data_provider = () -> JSON3.read(read("config.json", String), Dict{String,Any})
 )
 ```
 
@@ -164,18 +163,18 @@ prompt = MCPPrompt(
             required = true
         )
     ],
-    handler = function(args)
-        return [
-            PromptMessage(
-                role = user,
-                content = TextContent(
-                    text = "Please review this $(args["language"]) code for best practices."
-                )
+    messages = [
+        PromptMessage(
+            content = TextContent(
+                text = "Please review this {language} code for best practices."
             )
-        ]
-    end
+        )
+    ]
 )
 ```
+
+Template placeholders like `{language}` are substituted from the arguments supplied in
+`prompts/get`.
 
 ## Testing Your Server
 

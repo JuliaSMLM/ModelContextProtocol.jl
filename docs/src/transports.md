@@ -34,11 +34,11 @@ The Streamable HTTP transport implements the MCP protocol over HTTP with Server-
 using ModelContextProtocol
 using ModelContextProtocol: HttpTransport
 
-# Create HTTP transport
+# Create HTTP transport (the MCP protocol version is negotiated per client;
+# the server speaks 2025-11-25 down to 2024-11-05)
 transport = HttpTransport(
     host = "127.0.0.1",
-    port = 3000,
-    protocol_version = "2025-06-18"
+    port = 3000
 )
 
 # Create server
@@ -63,12 +63,16 @@ transport = HttpTransport(
     host = "127.0.0.1",           # Bind address (localhost by default)
     port = 3000,                  # Port number
     endpoint = "/",               # Base endpoint path
-    protocol_version = "2025-06-18",  # MCP protocol version
     session_required = true,      # Require session validation
     allowed_origins = ["http://localhost:8080"],  # CORS origins
-    enable_sse = true            # Enable Server-Sent Events
+    auth = nothing,               # Optional AuthMiddleware (see Authentication below)
+    resource_metadata = nothing   # Optional RFC 9728 Protected Resource Metadata
 )
 ```
+
+The advertised MCP protocol version defaults to the latest supported (`2025-11-25`) and is
+negotiated per client during `initialize`; response headers echo the negotiated version.
+SSE is always available via `GET` with `Accept: text/event-stream` — there is no switch.
 
 ### Session Management
 
@@ -96,20 +100,46 @@ curl -X POST http://localhost:3000/ \
 
 ### Server-Sent Events (SSE)
 
-The HTTP transport supports real-time streaming via Server-Sent Events:
+The HTTP transport streams server-to-client notifications via Server-Sent Events. Clients
+open the stream with a `GET` request:
 
-```julia
-# SSE is enabled by default in HttpTransport
-transport = HttpTransport(enable_sse = true)
+```bash
+curl -N -H 'Accept: text/event-stream' http://127.0.0.1:3000/
 ```
 
-SSE streams provide:
-- Real-time notifications to clients
-- Progress updates for long-running operations  
-- Event-based communication patterns
-- Automatic reconnection support
+SSE streams carry:
+- Server notifications (`notifications/message` log events)
+- Progress updates for long-running tool calls (`notifications/progress`)
+- Responses, when the client requested SSE delivery
 
 ### Security Features
+
+#### Authentication (OAuth Resource Server)
+
+The HTTP transport can require a bearer token on every request. Validators include GitHub
+tokens (validated against the GitHub API with optional allowlist/organization checks),
+JWT claims, and RFC 7662 token introspection:
+
+```julia
+using ModelContextProtocol
+
+auth = create_github_auth(
+    allowed_users = ["alice", "bob"],   # empty list = any authenticated GitHub user
+    required_org  = "MyLab",            # optional organization gate
+)
+meta = create_github_resource_metadata("https://mcp.example.org")
+
+transport = HttpTransport(host = "0.0.0.0", port = 3000,
+                          auth = auth, resource_metadata = meta)
+```
+
+Clients send `Authorization: Bearer <token>`; unauthorized requests get `401`/`403` with an
+RFC 6750 `WWW-Authenticate` header, and discovery metadata is served at
+`/.well-known/oauth-protected-resource` (RFC 9728). Tool handlers can read the verified
+identity by accepting the request context: `handler = (args, ctx) -> ...` and using
+`ctx.authenticated_user`. Note: `JWTValidator` checks claims only (no JWKS signature
+verification yet); prefer the GitHub or introspection validators when tokens must be
+verified against an authority.
 
 #### Origin Validation
 
@@ -174,9 +204,10 @@ using Sockets
 
 #### Protocol Version Mismatches
 
-- Use `MCP-Protocol-Version: 2025-06-18` header in all requests
+- The server accepts any supported version (`2025-11-25`, `2025-06-18`, `2025-03-26`,
+  `2024-11-05`) in the `MCP-Protocol-Version` header and negotiates during `initialize`
+- Response headers echo the **negotiated** version after initialization
 - Check server logs for protocol version negotiation messages
-- Ensure client and server support the same protocol version
 
 ### Migration from stdio
 
@@ -204,6 +235,5 @@ Key changes:
 ### Examples
 
 See the `examples/` directory for complete working examples:
-- `examples/streamable_http_basic.jl` - Simple HTTP server setup
-- `examples/streamable_http_demo.jl` - Full-featured server with SSE
-- `examples/streamable_http_advanced.jl` - Advanced configuration and usage
+- `examples/simple_http_server.jl` - Simple HTTP server setup
+- `examples/reg_dir_http.jl` - HTTP server with directory auto-registration

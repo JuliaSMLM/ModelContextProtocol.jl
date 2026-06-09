@@ -261,3 +261,93 @@ safe_tool = MCPTool(
     end
 )
 ```
+
+## Structured Output
+
+Declare an `output_schema` and return machine-readable results in `structuredContent`
+alongside the human-readable `content` (the spec recommends providing both):
+
+```julia
+stats_tool = MCPTool(
+    name = "get_stats",
+    description = "Compute dataset statistics",
+    parameters = [],
+    output_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}("count" => Dict{String,Any}("type" => "integer"))
+    ),
+    handler = args -> CallToolResult(
+        content = [Dict{String,Any}("type" => "text", "text" => "{\"count\": 42}")],
+        structured_content = Dict("count" => 42)
+    )
+)
+```
+
+The schema is emitted as `outputSchema` in `tools/list`; the result field serializes as
+`structuredContent`.
+
+## Tool Annotations
+
+Annotations are behavioral hints clients can use for trust and approval decisions. They
+are emitted verbatim in `tools/list`:
+
+```julia
+MCPTool(
+    name = "delete_file",
+    description = "Delete a file",
+    parameters = [ToolParameter(name = "path", type = "string", description = "File path", required = true)],
+    handler = my_handler,
+    annotations = Dict{String,Any}(
+        "readOnlyHint" => false,
+        "destructiveHint" => true,
+        "idempotentHint" => true,
+        "openWorldHint" => false
+    )
+)
+```
+
+## Context-Aware Handlers and Progress
+
+A handler may accept a second argument to receive the per-request context — useful for
+progress reporting on long-running tools and for reading the authenticated user when
+HTTP auth is enabled:
+
+```julia
+MCPTool(
+    name = "long_job",
+    description = "Process with progress updates",
+    parameters = [],
+    handler = (args, ctx) -> begin
+        for i in 1:10
+            send_progress(ctx, i; total = 10, message = "step $i")
+            # ... work ...
+        end
+        TextContent(text = "done")
+    end
+)
+```
+
+`send_progress` emits `notifications/progress` (over stdout for stdio, over the SSE
+stream for HTTP) and is a safe no-op when the client did not send a `progressToken`.
+The context also exposes `ctx.authenticated_user` and `ctx.request_id`. Plain
+one-argument handlers keep working unchanged.
+
+## Audio and Resource Links in Results
+
+Tools can return audio and references to large artifacts without embedding them:
+
+```julia
+handler = args -> [
+    TextContent(text = "Analysis complete"),
+    AudioContent(data = wav_bytes, mime_type = "audio/wav"),
+    ResourceLink(
+        uri = "file:///results/overlay.png",
+        name = "overlay.png",
+        mime_type = "image/png",
+        size = 123_456
+    )
+]
+```
+
+`ResourceLink` serializes to the spec `resource_link` content block, letting clients fetch
+or subscribe to the artifact instead of receiving inline base64.
