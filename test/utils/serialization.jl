@@ -142,4 +142,48 @@ end
     # existing fields are unaffected
     @test haskey(j_with, "content")
     @test j_with["isError"] == false  # is_error -> isError wire key
+
+    # _meta is emitted verbatim, omitted when nothing
+    with_meta = CallToolResult(
+        content = [Dict{String,Any}("type" => "text", "text" => "hi")],
+        _meta = Dict("trace" => "abc"),
+    )
+    j_meta = JSON3.read(JSON3.write(with_meta), Dict{String,Any})
+    @test j_meta["_meta"]["trace"] == "abc"
+    @test !haskey(j_without, "_meta")
+end
+
+@testset "AudioContent conversion" begin
+    audio = AudioContent(data = [0x52, 0x49, 0x46, 0x46], mime_type = "audio/wav")
+    dict = content2dict(audio)
+    @test dict["type"] == "audio"
+    @test dict["data"] == base64encode([0x52, 0x49, 0x46, 0x46])
+    @test dict["mimeType"] == "audio/wav"
+    @test !haskey(dict, "annotations")
+    @test !haskey(dict, "_meta")
+
+    # AudioContent is a valid prompt message content type
+    msg = PromptMessage(content = audio)
+    @test msg.content isa AudioContent
+end
+
+@testset "ResourceLink spec wire format" begin
+    link = ResourceLink(
+        uri = "file:///project/result.png",
+        name = "result.png",
+        description = "Segmentation overlay",
+        mime_type = "image/png",
+    )
+    dict = content2dict(link)
+    # MCP spec shape: type "resource_link" with uri/name (not "link"/"href")
+    @test dict["type"] == "resource_link"
+    @test dict["uri"] == "file:///project/result.png"
+    @test dict["name"] == "result.png"
+    @test dict["description"] == "Segmentation overlay"
+    @test dict["mimeType"] == "image/png"
+    @test !haskey(dict, "href")
+
+    # Optional fields omitted when unset
+    minimal = content2dict(ResourceLink(uri = "file:///x", name = "x"))
+    @test !haskey(minimal, "description") && !haskey(minimal, "mimeType") && !haskey(minimal, "title")
 end

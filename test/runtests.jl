@@ -45,6 +45,7 @@ const RUN_E2E = get(ENV, "MCP_TEST_E2E", ON_CI ? "false" : "true") == "true"
 
     if RUN_E2E
         include("e2e/test_protocol_e2e.jl")
+        include("e2e/test_wire_conformance.jl")
     else
         @info "Skipping E2E protocol tests (local-only; set MCP_TEST_E2E=true to run, e.g. in the nightly CI job)"
     end

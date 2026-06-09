@@ -83,6 +83,23 @@ never corrupts that request's response.
 send_notification(transport::Transport, message::String) = write_message(transport, message)
 
 """
+    set_negotiated_version!(transport::Transport, version::String) -> Nothing
+
+Inform the transport of the protocol version negotiated during `initialize`, so
+transports that advertise a version per response (e.g. the HTTP `MCP-Protocol-Version`
+header) echo the negotiated one rather than a static default. Default is a no-op
+(stdio carries no version metadata).
+
+# Arguments
+- `transport::Transport`: The transport instance to update
+- `version::String`: The negotiated MCP protocol version
+
+# Returns
+- `Nothing`
+"""
+set_negotiated_version!(::Transport, ::String) = nothing
+
+"""
     close(transport::Transport) -> Nothing
 
 Close the transport connection and clean up resources.

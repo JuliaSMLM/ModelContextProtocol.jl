@@ -31,17 +31,23 @@ Base.@kwdef struct ClientCapabilities
 end
 
 """
-    Implementation(; name::String="default-client", version::String="1.0.0")
+    Implementation(; name::String="default-client", version::String="1.0.0",
+                   title::Union{String,Nothing}=nothing,
+                   description::Union{String,Nothing}=nothing)
 
 Information about a client or server implementation of the MCP protocol.
 
 # Fields
 - `name::String`: Name of the implementation
 - `version::String`: Version string of the implementation
+- `title::Union{String,Nothing}`: Optional human-readable display name
+- `description::Union{String,Nothing}`: Optional human-readable description (MCP 2025-11-25)
 """
 Base.@kwdef struct Implementation
     name::String = "default-client"
     version::String = "1.0.0"
+    title::Union{String,Nothing} = nothing
+    description::Union{String,Nothing} = nothing
 end
 
 """
@@ -188,12 +194,18 @@ Result returned from a tool invocation.
 - `is_error::Bool`: Whether the tool execution resulted in an error
 - `structured_content::Union{Nothing,AbstractDict}`: Optional structured result (a JSON
   object per the MCP spec), serialized as `structuredContent` and omitted when `nothing`.
-  Pair it with the tool's `output_schema` so clients can validate and consume it programmatically.
+  Pair it with the tool's `output_schema` so clients can validate and consume it
+  programmatically. Per the spec, a tool returning structured content SHOULD also include
+  a human-readable serialization (e.g. the JSON as text) in `content` for clients that
+  don't consume structured output.
+- `_meta::Union{Nothing,AbstractDict}`: Optional result metadata for protocol extensions,
+  serialized as `_meta` and omitted when `nothing`
 """
 Base.@kwdef struct CallToolResult <: ResponseResult
     content::Vector{Dict{String,Any}}
     is_error::Bool = false
     structured_content::Union{Nothing,AbstractDict} = nothing
+    _meta::Union{Nothing,AbstractDict} = nothing
 end
 
 #= Prompt-Related Messages =#

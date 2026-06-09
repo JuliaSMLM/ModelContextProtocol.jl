@@ -175,6 +175,9 @@
         @test result["id"] == 2
         @test result["result"]["content"][1]["text"] == "Echo: Hello MCP"
         @test result["result"]["isError"] == false
+        # Response header echoes the NEGOTIATED version (client initialized with 2025-06-18),
+        # not the transport's static default
+        @test HTTP.header(response, "MCP-Protocol-Version") == "2025-06-18"
         
         # Clean up
         server.active = false

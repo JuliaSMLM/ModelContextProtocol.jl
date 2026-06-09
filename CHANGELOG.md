@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-09
+
+### Added
+
+- `AudioContent` — the third media content type (`{"type": "audio", "data": ..., "mimeType": ...}`),
+  usable in tool results and prompt messages.
+- `PromptMessage` content accepts the full spec ContentBlock union: `AudioContent` and
+  `ResourceLink` joined `TextContent`/`ImageContent`/`EmbeddedResource`.
+- `ResourceLink` gained the spec's optional `size` field (bytes).
+- `serverInfo.description`: `mcp_server(; description = ...)` is now emitted in the initialize
+  response (MCP 2025-11-25). The `Implementation` type (clientInfo) gained optional
+  `title`/`description` fields.
+- `_meta` on component definitions — `MCPTool`, `MCPResource`, and `MCPPrompt` accept
+  `_meta::Dict{String,Any}`, emitted verbatim in the corresponding `*/list` entries — and on
+  `CallToolResult` (omitted when unset).
+- Tool input schemas generated from `ToolParameter` lists now declare the JSON Schema
+  **2020-12** dialect via `"$schema"`; a raw `input_schema` still passes through verbatim.
+
+### Fixed
+
+- **`ResourceLink` now serializes to the MCP spec wire format**
+  `{"type": "resource_link", "uri": ..., "name": ..., "description": ..., "mimeType": ...}`.
+  Previously it emitted a non-spec `{"type": "link", "href": ...}` shape that compliant clients
+  ignored, so the type never interoperated. The Julia struct changed accordingly
+  (`href` → `uri`, new required `name`, optional `description`/`mime_type`) — technically a
+  field change, shipped as a patch because the old form was unusable with any compliant client
+  and had no observed usage. Found via AIMicroGraph remote-demo field feedback.
+- The HTTP `MCP-Protocol-Version` **response header now echoes the negotiated version** after
+  `initialize` (previously a static per-transport default, so a client negotiating an older
+  version saw a mismatched header). New transport hook: `set_negotiated_version!`.
+- **`prompts/get` now serializes media content in the spec wire format** (base64 `data` +
+  `mimeType`, via `content2dict`) — previously image (and would-be audio) prompt messages
+  leaked raw Julia struct fields (`mime_type`, integer byte arrays), which compliant clients
+  could not consume. `prompts/get` results are now plain JSON objects rather than
+  `GetPromptResult` structs.
+- **`prompts/get` without `arguments` no longer errors.** The no-arguments path passed a
+  `LittleDict` to `process_template`, which was typed `::Dict` and threw a `MethodError`
+  (surfacing to clients as an internal error for any text prompt fetched argument-free).
+  Found by live-server testing; affected 0.5.0 and earlier.
+
+### Notes
+
+- Docstring guidance added: a tool returning `structuredContent` SHOULD also include a
+  human-readable serialization in `content` for clients that don't consume structured output.
+
 ## [0.5.0] - 2026-06-09
 
 ### Added
@@ -270,7 +315,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - stdio transport
 - Basic protocol compliance
 
-[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.3.1...v0.4.0
