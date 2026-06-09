@@ -56,6 +56,22 @@ function StructTypes.omitempties(::Type{ListPromptsResult})
 end
 
 """
+    StructTypes.names(::Type{CallToolResult})
+
+Map the Julia field `structured_content` to the protocol key `structuredContent`.
+(The other fields keep their names; unlisted fields are unaffected.)
+"""
+StructTypes.names(::Type{CallToolResult}) = ((:structured_content, :structuredContent),)
+
+"""
+    StructTypes.omitempties(::Type{CallToolResult}) -> Tuple{Symbol}
+
+Omit `structured_content` from the response when it is `nothing`, so tools that
+don't produce structured output emit no `structuredContent` key.
+"""
+StructTypes.omitempties(::Type{CallToolResult}) = (:structured_content,)
+
+"""
     content2dict(content::Content) -> Dict{String,Any}
 
 Convert a Content object to its dictionary representation for JSON serialization.
