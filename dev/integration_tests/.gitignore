@@ -7,4 +7,7 @@ __pycache__/
 
 # Temporary files
 *.log
-.DS_StoreManifest.toml
+.DS_Store
+
+# Per-machine Julia environment (depots differ across machines; see #52)
+Manifest.toml
