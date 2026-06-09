@@ -358,83 +358,36 @@ src/
   - When returning CallToolResult, the tool's return_type field is ignored
   - Useful for tools that need to indicate errors or complex response patterns
 
-## Progress Monitoring Capabilities
+## Context-Aware Handlers and Progress Notifications
 
-### Current Implementation
-The ModelContextProtocol.jl package includes infrastructure for progress monitoring, but with significant limitations:
+Tool handlers may opt into a two-argument form to receive the per-request context:
 
-1. **Types and Structures**:
-   - `ProgressToken` type alias: `Union{String,Int}` for tracking operations
-   - `Progress` struct: Contains `token`, `current`, `total`, and optional `message` fields
-   - `ProgressParams` struct: Used for progress notifications with token, progress value, and optional total
-   - `RequestMeta` struct: Contains optional `progress_token` field for request tracking
+```julia
+handler = (args, ctx) -> begin
+    for i in 1:n
+        send_progress(ctx, i; total = n, message = "step $i")  # notifications/progress
+        work(i)
+    end
+    TextContent(text = "done")
+end
+```
 
-2. **Server Infrastructure**:
-   - Server maintains `progress_trackers::Dict{Union{String,Int}, Progress}` for tracking ongoing operations
-   - Request handlers receive `RequestContext` with optional `progress_token` from the request metadata
-
-3. **Protocol Support**:
-   - JSON-RPC notification handler recognizes `"notifications/progress"` method
-   - Progress notification messages are defined in the protocol layer
-
-### Current Limitations
-
-1. **No Outbound Notification Mechanism**:
-   - The server can receive and process notifications but cannot send them to clients
-   - The `process_message` function only handles stdin→stdout request/response flow
-   - No `send_notification` or similar function exists for pushing updates to clients
-
-2. **Tool Handler Constraints**:
-   - Tool handlers execute synchronously and return a single result
-   - No access to server context or communication channels within handlers
-   - Cannot emit progress updates during long-running operations
-
-3. **Missing Implementation**:
-   - The `handle_notification` function for `"notifications/progress"` is empty (no-op)
-   - No examples or documentation showing progress monitoring usage
-   - Progress trackers are maintained in server state but never utilized
-
-### Potential Implementation Approaches
-
-1. **Server Context Enhancement**:
-   ```julia
-   # Add notification capability to RequestContext
-   mutable struct RequestContext
-       server::Server
-       request_id::Union{RequestId,Nothing}
-       progress_token::Union{ProgressToken,Nothing}
-       notification_channel::Union{Channel,Nothing}  # New field
-   end
-   ```
-
-2. **Asynchronous Tool Execution**:
-   ```julia
-   # Modified tool handler pattern
-   handler = function(params, ctx::RequestContext)
-       # Can send progress notifications via ctx.notification_channel
-       if !isnothing(ctx.progress_token)
-           put!(ctx.notification_channel, ProgressNotification(...))
-       end
-   end
-   ```
-
-3. **Bidirectional Communication**:
-   - Implement a notification queue alongside the request/response flow
-   - Add a `send_notification` function that writes to stdout
-   - Ensure thread-safe access to stdout for concurrent notifications
-
-4. **Alternative Workarounds**:
-   - Return partial results as streaming content
-   - Use resource subscriptions for status updates
-   - Implement polling-based progress checking via separate tool calls
-
-### Recommendations for Implementation
-
-1. **Short-term**: Document the current limitations clearly in tool implementations
-2. **Medium-term**: Add server context access to tool handlers for future extensibility
-3. **Long-term**: Implement full bidirectional communication with proper notification support
-
-The infrastructure exists but requires additional implementation to enable progress monitoring from within tool handlers.
+- Plain `handler(args)` keeps working; dispatch is by `applicable`.
+- `ctx` carries `request_id`, `progress_token` (parsed from `params._meta.progressToken`),
+  `authenticated_user` (when HTTP auth is enabled), and `state` (negotiated protocol
+  version for `supports(ctx.state.protocol_version, :feature)` gating).
+- `send_progress(ctx, progress; total, message)` is a safe no-op (returns `false`) when the
+  client sent no `progressToken` or no transport is connected.
+- Delivery is transport-polymorphic via `send_notification`: stdio writes to stdout
+  (responses and notifications share the stream); Streamable HTTP queues to the SSE
+  notification stream, out-of-band from the request/response channel — never call
+  `write_message` for notifications on HTTP (it routes into the calling request's
+  response channel).
+- `RequestContext` is intentionally NOT exported: handlers use the `ctx` value and
+  exported helpers without naming the type, keeping its shape free to evolve.
+- Note: requests are processed serially by a single server loop. Progress keeps clients
+  informed during a long call, but does not unblock the next request (concurrency and
+  spec Tasks are roadmap).
 
 ## Technical Notes
 - Use 127.0.0.1 instead of localhost on Windows for HTTP transport
@@ -479,99 +432,58 @@ pkill -9 -f "julia.*examples.*"
 - **JIT compilation timeouts**: Allow adequate time for server startup
 - **Session validation**: HTTP servers require proper session headers after initialization
 
-## MCP Protocol 2025-06-18 Compliance Status
+## MCP Protocol Compliance Status
 
-### ✅ Fully Implemented Features
+Latest spec: **2025-11-25**. The server advertises and negotiates it, with backward
+compatibility through `2025-06-18`, `2025-03-26`, and `2024-11-05`
+(`negotiate_version` / `SUPPORTED_PROTOCOL_VERSIONS`; HTTP response headers echo the
+negotiated version per session).
 
-1. **Core Transport Protocols**
-   - ✅ stdio transport (standard input/output)
-   - ✅ Streamable HTTP transport with SSE support
-   - ✅ Session management (Mcp-Session-Id headers)
-   - ✅ Protocol version negotiation (only 2025-06-18 supported)
+### ✅ Implemented
 
-2. **Version Validation**
-   - ✅ Strict protocol version validation (only accepts 2025-06-18)
-   - ✅ Proper error responses for unsupported versions
-   - ✅ MCP-Protocol-Version header validation in HTTP transport
+- **Transports**: stdio; Streamable HTTP + SSE; session management (`Mcp-Session-Id`);
+  Origin validation, localhost-by-default, secure session IDs; JSON-RPC 2.0 with batch
+  rejection per spec
+- **Version negotiation + feature gating**: `supports(ctx.state.protocol_version, :feature)`
+- **Content types**: `TextContent`, `ImageContent`, `AudioContent`, `EmbeddedResource`,
+  `ResourceLink` (spec wire shape `{"type":"resource_link","uri",...,"name",...}`);
+  full ContentBlock union valid in prompt messages; multi-content tool returns
+- **Tools**: parameters or raw `input_schema` (generated schemas declare JSON Schema
+  2020-12); `annotations` (readOnlyHint etc.); structured output (`output_schema` +
+  `CallToolResult.structured_content` → `structuredContent`); spec `isError` wire key;
+  direct `CallToolResult` returns
+- **Metadata**: `title`/`icons` on server/tools/resources/prompts; `serverInfo.description`;
+  `_meta` on component definitions, Content types, and `CallToolResult`
+- **Progress notifications** from ctx-aware handlers (see section above); transport-correct
+  delivery (stdout / SSE)
+- **OAuth Resource Server** (2025-11-25 authorization): bearer validation (JWT claims,
+  RFC 7662 introspection, GitHub tokens + allowlist/org), RFC 9728 Protected Resource
+  Metadata at `/.well-known/oauth-protected-resource`, per-request auth context.
+  NOTE: `JWTValidator` validates claims only — no JWKS signature verification yet
+- **Auto-registration** of components from directories
 
-3. **JSON-RPC Compliance (2025-06-18)**
-   - ✅ Removed JSON-RPC batching support (returns proper error)
-   - ✅ Single message per request enforcement
-   - ✅ Proper JSON-RPC 2.0 validation
+### ❌ Not Yet Implemented
 
-4. **Content Types**
-   - ✅ TextContent - Text-based responses
-   - ✅ ImageContent - Binary image content with base64 encoding
-   - ✅ EmbeddedResource - Embedded resource content
-   - ✅ ResourceLink - Resource references (NEW in 2025-06-18)
+- **Tasks** (experimental, SEP-1686 — long-running calls); planned next headline feature
+- **logging/setLevel + request-lifecycle logging** (issue #24; capability advertised,
+  `MCPLogger` emits `notifications/message`; handler in progress for 0.5.2)
+- **OAuth Authorization Server** (token issuance — DCR, PKCE; tracked in issue #51) and
+  RS hardening (JWKS verification, per-tool scopes, SSE principal binding)
+- **Elicitation**; **client-side features** (roots, sampling, completion)
+- **Stream resumption** (Last-Event-ID); **concurrent request handling** (single serialized
+  server loop today)
 
-5. **Multi-Content Tool Returns**
-   - ✅ Single content return: `return TextContent(...)`
-   - ✅ Multiple content return: `return [TextContent(...), ImageContent(...)]`
-   - ✅ Mixed content types in single response
+### Versioning policy
 
-6. **Security Features** 
-   - ✅ Origin header validation for HTTP transport
-   - ✅ Localhost binding by default
-   - ✅ Cryptographically secure session IDs (UUID format)
-   - ✅ Session ID ASCII validation (0x21-0x7E)
+Additive work ships as **0.5.x patches**; intentional breaking changes cluster into
+**0.6.0** (OAuth AS, JWKS-by-default, case-insensitive allowlists, HTTP.jl 2). See
+CHANGELOG.md for what shipped in each release; this section states capabilities only.
 
-7. **Auto-Registration System**
-   - ✅ Directory-based component organization
-   - ✅ Automatic tool/prompt/resource discovery
-   - ✅ Isolated module loading for each component file
+### 🧪 Verification
 
-### ❌ Features Not Yet Implemented (Optional/Future)
-
-1. **OAuth Authorization (Optional)**
-   - ❌ OAuth Resource Server classification  
-   - ❌ Authorization server discovery
-   - ❌ Protected resource metadata
-   - ❌ Resource Indicators (RFC 8707) support
-
-2. **Elicitation (Optional)**
-   - ❌ Server-to-client user interaction requests
-   - ❌ elicitation/create method handling
-   - ❌ Structured user input with JSON schemas
-   - ❌ Nested interaction workflows
-
-3. **Client Features (Client-Side)**
-   - ❌ Roots - filesystem access boundaries
-   - ❌ Sampling - LLM completion requests
-   - ❌ Completion/autocompletion suggestions
-
-4. **Advanced Features (Optional)**
-   - ❌ _meta fields on message types (metadata support)
-   - ❌ Audio content type (AudioContent)  
-   - ❌ Progress notifications with bidirectional updates
-   - ❌ Stream resumption with Last-Event-ID
-   - ❌ title field support for human-friendly display names
-
-5. **Enterprise Features (Optional)**
-   - ❌ Advanced authentication beyond basic session management
-   - ❌ Fine-grained authorization per tool/resource
-   - ❌ Enterprise SSO integration
-
-### 🎯 Implementation Priority for Future Work
-
-**High Priority** (Core 2025-06-18 compliance):
-1. _meta field support on core types
-2. title field support for tools/resources/prompts
-3. Audio content type (AudioContent)
-
-**Medium Priority** (Enhanced functionality):
-1. Progress notification improvements
-2. Stream resumption support
-3. Elicitation basic support
-
-**Low Priority** (Enterprise/Optional):
-1. OAuth authorization support
-2. Advanced authentication
-3. Client-side features (roots, sampling)
-
-### 🧪 Testing Status
-- ✅ Protocol version validation working
-- ✅ JSON-RPC batch rejection working  
-- ✅ ResourceLink content type working
-- ✅ All existing functionality preserved
-- ✅ HTTP transport fully compliant with 2025-06-18
+- 659-test suite incl. two e2e layers that spawn real server subprocesses; the
+  wire-conformance e2e (`test/e2e/test_wire_conformance.jl`) asserts serialized bodies
+  AND HTTP headers over both transports, and runs on every PR via `.github/workflows/e2e.yml`
+- MCP Inspector (external Node client) drives stdio + HTTP example servers on every PR
+- Python-SDK cross-client tests in `dev/integration_tests/` (manual; env repair tracked
+  in issue #52)
