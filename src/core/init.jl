@@ -162,7 +162,8 @@ function default_capabilities()
     [
         ResourceCapability(list_changed=true, subscribe=true),
         ToolCapability(list_changed=true),
-        PromptCapability(list_changed=true)  # Added prompt capability
+        PromptCapability(list_changed=true),  # Added prompt capability
+        LoggingCapability()  # Advertise logging + logging/setLevel support
     ]
 end
 

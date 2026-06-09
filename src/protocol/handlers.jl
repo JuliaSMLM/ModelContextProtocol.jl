@@ -224,6 +224,51 @@ function handle_ping(ctx::RequestContext, ::Nothing)::HandlerResult
 end
 
 """
+    handle_set_level(ctx::RequestContext, params::SetLevelParams) -> HandlerResult
+
+Handle `logging/setLevel` requests by adjusting the installed `MCPLogger`'s minimum level.
+
+Accepts the MCP/RFC-5424 levels (`MCP_LOG_LEVELS`) and maps them to Julia `LogLevel`s.
+Setting `"debug"` also enables the per-request lifecycle log lines emitted by
+`handle_request`. When the global logger is not an `MCPLogger` the request still
+succeeds (the preference simply has nothing to apply to).
+
+# Arguments
+- `ctx::RequestContext`: The current request context
+- `params::SetLevelParams`: The requested minimum level
+
+# Returns
+- `HandlerResult`: Empty result on success; `INVALID_PARAMS` error for unknown levels
+"""
+function handle_set_level(ctx::RequestContext, params::SetLevelParams)::HandlerResult
+    if !(params.level in MCP_LOG_LEVELS)
+        return HandlerResult(
+            error=ErrorInfo(
+                code=ErrorCodes.INVALID_PARAMS,
+                message="Invalid log level: $(params.level). Valid levels: $(join(MCP_LOG_LEVELS, ", "))"
+            )
+        )
+    end
+
+    logger = Logging.global_logger()
+    if logger isa MCPLogger
+        logger.min_level = mcp_level_to_julia(params.level)
+        # Re-install: global_logger caches min_enabled_level in the LogState at install
+        # time, so a field mutation alone never reaches the @debug/@info early-out check
+        Logging.global_logger(logger)
+    else
+        @debug "logging/setLevel: global logger is not an MCPLogger; level not applied" requested=params.level
+    end
+
+    HandlerResult(
+        response=JSONRPCResponse(
+            id=ctx.request_id,
+            result=LittleDict{String,Any}()
+        )
+    )
+end
+
+"""
     handle_list_prompts(ctx::RequestContext, params::ListPromptsParams) -> HandlerResult
 
 Handle requests to list available prompts on the MCP server.
@@ -810,6 +855,7 @@ function handle_request(server::Server, state::ServerState, request::Request;
         authenticated_user=authenticated_user
     )
 
+    request_start = time()
     try
         # Handle request with already typed parameters
         result =
@@ -835,6 +881,8 @@ function handle_request(server::Server, state::ServerState, request::Request;
                 handle_list_prompts(ctx, params)
             elseif request.method == "prompts/get"
                 handle_get_prompt(ctx, request.params::GetPromptParams)
+            elseif request.method == "logging/setLevel"
+                handle_set_level(ctx, request.params::SetLevelParams)
             else
                 HandlerResult(
                     error=ErrorInfo(
@@ -843,6 +891,10 @@ function handle_request(server::Server, state::ServerState, request::Request;
                     )
                 )
             end
+
+        # Request-lifecycle log line: quiet by default (Debug); enable at runtime with
+        # logging/setLevel "debug" to see method/id/duration/outcome per request
+        @debug "request completed" method=request.method id=request.id duration_ms=round((time() - request_start) * 1000; digits=2) ok=isnothing(result.error)
 
         # Return response or error
         if !isnothing(result.error)

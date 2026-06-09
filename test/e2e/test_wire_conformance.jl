@@ -81,6 +81,34 @@ end
         length(resp) == 6 && _wire_assert(resp)
     end
 
+    @testset "stdio logging/setLevel takes effect live" begin
+        # setLevel "debug" must actually enable the request-lifecycle @debug lines on a
+        # REAL server (the global-logger LogState caches min_enabled_level at install
+        # time — an in-process field mutation can pass unit tests while doing nothing
+        # live, which is exactly what happened the first time)
+        reqs = [
+            """{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"lvl","version":"1"}},"id":1}""",
+            """{"jsonrpc":"2.0","method":"logging/setLevel","params":{"level":"debug"},"id":2}""",
+            """{"jsonrpc":"2.0","method":"ping","id":3}""",
+            """{"jsonrpc":"2.0","method":"logging/setLevel","params":{"level":"bogus"},"id":4}""",
+        ]
+        errbuf = IOBuffer()
+        out = read(pipeline(`$(_E2E_JULIA) --project=$(_E2E_REPO) $(_WIRE_FIXTURE)`;
+                            stdin = IOBuffer(join(reqs, "\n") * "\n"),
+                            stderr = errbuf), String)
+        resp = Dict{Int,Any}()
+        for line in split(out, '\n')
+            startswith(line, "{") || continue
+            msg = JSON3.read(line)
+            haskey(msg, :id) && (resp[msg.id] = msg)
+        end
+        @test haskey(resp[2], :result)                       # setLevel accepted
+        @test resp[4].error.code == -32602                   # invalid level rejected
+        stderr_text = String(take!(errbuf))
+        @test occursin("request completed", stderr_text)     # lifecycle lines now flowing
+        @test occursin("notifications/message", stderr_text) # in MCP log format
+    end
+
     @testset "Streamable HTTP" begin
         port = 8772
         url = "http://127.0.0.1:$(port)/"
