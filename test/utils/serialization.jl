@@ -141,5 +141,5 @@ end
     @test !haskey(j_without, "structuredContent")
     # existing fields are unaffected
     @test haskey(j_with, "content")
-    @test j_with["is_error"] == false
+    @test j_with["isError"] == false  # is_error -> isError wire key
 end
