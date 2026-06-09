@@ -14,6 +14,9 @@ makedocs(;
         canonical = "https://JuliaSMLM.github.io/ModelContextProtocol.jl",
         edit_link = "main",
         assets = String[],
+        # api.md aggregates every docstring and outgrew Documenter's default
+        # 200 KiB per-page limit; it is a reference page, so exempt it
+        size_threshold_ignore = ["api.md"],
     ),
     pages = [
         "Home" => "index.md",

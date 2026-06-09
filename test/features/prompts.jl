@@ -27,6 +27,22 @@
     @test result.response.result["messages"][1]["content"]["text"] == "Test prompt with World"
 end
 
+@testset "prompts/get works without arguments" begin
+    # Regression: the no-arguments path passes a LittleDict to process_template,
+    # which was typed ::Dict and threw a MethodError (found by live-server testing)
+    prompt = MCPPrompt(
+        name = "no-args-prompt",
+        description = "Text prompt fetched without arguments",
+        messages = [PromptMessage(content = TextContent(text = "Hello, plain prompt"))]
+    )
+    server = Server(ServerConfig(name = "test"))
+    register!(server, prompt)
+    ctx = RequestContext(server = server, request_id = 1)
+    result = handle_get_prompt(ctx, GetPromptParams(name = "no-args-prompt"))
+    @test isnothing(result.error)
+    @test result.response.result["messages"][1]["content"]["text"] == "Hello, plain prompt"
+end
+
 @testset "prompts/get media content uses spec wire format" begin
     audio = AudioContent(data = [0x52, 0x49, 0x46, 0x46], mime_type = "audio/wav")
     image = ImageContent(data = [0x89, 0x50], mime_type = "image/png")

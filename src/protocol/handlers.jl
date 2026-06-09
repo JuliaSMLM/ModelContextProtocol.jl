@@ -284,7 +284,7 @@ function handle_list_prompts(ctx::RequestContext, params::ListPromptsParams)::Ha
     end
 end
 
-function process_template(text::String, arguments::Dict{String,String})
+function process_template(text::String, arguments::AbstractDict{String,String})
     # Handle the text character by character to ensure proper brace matching
     result = text
     

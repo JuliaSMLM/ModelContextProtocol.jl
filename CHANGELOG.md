@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaked raw Julia struct fields (`mime_type`, integer byte arrays), which compliant clients
   could not consume. `prompts/get` results are now plain JSON objects rather than
   `GetPromptResult` structs.
+- **`prompts/get` without `arguments` no longer errors.** The no-arguments path passed a
+  `LittleDict` to `process_template`, which was typed `::Dict` and threw a `MethodError`
+  (surfacing to clients as an internal error for any text prompt fetched argument-free).
+  Found by live-server testing; affected 0.5.0 and earlier.
 
 ### Notes
 
