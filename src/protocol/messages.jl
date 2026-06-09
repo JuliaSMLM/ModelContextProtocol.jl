@@ -186,14 +186,14 @@ Result returned from a tool invocation.
 # Fields
 - `content::Vector{Dict{String,Any}}`: Content produced by the tool
 - `is_error::Bool`: Whether the tool execution resulted in an error
-- `structured_content::Union{Nothing,Any}`: Optional structured result, serialized as
-  `structuredContent` in the response and omitted when `nothing`. Pair it with the
-  tool's `output_schema` so clients can validate and consume the data programmatically.
+- `structured_content::Union{Nothing,AbstractDict}`: Optional structured result (a JSON
+  object per the MCP spec), serialized as `structuredContent` and omitted when `nothing`.
+  Pair it with the tool's `output_schema` so clients can validate and consume it programmatically.
 """
 Base.@kwdef struct CallToolResult <: ResponseResult
     content::Vector{Dict{String,Any}}
     is_error::Bool = false
-    structured_content::Union{Nothing,Any} = nothing
+    structured_content::Union{Nothing,AbstractDict} = nothing
 end
 
 #= Prompt-Related Messages =#

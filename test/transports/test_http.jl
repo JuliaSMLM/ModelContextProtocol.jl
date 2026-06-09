@@ -174,7 +174,7 @@
         result = JSON3.read(String(response.body))
         @test result["id"] == 2
         @test result["result"]["content"][1]["text"] == "Echo: Hello MCP"
-        @test result["result"]["is_error"] == false
+        @test result["result"]["isError"] == false
         
         # Clean up
         server.active = false

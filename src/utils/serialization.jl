@@ -58,10 +58,10 @@ end
 """
     StructTypes.names(::Type{CallToolResult})
 
-Map the Julia field `structured_content` to the protocol key `structuredContent`.
-(The other fields keep their names; unlisted fields are unaffected.)
+Map Julia field names to their MCP wire keys: `is_error` → `isError` (the spec key —
+clients rely on it to detect tool errors) and `structured_content` → `structuredContent`.
 """
-StructTypes.names(::Type{CallToolResult}) = ((:structured_content, :structuredContent),)
+StructTypes.names(::Type{CallToolResult}) = ((:is_error, :isError), (:structured_content, :structuredContent))
 
 """
     StructTypes.omitempties(::Type{CallToolResult}) -> Tuple{Symbol}
