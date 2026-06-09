@@ -160,7 +160,11 @@ function run_server_loop(server::Server, state::ServerState)
             # Process the message
             @debug "Processing message" raw=message
             response = process_message(server, state, message; authenticated_user=pending_auth_context(transport))
-            
+
+            # Keep the transport's advertised version in sync with the negotiated one
+            # (set by handle_initialize) so e.g. HTTP response headers echo it
+            isnothing(state.protocol_version) || set_negotiated_version!(transport, state.protocol_version)
+
             if !isnothing(response)
                 @debug "Sending response" response=response
                 write_message(transport, response)

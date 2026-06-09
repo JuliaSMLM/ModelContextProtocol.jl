@@ -183,6 +183,7 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
         "name" => ctx.server.config.name,
         "version" => ctx.server.config.version
     )
+    !isempty(ctx.server.config.description) && (server_info["description"] = ctx.server.config.description)
     !isnothing(ctx.server.config.title) && (server_info["title"] = ctx.server.config.title)
     !isnothing(ctx.server.config.icons) && (server_info["icons"] = [icon_to_dict(i) for i in ctx.server.config.icons])
 
@@ -254,6 +255,7 @@ function handle_list_prompts(ctx::RequestContext, params::ListPromptsParams)::Ha
             )
             !isnothing(prompt.title) && (d["title"] = prompt.title)
             !isnothing(prompt.icons) && (d["icons"] = [icon_to_dict(i) for i in prompt.icons])
+            !isnothing(prompt._meta) && (d["_meta"] = prompt._meta)
             d
         end
 
@@ -445,6 +447,7 @@ function handle_list_resources(ctx::RequestContext, params::ListResourcesParams)
             )
             !isnothing(resource.title) && (d["title"] = resource.title)
             !isnothing(resource.icons) && (d["icons"] = [icon_to_dict(i) for i in resource.icons])
+            !isnothing(resource._meta) && (d["_meta"] = resource._meta)
             d
         end
 
@@ -682,8 +685,11 @@ function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::Handle
                 # Use the raw input_schema directly
                 tool.input_schema
             else
-                # Build schema from parameters (original behavior)
+                # Build schema from parameters (original behavior). Declare the
+                # JSON Schema dialect the MCP spec defaults to (2020-12); a raw
+                # input_schema above is passed through verbatim, dialect included.
                 LittleDict{String,Any}(
+                    "\$schema" => "https://json-schema.org/draft/2020-12/schema",
                     "type" => "object",
                     "properties" => Dict(
                         param.name => begin
@@ -711,6 +717,7 @@ function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::Handle
             !isnothing(tool.icons) && (d["icons"] = [icon_to_dict(i) for i in tool.icons])
             !isnothing(tool.annotations) && (d["annotations"] = tool.annotations)
             !isnothing(tool.output_schema) && (d["outputSchema"] = tool.output_schema)
+            !isnothing(tool._meta) && (d["_meta"] = tool._meta)
             d
         end
 

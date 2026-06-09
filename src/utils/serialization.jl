@@ -10,6 +10,7 @@ This module configures how various MCP types are serialized to and from JSON.
 # Add StructTypes support for JSON serialization
 StructTypes.StructType(::Type{TextContent}) = StructTypes.Struct()
 StructTypes.StructType(::Type{ImageContent}) = StructTypes.Struct()
+StructTypes.StructType(::Type{AudioContent}) = StructTypes.Struct()
 StructTypes.StructType(::Type{TextResourceContents}) = StructTypes.Struct()
 StructTypes.StructType(::Type{BlobResourceContents}) = StructTypes.Struct()
 StructTypes.StructType(::Type{EmbeddedResource}) = StructTypes.Struct()
@@ -64,12 +65,12 @@ clients rely on it to detect tool errors) and `structured_content` → `structur
 StructTypes.names(::Type{CallToolResult}) = ((:is_error, :isError), (:structured_content, :structuredContent))
 
 """
-    StructTypes.omitempties(::Type{CallToolResult}) -> Tuple{Symbol}
+    StructTypes.omitempties(::Type{CallToolResult}) -> Tuple{Symbol,Symbol}
 
-Omit `structured_content` from the response when it is `nothing`, so tools that
-don't produce structured output emit no `structuredContent` key.
+Omit `structured_content` and `_meta` from the response when they are `nothing`, so
+tools that don't use them emit no `structuredContent`/`_meta` keys.
 """
-StructTypes.omitempties(::Type{CallToolResult}) = (:structured_content,)
+StructTypes.omitempties(::Type{CallToolResult}) = (:structured_content, :_meta)
 
 """
     content2dict(content::Content) -> Dict{String,Any}
@@ -116,6 +117,19 @@ function content2dict(content::ImageContent)
     return result
 end
 
+# AudioContent conversion
+function content2dict(content::AudioContent)
+    result = LittleDict{String,Any}(
+        "type" => "audio",
+        "data" => base64encode(content.data),
+        "mimeType" => content.mime_type
+    )
+    # Add optional fields if present
+    !isnothing(content.annotations) && (result["annotations"] = content.annotations)
+    !isnothing(content._meta) && (result["_meta"] = content._meta)
+    return result
+end
+
 # EmbeddedResource conversion
 function content2dict(content::EmbeddedResource)
     result = LittleDict{String,Any}(
@@ -131,15 +145,18 @@ end
 # ResourceLink conversion (new in MCP protocol 2025-06-18)
 function content2dict(content::ResourceLink)
     result = LittleDict{String,Any}(
-        "type" => "link",
-        "href" => content.href
+        "type" => "resource_link",
+        "uri" => content.uri,
+        "name" => content.name
     )
-    
+
     # Add optional fields if present
+    !isnothing(content.description) && (result["description"] = content.description)
+    !isnothing(content.mime_type) && (result["mimeType"] = content.mime_type)
     !isnothing(content.title) && (result["title"] = content.title)
     !isnothing(content.annotations) && (result["annotations"] = content.annotations)
     !isnothing(content._meta) && (result["_meta"] = content._meta)
-    
+
     return result
 end
 

@@ -791,6 +791,18 @@ end
 
 
 """
+    set_negotiated_version!(transport::HttpTransport, version::String) -> Nothing
+
+Update the version advertised in `MCP-Protocol-Version` response headers (and accepted
+in request headers) to the version negotiated during `initialize`, so per-request
+headers echo what the initialize response returned.
+"""
+function set_negotiated_version!(transport::HttpTransport, version::String)
+    transport.protocol_version = version
+    nothing
+end
+
+"""
     send_notification(transport::HttpTransport, notification::String) -> Nothing
 
 Send a notification to all connected SSE streams.

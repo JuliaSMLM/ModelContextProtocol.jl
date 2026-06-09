@@ -64,6 +64,19 @@ end
         server_info = result.response.result.serverInfo
         @test !haskey(server_info, "title")
         @test !haskey(server_info, "icons")
+        @test !haskey(server_info, "description")  # default description is ""
+    end
+
+    @testset "ServerInfo includes description" begin
+        server = mcp_server(name="desc-test", version="1.0.0", description="A demo MCP server")
+        ctx = RequestContext(server=server, request_id=1)
+        init_params = InitializeParams(
+            capabilities=ClientCapabilities(),
+            clientInfo=Implementation(),
+            protocolVersion="2025-06-18"
+        )
+        result = handle_initialize(ctx, init_params)
+        @test result.response.result.serverInfo["description"] == "A demo MCP server"
     end
 
     @testset "Tools list includes title and icons" begin
@@ -130,6 +143,51 @@ end
         @test haskey(tool_dict["outputSchema"]["properties"], "answer")
     end
 
+    @testset "Generated input schema declares the 2020-12 dialect" begin
+        param_tool = MCPTool(
+            name="param_tool",
+            description="Schema built from parameters",
+            parameters=[ToolParameter(name="x", description="X", type="string", required=true)],
+            handler=(args) -> TextContent(text="ok")
+        )
+        raw_schema = Dict{String,Any}("type" => "object", "properties" => Dict{String,Any}())
+        raw_tool = MCPTool(
+            name="raw_tool",
+            description="User-provided raw schema",
+            parameters=[],
+            input_schema=raw_schema,
+            handler=(args) -> TextContent(text="ok")
+        )
+        server = mcp_server(name="test", version="1.0.0", tools=[param_tool, raw_tool])
+        ctx = RequestContext(server=server, request_id=1)
+        result = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams())
+        tools = result.response.result["tools"]
+        generated = only(filter(t -> t["name"] == "param_tool", tools))["inputSchema"]
+        raw = only(filter(t -> t["name"] == "raw_tool", tools))["inputSchema"]
+        @test generated["\$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        @test haskey(generated["properties"], "x")
+        @test !haskey(raw, "\$schema")  # raw input_schema passes through verbatim
+    end
+
+    @testset "List entries include _meta when set" begin
+        meta = Dict{String,Any}("vendor/key" => "v")
+        tool = MCPTool(name="meta_tool", description="t", parameters=[],
+                       handler=(args) -> TextContent(text="ok"), _meta=meta)
+        prompt = MCPPrompt(name="meta_prompt", description="p", _meta=meta)
+        resource = MCPResource(uri="test://meta", name="meta_res",
+                               data_provider=() -> Dict(), _meta=meta)
+        server = mcp_server(name="test", version="1.0.0",
+                            tools=[tool], prompts=[prompt], resources=[resource])
+        ctx = RequestContext(server=server, request_id=1)
+
+        tool_dict = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams()).response.result["tools"][1]
+        prompt_dict = ModelContextProtocol.handle_list_prompts(ctx, ModelContextProtocol.ListPromptsParams()).response.result["prompts"][1]
+        res_dict = handle_list_resources(ctx, ListResourcesParams()).response.result["resources"][1]
+        @test tool_dict["_meta"]["vendor/key"] == "v"
+        @test prompt_dict["_meta"]["vendor/key"] == "v"
+        @test res_dict["_meta"]["vendor/key"] == "v"
+    end
+
     @testset "Prompts list includes title and icons" begin
         icon = MCPIcon(src="data:image/png;base64,abc", sizes=["48x48"])
         prompt = MCPPrompt(
@@ -185,6 +243,7 @@ end
         @test !haskey(tool_dict, "icons")
         @test !haskey(tool_dict, "annotations")
         @test !haskey(tool_dict, "outputSchema")
+        @test !haskey(tool_dict, "_meta")
     end
 
     @testset "MCPIcon serialization" begin

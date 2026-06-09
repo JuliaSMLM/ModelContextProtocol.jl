@@ -176,6 +176,28 @@ Base.@kwdef struct ImageContent <: Content
 end
 
 """
+    AudioContent(; type::String="audio", data::Vector{UInt8}, mime_type::String,
+                 annotations::Union{Nothing,Dict{String,Any}}=nothing,
+                 _meta::Union{Nothing,Dict{String,Any}}=nothing) <: Content
+
+Audio content for messages and tool responses (protocol 2025-03-26+).
+
+# Fields
+- `type::String`: Content type identifier (always "audio")
+- `data::Vector{UInt8}`: Raw audio data (automatically base64-encoded when serialized)
+- `mime_type::String`: MIME type of the audio (e.g., "audio/wav"), serialized as `mimeType`
+- `annotations::Union{Nothing,Dict{String,Any}}`: Optional annotations for the client
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions
+"""
+Base.@kwdef struct AudioContent <: Content
+    type::String = "audio"
+    data::Vector{UInt8}
+    mime_type::String
+    annotations::Union{Nothing,Dict{String,Any}} = nothing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing
+end
+
+"""
     TextResourceContents(; uri::URI, mime_type::String="text/plain", text::String) <: ResourceContents
 
 Text content for resources in the MCP protocol.
@@ -229,23 +251,32 @@ Base.@kwdef struct EmbeddedResource <: Content
 end
 
 """
-    ResourceLink(; type::String="link", href::String, 
+    ResourceLink(; type::String="resource_link", uri::String, name::String,
+                 description::Union{String,Nothing}=nothing,
+                 mime_type::Union{String,Nothing}=nothing,
                  title::Union{String,Nothing}=nothing,
                  annotations::Union{Nothing,Dict{String,Any}}=nothing,
                  _meta::Union{Nothing,Dict{String,Any}}=nothing) <: Content
 
-Link to an external resource (NEW in protocol 2025-06-18).
+Link to a resource a tool result can reference without embedding it (protocol 2025-06-18).
+Serialized per the MCP spec as `{"type": "resource_link", "uri": ..., "name": ..., ...}`.
 
 # Fields
-- `type::String`: Content type identifier (always "link")
-- `href::String`: URL or URI of the linked resource
-- `title::Union{String,Nothing}`: Optional human-readable title for the link
+- `type::String`: Content type identifier (always "resource_link")
+- `uri::String`: URI of the linked resource
+- `name::String`: Name of the resource
+- `description::Union{String,Nothing}`: Optional description of the resource
+- `mime_type::Union{String,Nothing}`: Optional MIME type, serialized as `mimeType`
+- `title::Union{String,Nothing}`: Optional human-readable title
 - `annotations::Union{Nothing,Dict{String,Any}}`: Optional annotations for the client
 - `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions
 """
 Base.@kwdef struct ResourceLink <: Content
-    type::String = "link"
-    href::String
+    type::String = "resource_link"
+    uri::String
+    name::String
+    description::Union{String,Nothing} = nothing
+    mime_type::Union{String,Nothing} = nothing
     title::Union{String,Nothing} = nothing
     annotations::Union{Nothing,Dict{String,Any}} = nothing
     _meta::Union{Nothing,Dict{String,Any}} = nothing
@@ -330,6 +361,8 @@ Implement a tool that can be invoked by clients in the MCP protocol.
 - `output_schema::Union{Nothing,AbstractDict}`: Optional JSON Schema for the tool's
   structured result, emitted as `outputSchema` in `tools/list`. Pair it with a
   `CallToolResult(structured_content=…)` so clients can validate the structured output.
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions,
+  emitted verbatim in `tools/list` when set
 
 # Parameter Definition
 Tools can define parameters in two ways:
@@ -364,6 +397,7 @@ Base.@kwdef struct MCPTool <: Tool
     icons::Union{Vector{MCPIcon},Nothing} = nothing
     annotations::Union{Nothing,Dict{String,Any}} = nothing
     output_schema::Union{Nothing,AbstractDict} = nothing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in tools/list when set
 end
 
 #==============================================================================
@@ -390,31 +424,31 @@ Base.@kwdef struct PromptArgument
 end
 
 """
-    PromptMessage(; content::Union{TextContent, ImageContent, EmbeddedResource}, role::Role=user)
+    PromptMessage(; content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}, role::Role=user)
 
 Represent a single message in a prompt template.
 
 # Fields
-- `content::Union{TextContent, ImageContent, EmbeddedResource}`: The content of the message
+- `content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}`: The content of the message
 - `role::Role`: Whether this message is from the user or assistant (defaults to user)
 """
 Base.@kwdef struct PromptMessage
-    content::Union{TextContent, ImageContent, EmbeddedResource}
+    content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}
     role::Role = user  # Set default in the kwdef constructor
 end
 
 """
-    PromptMessage(content::Union{TextContent, ImageContent, EmbeddedResource}) -> PromptMessage
+    PromptMessage(content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}) -> PromptMessage
 
 Create a prompt message with only content (role defaults to user).
 
 # Arguments
-- `content::Union{TextContent, ImageContent, EmbeddedResource}`: The message content
+- `content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}`: The message content
 
 # Returns
 - `PromptMessage`: A new prompt message with the default user role
 """
-function PromptMessage(content::Union{TextContent, ImageContent, EmbeddedResource})
+function PromptMessage(content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource})
     PromptMessage(content = content)
 end
 
@@ -435,6 +469,8 @@ Prompts can include variables that are replaced with arguments when retrieved.
 - `messages::Vector{PromptMessage}`: The sequence of messages in the prompt
 - `title::Union{String,Nothing}`: Optional human-friendly display name
 - `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions,
+  emitted verbatim in `prompts/list` when set
 """
 Base.@kwdef struct MCPPrompt
     name::String
@@ -443,6 +479,7 @@ Base.@kwdef struct MCPPrompt
     messages::Vector{PromptMessage} = PromptMessage[]
     title::Union{String,Nothing} = nothing
     icons::Union{Vector{MCPIcon},Nothing} = nothing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in prompts/list when set
 end
 
 """
@@ -495,6 +532,7 @@ struct MCPResource <: Resource
     annotations::AbstractDict{String,Any}
     title::Union{String,Nothing}
     icons::Union{Vector{MCPIcon},Nothing}
+    _meta::Union{Nothing,Dict{String,Any}}  # emitted verbatim in resources/list when set
 end
 
 """
@@ -515,6 +553,8 @@ Create a resource with automatic URI conversion from strings or URIs.
 - `annotations::AbstractDict{String,Any}`: Additional metadata for the resource
 - `title::Union{String,Nothing}`: Optional human-friendly display name
 - `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions,
+  emitted verbatim in `resources/list` when set
 
 # Returns
 - `MCPResource`: A new resource with the provided configuration
@@ -526,9 +566,10 @@ function MCPResource(; uri,
     data_provider::Function,
     annotations::AbstractDict{String,Any} = LittleDict{String,Any}(),
     title::Union{String,Nothing} = nothing,
-    icons::Union{Vector{MCPIcon},Nothing} = nothing)
+    icons::Union{Vector{MCPIcon},Nothing} = nothing,
+    _meta::Union{Nothing,Dict{String,Any}} = nothing)
     uri_obj = uri isa URI ? uri : URI(uri)
-    MCPResource(uri_obj, name, description, mime_type, data_provider, annotations, title, icons)
+    MCPResource(uri_obj, name, description, mime_type, data_provider, annotations, title, icons, _meta)
 end
 
 """

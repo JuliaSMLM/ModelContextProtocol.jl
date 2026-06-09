@@ -103,7 +103,7 @@ export
     
     # Content types for tool/resource responses
     Content, ResourceContents,  # Abstract types for type annotations
-    TextContent, ImageContent,
+    TextContent, ImageContent, AudioContent,
     TextResourceContents, BlobResourceContents,
     EmbeddedResource, ResourceLink,
     CallToolResult,  # For explicit error handling in tools
