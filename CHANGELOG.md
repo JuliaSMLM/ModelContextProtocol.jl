@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-06-05
+## [0.5.0] - 2026-06-09
 
 ### Added
 
@@ -44,7 +44,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This is the **Resource Server** slice of the OAuth work (PR #27). Deferred follow-ups: JWKS
   signature verification for `JWTValidator`, SSE session-principal binding + stream expiry,
   per-tool scope enforcement, case-insensitive allowlists, and the OAuth 2.1 **Authorization
-  Server** (token issuance — DCR, PKCE).
+  Server** (token issuance — DCR, PKCE; tracked in #51).
+
+#### Tool Annotations (#44 — thanks @samtalki)
+- `MCPTool(; annotations = Dict("readOnlyHint" => true, ...))` — optional behavioral-hint
+  object (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) emitted
+  verbatim in `tools/list` for client trust and approval decisions.
+
+#### Structured Tool Output (#45, #49 — thanks @samtalki)
+- `MCPTool(; output_schema = Dict(...))`, emitted as `outputSchema` in `tools/list`.
+- `CallToolResult(; structured_content = Dict(...))`, serialized as `structuredContent` and
+  omitted when `nothing`. Typed as a JSON object (`AbstractDict`) per the spec. Pair the two
+  so clients can validate and consume tool results programmatically.
+
+#### Progress Notifications from Tool Handlers (#50, from #46 — thanks @samtalki; closes #33)
+- Tool handlers may opt into the context-aware form `(args, ctx)` and call
+  `send_progress(ctx, progress; total, message)` to emit `notifications/progress` during a
+  long-running call. Returns `false` as a safe no-op when the client sent no `progressToken`
+  or no transport is connected, so it can be called unconditionally.
+- `parse_request` now extracts `params._meta.progressToken` into the request metadata
+  (previously dropped), so the token actually reaches handlers.
+- New transport-polymorphic `send_notification`: stdio writes to stdout (notifications and
+  responses share one stream); Streamable HTTP queues to the SSE notification stream —
+  out-of-band from request/response, so a mid-request notification cannot corrupt that
+  request's response.
+
+#### Feature Gating in Handlers (#39)
+- The negotiated protocol version is persisted in `ServerState.protocol_version` and exposed
+  to handlers as `ctx.state`, enabling `supports(ctx.state.protocol_version, :feature)`.
+
+#### End-to-End Test Harness (#40)
+- `test/e2e/` spawns the shipped example servers as real subprocesses (stdio + Streamable
+  HTTP) and drives the MCP handshake against them. Runs locally by default, skipped on the
+  PR CI matrix, exercised nightly by `.github/workflows/e2e.yml`; force either way with
+  `MCP_TEST_E2E=true|false`.
 
 ### Changed
 
@@ -60,12 +93,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-wrapped into `Content` regardless of the declared `return_type`, matching the
   documented contract — previously these converted only when `return_type == TextContent`,
   so the default `Vector{Content}` raised `ArgumentError`. Fixes #34.
+- `CallToolResult` now serializes its error flag under the MCP wire key **`isError`**
+  (previously `is_error`, which spec-compliant clients do not read — tool errors looked
+  like successes to them). The Julia field name is unchanged. (#49)
 
 ### Notes
 
-- 0.5.0 is being assembled incrementally from the larger OAuth 2.1 / 2025-11-25 work (PR #27):
+- 0.5.0 was assembled incrementally from the larger OAuth 2.1 / 2025-11-25 work (PR #27):
   protocol negotiation, `ServerState`-based feature gating, and the OAuth Resource Server have
-  landed. The OAuth 2.1 **Authorization Server** (token issuance — DCR, PKCE) remains a follow-up.
+  landed. The OAuth 2.1 **Authorization Server** (token issuance — DCR, PKCE) remains a
+  follow-up, tracked in #51.
+- Tool annotations, structured output, and progress notifications were community
+  contributions by @samtalki (#44, #45, #46/#50). Thank you!
+
+## [0.4.1] - 2026-03-12
+
+### Added
+
+- `title` and `icons` metadata (MCP 2025-11-25) on servers, tools, resources, and prompts via
+  new `MCPIcon` type; emitted in `serverInfo` and the `*/list` responses, omitted when unset. (#28)
+
+### Fixed
+
+- HTTP transport accepts health-check style requests more leniently, for Claude Code
+  compatibility (thanks @GiggleLiu, #26).
+
+## [0.4.0] - 2025-12-14
+
+### Added
+
+- `MCPTool(; input_schema = Dict(...))` — raw JSON Schema for complex tool parameter types,
+  as an alternative to the `ToolParameter` list. (#23)
+
+### Fixed
+
+- Protocol version negotiation corrected per the MCP spec. (#21)
 
 ## [0.3.0] - 2025-11-16
 
@@ -208,7 +270,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - stdio transport
 - Basic protocol compliance
 
-[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.3.1...v0.4.0
 [0.3.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.1.0...v0.2.0
