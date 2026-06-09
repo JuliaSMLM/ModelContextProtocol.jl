@@ -7,13 +7,39 @@ Define a custom logger for MCP server that formats messages according to protoco
 
 # Fields
 - `stream::IO`: The output stream for log messages
-- `min_level::LogLevel`: Minimum logging level to display
+- `min_level::LogLevel`: Minimum logging level to display (mutable so `logging/setLevel`
+  can adjust it on the installed logger)
 - `message_limits::Dict{Any,Int}`: Message limit settings for rate limiting
 """
-struct MCPLogger <: AbstractLogger
+mutable struct MCPLogger <: AbstractLogger
     stream::IO
     min_level::LogLevel
     message_limits::Dict{Any,Int}
+end
+
+"""
+    MCP_LOG_LEVELS
+
+The log levels defined by the MCP spec (RFC 5424 severities), lowest to highest.
+"""
+const MCP_LOG_LEVELS = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]
+
+"""
+    mcp_level_to_julia(level::String) -> LogLevel
+
+Map an MCP/RFC-5424 log level string to the closest Julia `LogLevel`.
+
+# Arguments
+- `level::String`: One of `MCP_LOG_LEVELS`
+
+# Returns
+- `LogLevel`: `Debug`, `Info`, `Warn`, or `Error` (the four Julia standard levels)
+"""
+function mcp_level_to_julia(level::String)::LogLevel
+    level == "debug" && return Logging.Debug
+    level in ("info", "notice") && return Logging.Info
+    level == "warning" && return Logging.Warn
+    return Logging.Error  # error, critical, alert, emergency
 end
 
 """

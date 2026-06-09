@@ -265,6 +265,21 @@ Base.@kwdef struct GetPromptResult <: ResponseResult
     messages::Vector{PromptMessage}
 end
 
+#= Logging Messages =#
+
+"""
+    SetLevelParams(; level::String) <: RequestParams
+
+Parameters for `logging/setLevel` requests.
+
+# Fields
+- `level::String`: Minimum log level the client wants to receive (one of the MCP/RFC-5424
+  levels: "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
+"""
+Base.@kwdef struct SetLevelParams <: RequestParams
+    level::String
+end
+
 #= Progress and Error Messages =#
 
 """
