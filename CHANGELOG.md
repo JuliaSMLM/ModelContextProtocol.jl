@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.2] - Unreleased
+## [0.5.2] - 2026-06-09
 
 ### Added
 
@@ -16,6 +16,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answers its first request without runtime JIT. Cold start-to-first-`tools/call`
   drops ~2.7× (≈4.2s → ≈1.5s measured over stdio; remainder is package load and the
   non-precompilable socket path).
+- **`logging/setLevel`** (closes #24, finishing the intent of #17): clients adjust the
+  installed `MCPLogger`'s minimum level at runtime using the eight MCP/RFC-5424 levels;
+  unknown levels return `INVALID_PARAMS`. The `logging` capability is now advertised by
+  default.
+- **Request-lifecycle logging**: every request emits a `request completed` log line with
+  `method`, `id`, `duration_ms`, and `ok` — at Debug level, so servers stay quiet by
+  default; enable at runtime with `logging/setLevel "debug"`.
+
+### Fixed
+
+- `logging/setLevel` re-installs the logger so the change actually reaches the log
+  macros: `global_logger` caches `min_enabled_level` at install time, so mutating the
+  logger's field alone is silently ignored (found by live-server testing; now also
+  covered by a wire-conformance e2e test).
+
+### Documentation
+
+- README, `docs/src` guides, and `api_overview.md` refreshed to 0.5.x reality, including
+  fixes for examples that never worked (`MCPResource(handler=…)` → `data_provider`,
+  `MCPPrompt(handler=…)` → `messages`, `mcp_server(transport=…)` → set `server.transport`),
+  a new HTTP authentication section, and tools-guide sections for structured output,
+  annotations, context-aware handlers + progress, and audio/resource_link results.
 
 ## [0.5.1] - 2026-06-09
 
@@ -325,7 +347,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - stdio transport
 - Basic protocol compliance
 
-[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.4.0...v0.4.1
