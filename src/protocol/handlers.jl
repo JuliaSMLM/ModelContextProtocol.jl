@@ -674,6 +674,7 @@ function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::Handle
             )
             !isnothing(tool.title) && (d["title"] = tool.title)
             !isnothing(tool.icons) && (d["icons"] = [icon_to_dict(i) for i in tool.icons])
+            !isnothing(tool.annotations) && (d["annotations"] = tool.annotations)
             d
         end
 

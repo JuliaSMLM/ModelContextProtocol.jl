@@ -87,6 +87,29 @@ end
         @test !haskey(tool_dict["icons"][1], "mimeType")
     end
 
+    @testset "Tools list includes annotations" begin
+        tool = MCPTool(
+            name="annotated_tool",
+            description="A tool with annotations",
+            parameters=[],
+            handler=(args) -> TextContent(text="ok"),
+            annotations=Dict{String,Any}(
+                "readOnlyHint" => true,
+                "destructiveHint" => false,
+                "idempotentHint" => true,
+                "openWorldHint" => false,
+            )
+        )
+        server = mcp_server(name="test", version="1.0.0", tools=[tool])
+        ctx = RequestContext(server=server, request_id=1)
+        result = ModelContextProtocol.handle_list_tools(ctx, ModelContextProtocol.ListToolsParams())
+        tool_dict = result.response.result["tools"][1]
+        @test tool_dict["annotations"]["readOnlyHint"] == true
+        @test tool_dict["annotations"]["destructiveHint"] == false
+        @test tool_dict["annotations"]["idempotentHint"] == true
+        @test tool_dict["annotations"]["openWorldHint"] == false
+    end
+
     @testset "Prompts list includes title and icons" begin
         icon = MCPIcon(src="data:image/png;base64,abc", sizes=["48x48"])
         prompt = MCPPrompt(
@@ -140,6 +163,7 @@ end
         tool_dict = result.response.result["tools"][1]
         @test !haskey(tool_dict, "title")
         @test !haskey(tool_dict, "icons")
+        @test !haskey(tool_dict, "annotations")
     end
 
     @testset "MCPIcon serialization" begin
