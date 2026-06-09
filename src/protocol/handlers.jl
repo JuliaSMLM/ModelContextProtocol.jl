@@ -52,8 +52,10 @@ function send_progress(ctx::RequestContext, progress::Real;
     total !== nothing && (params["total"] = Float64(total))
     message !== nothing && (params["message"] = message)
     try
-        write_message(ctx.server.transport,
-                      serialize_message(JSONRPCNotification(method="notifications/progress", params=params)))
+        send_notification(
+            ctx.server.transport,
+            serialize_message(JSONRPCNotification(method="notifications/progress", params=params)),
+        )
         return true
     catch
         return false

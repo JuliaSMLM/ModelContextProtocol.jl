@@ -387,4 +387,24 @@ end
         @test req isa JSONRPCRequest
         @test req.meta.progress_token === nothing
     end
+
+    @testset "send_progress routes to the HTTP notification queue, not the response" begin
+        # On HTTP, write_message delivers to the calling request's response channel, so
+        # routing progress there would be returned as (and corrupt) the response. The
+        # transport-polymorphic send_notification sends it over the SSE queue instead.
+        transport = HttpTransport(port=8099)
+        transport.connected = true  # mark connected without binding a port
+        server = mcp_server(name="test", version="1.0.0")
+        server.transport = transport
+        ctx = RequestContext(server=server, progress_token="http-tok")
+
+        @test send_progress(ctx, 2; total=5) == true
+        @test isready(transport.notification_queue)   # delivered out-of-band (SSE)
+        @test isempty(transport.response_channels)     # response path untouched
+        notif = JSON3.read(take!(transport.notification_queue))
+        @test notif["method"] == "notifications/progress"
+        @test notif["params"]["progressToken"] == "http-tok"
+        @test notif["params"]["progress"] == 2.0
+        @test notif["params"]["total"] == 5.0
+    end
 end
