@@ -36,9 +36,17 @@ end
             @test isempty(result.response.result)
             @test mcp_logger.min_level == Logging.Debug
 
+            # The change must actually take effect for log macros: global_logger caches
+            # min_enabled_level at install time, so the handler has to re-install the
+            # logger (a field mutation alone is silently ignored by @debug's early-out)
+            @debug "post-setlevel probe"
+            @test occursin("post-setlevel probe", String(take!(mcp_logger.stream)))
+
             ModelContextProtocol.handle_set_level(
                 ctx, ModelContextProtocol.SetLevelParams(level = "emergency"))
             @test mcp_logger.min_level == Logging.Error
+            @info "suppressed probe"  # below emergency->Error threshold
+            @test !occursin("suppressed probe", String(take!(mcp_logger.stream)))
         finally
             Logging.global_logger(old_logger)
         end

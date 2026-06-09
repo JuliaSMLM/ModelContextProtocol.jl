@@ -253,6 +253,9 @@ function handle_set_level(ctx::RequestContext, params::SetLevelParams)::HandlerR
     logger = Logging.global_logger()
     if logger isa MCPLogger
         logger.min_level = mcp_level_to_julia(params.level)
+        # Re-install: global_logger caches min_enabled_level in the LogState at install
+        # time, so a field mutation alone never reaches the @debug/@info early-out check
+        Logging.global_logger(logger)
     else
         @debug "logging/setLevel: global logger is not an MCPLogger; level not applied" requested=params.level
     end
