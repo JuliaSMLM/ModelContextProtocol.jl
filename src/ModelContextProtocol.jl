@@ -57,6 +57,9 @@ include("protocol/messages.jl")
 # 2b. Protocol version negotiation (dependency-free; used by transport + handlers)
 include("protocol/versioning.jl")
 
+# 2c. Authentication — OAuth Resource Server (defines the auth types the HTTP transport references)
+include("auth/auth.jl")
+
 # 3. Transport Layer
 include("transports/base.jl")
 include("transports/stdio.jl")
@@ -117,6 +120,16 @@ export
 
     # Protocol version negotiation and feature gating (MCP 2025-11-25)
     LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, FEATURE_VERSIONS,
-    negotiate_version, supports, is_supported_version
+    negotiate_version, supports, is_supported_version,
+
+    # Authentication — OAuth Resource Server (MCP 2025-11-25 authorization)
+    AuthProvider, TokenValidator, AuthenticatedUser,
+    OAuthConfig, AuthResult, AuthMiddleware, ProtectedResourceMetadata,
+    SimpleTokenValidator, JWTValidator, IntrospectionValidator,
+    create_auth_middleware, create_simple_auth, disable_auth,
+    create_protected_resource_metadata, create_github_resource_metadata,
+    authenticate_request, validate_token, extract_bearer_token,
+    GitHubOAuthValidator, create_github_auth, clear_cache!,
+    is_auth_enabled
 
 end # module

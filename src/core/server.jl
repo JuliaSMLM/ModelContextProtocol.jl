@@ -43,7 +43,8 @@ Process an incoming JSON-RPC message and generate an appropriate response.
 # Returns
 - `Union{String,Nothing}`: A serialized response string or nothing for notifications
 """
-function process_message(server::Server, state::ServerState, message::String)::Union{String,Nothing}
+function process_message(server::Server, state::ServerState, message::String;
+                         authenticated_user=nothing)::Union{String,Nothing}
     # Parse the incoming message
     parsed = try
         @debug "Parsing message"
@@ -70,10 +71,10 @@ function process_message(server::Server, state::ServerState, message::String)::U
     try
         if parsed isa JSONRPCRequest
             # Handle request
-            response = handle_request(server, state, parsed)
+            response = handle_request(server, state, parsed; authenticated_user=authenticated_user)
             return serialize_message(response) # Make sure to serialize the response
         elseif parsed isa JSONRPCNotification
-            handle_notification(RequestContext(server=server, state=state), parsed)
+            handle_notification(RequestContext(server=server, state=state, authenticated_user=authenticated_user), parsed)
             return nothing
         end
     catch e
@@ -158,7 +159,7 @@ function run_server_loop(server::Server, state::ServerState)
             
             # Process the message
             @debug "Processing message" raw=message
-            response = process_message(server, state, message)
+            response = process_message(server, state, message; authenticated_user=pending_auth_context(transport))
             
             if !isnothing(response)
                 @debug "Sending response" response=response

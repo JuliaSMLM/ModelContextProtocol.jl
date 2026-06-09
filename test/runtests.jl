@@ -1,6 +1,6 @@
 using Test
 using ModelContextProtocol
-using JSON3, URIs, DataStructures, Logging, Base64, HTTP
+using JSON3, URIs, DataStructures, Logging, Base64, HTTP, Dates
 using OrderedCollections: LittleDict
 
 # Only import internals that are actually needed for specific tests
@@ -14,6 +14,9 @@ using ModelContextProtocol: HandlerResult, CallToolParams, ListResourcesParams, 
 using ModelContextProtocol: user, assistant  # For role constants
 using ModelContextProtocol: PromptCapability  # For server tests
 using ModelContextProtocol: MCPLogger  # For logging tests
+using ModelContextProtocol: add_token!, decode_jwt_payload, auth_error_response, check_allowlist  # For OAuth Resource Server tests
+using ModelContextProtocol: GitHubOAuthValidatorWithOrg, GITHUB_API_URL  # For GitHub validator tests
+using ModelContextProtocol: WELL_KNOWN_PATH, handle_well_known_request  # For protected-resource-metadata tests
 
 # End-to-end tests spawn the example servers as real subprocesses (slow JIT
 # startup), so they run locally by default and are skipped on CI. Force either
@@ -38,6 +41,7 @@ const RUN_E2E = get(ENV, "MCP_TEST_E2E", ON_CI ? "false" : "true") == "true"
     include("transports/test_http.jl")
     include("transports/test_streamable_http.jl")
     include("integration/full_server.jl")
+    include("auth/test_auth.jl")
 
     if RUN_E2E
         include("e2e/test_protocol_e2e.jl")
