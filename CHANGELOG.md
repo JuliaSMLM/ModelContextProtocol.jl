@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - Unreleased
+
+### Added
+
+- **PrecompileTools workload** covering the request hot path (`parse_message` → dispatch
+  for initialize / tools / prompts / resources / ping → serialize), so a fresh server
+  answers its first request without runtime JIT. Cold start-to-first-`tools/call`
+  drops ~2.7× (≈4.2s → ≈1.5s measured over stdio; remainder is package load and the
+  non-precompilable socket path).
+
 ## [0.5.1] - 2026-06-09
 
 ### Added
