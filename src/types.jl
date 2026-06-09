@@ -267,6 +267,7 @@ Serialized per the MCP spec as `{"type": "resource_link", "uri": ..., "name": ..
 - `name::String`: Name of the resource
 - `description::Union{String,Nothing}`: Optional description of the resource
 - `mime_type::Union{String,Nothing}`: Optional MIME type, serialized as `mimeType`
+- `size::Union{Int,Nothing}`: Optional resource size in bytes
 - `title::Union{String,Nothing}`: Optional human-readable title
 - `annotations::Union{Nothing,Dict{String,Any}}`: Optional annotations for the client
 - `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions
@@ -277,6 +278,7 @@ Base.@kwdef struct ResourceLink <: Content
     name::String
     description::Union{String,Nothing} = nothing
     mime_type::Union{String,Nothing} = nothing
+    size::Union{Int,Nothing} = nothing
     title::Union{String,Nothing} = nothing
     annotations::Union{Nothing,Dict{String,Any}} = nothing
     _meta::Union{Nothing,Dict{String,Any}} = nothing
@@ -424,31 +426,31 @@ Base.@kwdef struct PromptArgument
 end
 
 """
-    PromptMessage(; content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}, role::Role=user)
+    PromptMessage(; content::Union{TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource}, role::Role=user)
 
 Represent a single message in a prompt template.
 
 # Fields
-- `content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}`: The content of the message
+- `content::Union{TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource}`: The content of the message
 - `role::Role`: Whether this message is from the user or assistant (defaults to user)
 """
 Base.@kwdef struct PromptMessage
-    content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}
+    content::Union{TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource}
     role::Role = user  # Set default in the kwdef constructor
 end
 
 """
-    PromptMessage(content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}) -> PromptMessage
+    PromptMessage(content::Union{TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource}) -> PromptMessage
 
 Create a prompt message with only content (role defaults to user).
 
 # Arguments
-- `content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource}`: The message content
+- `content::Union{TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource}`: The message content
 
 # Returns
 - `PromptMessage`: A new prompt message with the default user role
 """
-function PromptMessage(content::Union{TextContent, ImageContent, AudioContent, EmbeddedResource})
+function PromptMessage(content::Union{TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource})
     PromptMessage(content = content)
 end
 

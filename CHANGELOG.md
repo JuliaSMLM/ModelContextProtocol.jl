@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `AudioContent` — the third media content type (`{"type": "audio", "data": ..., "mimeType": ...}`),
   usable in tool results and prompt messages.
+- `PromptMessage` content accepts the full spec ContentBlock union: `AudioContent` and
+  `ResourceLink` joined `TextContent`/`ImageContent`/`EmbeddedResource`.
+- `ResourceLink` gained the spec's optional `size` field (bytes).
 - `serverInfo.description`: `mcp_server(; description = ...)` is now emitted in the initialize
   response (MCP 2025-11-25). The `Implementation` type (clientInfo) gained optional
   `title`/`description` fields.
@@ -34,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The HTTP `MCP-Protocol-Version` **response header now echoes the negotiated version** after
   `initialize` (previously a static per-transport default, so a client negotiating an older
   version saw a mismatched header). New transport hook: `set_negotiated_version!`.
+- **`prompts/get` now serializes media content in the spec wire format** (base64 `data` +
+  `mimeType`, via `content2dict`) — previously image (and would-be audio) prompt messages
+  leaked raw Julia struct fields (`mime_type`, integer byte arrays), which compliant clients
+  could not consume. `prompts/get` results are now plain JSON objects rather than
+  `GetPromptResult` structs.
 
 ### Notes
 

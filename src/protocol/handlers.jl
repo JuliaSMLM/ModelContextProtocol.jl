@@ -397,10 +397,16 @@ function handle_get_prompt(ctx::RequestContext, params::GetPromptParams)::Handle
             end
         end
 
-        # Create proper GetPromptResult
-        result = GetPromptResult(
-            description = prompt.description,
-            messages = processed_messages
+        # Serialize messages through content2dict so media content uses the spec
+        # wire format (base64 `data`, `mimeType`) rather than raw struct fields
+        result = LittleDict{String,Any}(
+            "description" => prompt.description,
+            "messages" => [
+                LittleDict{String,Any}(
+                    "role" => string(msg.role),
+                    "content" => content2dict(msg.content)
+                ) for msg in processed_messages
+            ]
         )
 
         HandlerResult(

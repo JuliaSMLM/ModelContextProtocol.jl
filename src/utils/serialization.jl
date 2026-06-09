@@ -153,6 +153,7 @@ function content2dict(content::ResourceLink)
     # Add optional fields if present
     !isnothing(content.description) && (result["description"] = content.description)
     !isnothing(content.mime_type) && (result["mimeType"] = content.mime_type)
+    !isnothing(content.size) && (result["size"] = content.size)
     !isnothing(content.title) && (result["title"] = content.title)
     !isnothing(content.annotations) && (result["annotations"] = content.annotations)
     !isnothing(content._meta) && (result["_meta"] = content._meta)
