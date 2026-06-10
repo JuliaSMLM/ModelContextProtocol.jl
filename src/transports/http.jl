@@ -785,10 +785,44 @@ function write_message(transport::HttpTransport, message::String)::Nothing
     else
         @debug "No active request to write response to"
     end
-    
+
     nothing
 end
 
+"""
+    capture_response_route(transport::HttpTransport) -> Union{String,Nothing}
+
+Detach the current request's response route so its response can be delivered later
+from a background task (see `deliver_response`). Clears `current_request_id` so the
+loop's subsequent `write_message` calls cannot route into this request's channel.
+"""
+function capture_response_route(transport::HttpTransport)::Union{String,Nothing}
+    route = transport.current_request_id
+    transport.current_request_id = nothing
+    route
+end
+
+"""
+    deliver_response(transport::HttpTransport, route::Union{String,Nothing}, message::String) -> Nothing
+
+Deliver a deferred response to the request identified by `route` (captured earlier via
+`capture_response_route`). The HTTP connection handler is still blocked on the
+request's response channel, so the POST stays open until this delivers — which is
+exactly the blocking behavior `tasks/result` requires. Dropped silently when the
+client has disconnected (its channel is gone or closed).
+"""
+function deliver_response(transport::HttpTransport, route::Union{String,Nothing},
+                          message::String)::Nothing
+    route === nothing && return nothing
+    channel = get(transport.response_channels, route, nothing)
+    channel === nothing && return nothing
+    try
+        put!(channel, message)
+    catch e
+        @debug "Failed to deliver deferred response (client likely disconnected)" error=e
+    end
+    nothing
+end
 
 """
     set_negotiated_version!(transport::HttpTransport, version::String) -> Nothing

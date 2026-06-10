@@ -65,6 +65,9 @@ include("transports/base.jl")
 include("transports/stdio.jl")
 include("transports/http.jl")
 
+# 3b. Task store for MCP Tasks (SEP-1686, experimental; Server holds a TaskStore)
+include("features/tasks.jl")
+
 # 4. Server Type (depends on Transport)
 include("server_types.jl")
 
@@ -116,6 +119,7 @@ export
     # Advanced features
     Server,  # For type annotations in user code
     send_progress,  # Progress reporting from tool handlers (RequestContext is intentionally not exported)
+    task_cancelled,  # Cooperative cancellation check inside task-augmented tool handlers
     subscribe!, unsubscribe!,  # Resource subscription management
     content2dict,  # Utility for debugging/testing
 

@@ -70,9 +70,11 @@ function process_message(server::Server, state::ServerState, message::String;
     
     try
         if parsed isa JSONRPCRequest
-            # Handle request
+            # Handle request. A nothing response means the handler deferred it
+            # (e.g. a blocking tasks/result) — a background task will deliver the
+            # response via deliver_response when ready, so the loop sends nothing.
             response = handle_request(server, state, parsed; authenticated_user=authenticated_user)
-            return serialize_message(response) # Make sure to serialize the response
+            return isnothing(response) ? nothing : serialize_message(response)
         elseif parsed isa JSONRPCNotification
             handle_notification(RequestContext(server=server, state=state, authenticated_user=authenticated_user), parsed)
             return nothing

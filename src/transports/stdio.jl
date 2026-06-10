@@ -8,16 +8,19 @@ This is the default transport for local MCP server processes.
 
 # Fields
 - `input::IO`: Input stream for reading messages (default: stdin)
-- `output::IO`: Output stream for writing messages (default: stdout)  
+- `output::IO`: Output stream for writing messages (default: stdout)
 - `connected::Bool`: Connection status (always true for stdio)
+- `write_lock::ReentrantLock`: Serializes output writes (responses and notifications
+  share stdout, and background task executions may write concurrently with the loop)
 """
 mutable struct StdioTransport <: Transport
     input::IO
     output::IO
     connected::Bool
-    
+    write_lock::ReentrantLock
+
     function StdioTransport(; input::IO=stdin, output::IO=stdout)
-        new(input, output, true)
+        new(input, output, true, ReentrantLock())
     end
 end
 
@@ -85,12 +88,14 @@ function write_message(transport::StdioTransport, message::String)::Nothing
     end
     
     try
-        println(transport.output, message)
-        Base.flush(transport.output)
+        lock(transport.write_lock) do
+            write(transport.output, message * "\n")
+            Base.flush(transport.output)
+        end
     catch e
         throw(TransportError("Failed to write message: $e"))
     end
-    
+
     nothing
 end
 

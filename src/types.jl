@@ -365,6 +365,10 @@ Implement a tool that can be invoked by clients in the MCP protocol.
   `CallToolResult(structured_content=…)` so clients can validate the structured output.
 - `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions,
   emitted verbatim in `tools/list` when set
+- `task_support::Symbol`: Task-augmented execution support (MCP 2025-11-25, experimental):
+  `:forbidden` (default — calls run synchronously), `:optional` (client may run the call
+  as a task), or `:required` (client must run the call as a task). Emitted as
+  `execution.taskSupport` in `tools/list` for clients that negotiated 2025-11-25.
 
 # Parameter Definition
 Tools can define parameters in two ways:
@@ -400,6 +404,7 @@ Base.@kwdef struct MCPTool <: Tool
     annotations::Union{Nothing,Dict{String,Any}} = nothing
     output_schema::Union{Nothing,AbstractDict} = nothing
     _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in tools/list when set
+    task_support::Symbol = :forbidden  # :forbidden | :optional | :required (MCP Tasks, experimental)
 end
 
 #==============================================================================

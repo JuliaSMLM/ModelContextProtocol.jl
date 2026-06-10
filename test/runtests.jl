@@ -17,6 +17,9 @@ using ModelContextProtocol: MCPLogger  # For logging tests
 using ModelContextProtocol: add_token!, decode_jwt_payload, auth_error_response, check_allowlist  # For OAuth Resource Server tests
 using ModelContextProtocol: GitHubOAuthValidatorWithOrg, GITHUB_API_URL  # For GitHub validator tests
 using ModelContextProtocol: WELL_KNOWN_PATH, handle_well_known_request  # For protected-resource-metadata tests
+using ModelContextProtocol: TaskStore, TaskRecord, TaskCapability, create_task!, get_task,
+    finish_task!, cancel_task!, task_wire, task_is_terminal,
+    encode_task_cursor, decode_task_cursor  # For MCP Tasks tests
 
 # End-to-end tests spawn the example servers as real subprocesses (slow JIT
 # startup), so they run locally by default and are skipped on CI. Force either
@@ -31,6 +34,7 @@ const RUN_E2E = get(ENV, "MCP_TEST_E2E", ON_CI ? "false" : "true") == "true"
     include("features/resources.jl")
     include("features/prompts.jl")
     include("features/auto_register.jl")
+    include("features/test_tasks.jl")
     include("protocol/jsonrpc.jl")
     include("protocol/handlers.jl")
     include("protocol/parameters.jl")

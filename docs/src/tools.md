@@ -351,3 +351,73 @@ handler = args -> [
 
 `ResourceLink` serializes to the spec `resource_link` content block, letting clients fetch
 or subscribe to the artifact instead of receiving inline base64.
+
+## Long-Running Tools: Tasks (experimental)
+
+MCP Tasks (protocol 2025-11-25, SEP-1686) let clients run a tool call in the
+background instead of waiting on the response: the client augments `tools/call` with a
+`task` field, the server immediately answers with a task handle, executes the handler
+in a background Julia task, and the client polls `tasks/get` until the task completes,
+then fetches the real result via `tasks/result`.
+
+Tools opt in per tool:
+
+```julia
+MCPTool(
+    name = "train_model",
+    description = "Long-running training job",
+    parameters = [],
+    handler = (args, ctx) -> begin
+        for epoch in 1:100
+            task_cancelled(ctx) && return TextContent(text = "stopped early")
+            send_progress(ctx, epoch; total = 100, message = "epoch $epoch")
+            # ... work ...
+        end
+        TextContent(text = "trained")
+    end,
+    task_support = :optional   # :forbidden (default) | :optional | :required
+)
+```
+
+- `:forbidden` (the default): task-augmented calls are rejected (`-32601`), the tool
+  always runs synchronously.
+- `:optional`: the client chooses per call — plain calls run synchronously, calls with
+  a `task` field run in the background.
+- `:required`: the tool only runs as a task; synchronous calls are rejected (`-32601`).
+
+The setting is advertised per tool as `execution.taskSupport` in `tools/list`, and the
+server only offers the `tasks` capability to clients that negotiated protocol
+`2025-11-25`. Older clients fall back exactly as the spec mandates: their task
+metadata is ignored and the call runs synchronously.
+
+What the server handles for you:
+
+- `tasks/get` — status polling (`working` → `completed`/`failed`/`cancelled`), with
+  `createdAt`/`lastUpdatedAt` timestamps, the actual `ttl`, and a suggested
+  `pollInterval`.
+- `tasks/result` — blocks until the task is terminal, then returns exactly what the
+  call would have returned (including tool errors), tagged with the spec's
+  `io.modelcontextprotocol/related-task` metadata. The serial request loop is never
+  blocked: on HTTP the POST simply stays open; on stdio the response is written
+  out-of-band when ready.
+- `tasks/cancel` — marks the task `cancelled` and wakes any blocked `tasks/result`.
+  Handlers can notice via [`task_cancelled`](@ref) and stop early; even if the
+  handler runs to completion, the late result is discarded. Cancelling an already
+  terminal task is rejected (`-32602`).
+- `tasks/list` — cursor-paginated listing of the requestor's tasks. On an HTTP
+  transport without authentication the server cannot tell requestors apart, so
+  `tasks/list` is withheld there (per the spec's security guidance). With HTTP auth
+  enabled, tasks are bound to the authenticated principal: other principals cannot
+  see, poll, fetch, or cancel them.
+- `notifications/tasks/status` — optional status-change notifications, delivered over
+  the transport-correct channel (stdout for stdio, the SSE stream for HTTP).
+
+Task records are retained for the requested `ttl` (clamped to a server maximum of one
+hour; default five minutes) and swept after expiry. Progress notifications keep
+working inside task handlers — the `progressToken` from the original call stays valid
+for the task's lifetime.
+
+!!! note "Experimental"
+    Tasks are experimental in the MCP spec and may evolve in future protocol
+    versions. Client-initiated task flows (`input_required`, task-augmented
+    elicitation/sampling) are not applicable server-side and are not implemented.

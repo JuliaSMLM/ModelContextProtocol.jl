@@ -177,10 +177,13 @@ Parameters for invoking a specific tool on an MCP server.
 # Fields
 - `name::String`: Name of the tool to call
 - `arguments::Union{Dict{String,Any},Nothing}`: Optional arguments to pass to the tool
+- `task::Union{Dict{String,Any},Nothing}`: When present, the caller requests task-augmented
+  execution (MCP Tasks, experimental); may carry a requested `"ttl"` in milliseconds
 """
 Base.@kwdef struct CallToolParams <: RequestParams
     name::String
     arguments::Union{Dict{String,Any},Nothing} = nothing
+    task::Union{Dict{String,Any},Nothing} = nothing
 end
 
 """
@@ -206,6 +209,57 @@ Base.@kwdef struct CallToolResult <: ResponseResult
     is_error::Bool = false
     structured_content::Union{Nothing,AbstractDict} = nothing
     _meta::Union{Nothing,AbstractDict} = nothing
+end
+
+#= Task-Related Messages (MCP Tasks, SEP-1686, experimental) =#
+
+"""
+    GetTaskParams(; taskId::String) <: RequestParams
+
+Parameters for a `tasks/get` status poll.
+
+# Fields
+- `taskId::String`: The task identifier to query
+"""
+Base.@kwdef struct GetTaskParams <: RequestParams
+    taskId::String
+end
+
+"""
+    TaskResultParams(; taskId::String) <: RequestParams
+
+Parameters for a `tasks/result` payload retrieval. The response blocks until the task
+reaches a terminal status and then matches the original request's result type.
+
+# Fields
+- `taskId::String`: The task identifier to retrieve results for
+"""
+Base.@kwdef struct TaskResultParams <: RequestParams
+    taskId::String
+end
+
+"""
+    CancelTaskParams(; taskId::String) <: RequestParams
+
+Parameters for a `tasks/cancel` request.
+
+# Fields
+- `taskId::String`: The task identifier to cancel
+"""
+Base.@kwdef struct CancelTaskParams <: RequestParams
+    taskId::String
+end
+
+"""
+    ListTasksParams(; cursor::Union{String,Nothing}=nothing) <: RequestParams
+
+Parameters for a paginated `tasks/list` request.
+
+# Fields
+- `cursor::Union{String,Nothing}`: Opaque pagination cursor from a previous response
+"""
+Base.@kwdef struct ListTasksParams <: RequestParams
+    cursor::Union{String,Nothing} = nothing
 end
 
 #= Prompt-Related Messages =#
