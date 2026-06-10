@@ -589,17 +589,29 @@ end
     ResourceTemplate(; name::String, uri_template::String,
                    mime_type::Union{String,Nothing}=nothing, description::String="",
                    title::Union{String,Nothing}=nothing,
-                   icons::Union{Vector{MCPIcon},Nothing}=nothing)
+                   icons::Union{Vector{MCPIcon},Nothing}=nothing,
+                   data_provider::Union{Function,Nothing}=nothing,
+                   _meta::Union{Nothing,Dict{String,Any}}=nothing)
 
-Define a template for dynamically generating resources with parameterized URIs.
+Define a parameterized family of resources: an RFC 6570 URI template (level-1 `{var}`
+placeholders, advertised via `resources/templates/list`) plus a provider that serves
+any `resources/read` whose URI matches the template.
 
 # Fields
 - `name::String`: Name of the resource template
-- `uri_template::String`: Template string with placeholders for parameters
-- `mime_type::Union{String,Nothing}`: MIME type of the generated resources
+- `uri_template::String`: URI template with `{var}` placeholders; each placeholder
+  matches one path segment (no `/`)
+- `mime_type::Union{String,Nothing}`: MIME type shared by all matching resources
 - `description::String`: Human-readable description of the template
 - `title::Union{String,Nothing}`: Optional human-friendly display name
 - `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
+- `data_provider::Union{Function,Nothing}`: Called for a matching `resources/read` as
+  `provider(uri::String)` — or opt into `provider(uri::String, vars::Dict{String,String})`
+  to receive the extracted template variables. Return values follow the same contract as
+  `MCPResource` providers (`ResourceContents`/vector, `String` verbatim, JSON fallback).
+  Templates without a provider are advertised but not readable.
+- `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions,
+  emitted verbatim in `resources/templates/list` when set
 """
 Base.@kwdef struct ResourceTemplate
     name::String
@@ -608,6 +620,8 @@ Base.@kwdef struct ResourceTemplate
     description::String = ""
     title::Union{String,Nothing} = nothing
     icons::Union{Vector{MCPIcon},Nothing} = nothing
+    data_provider::Union{Function,Nothing} = nothing  # provider(uri) or provider(uri, vars); see resources/read routing
+    _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in resources/templates/list when set
 end
 
 #==============================================================================

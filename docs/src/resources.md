@@ -157,7 +157,35 @@ image_resource = MCPResource(
 This pairs naturally with `ResourceLink` tool results: a tool can return a link to a
 large artifact, and the client then reads the binary via `resources/read`.
 
-### Current Limitations
+## URI Templates
 
-- Resources are matched by **exact URI**; wildcard or template URIs (e.g. `file://*`)
-  are not routed to providers (`data_provider` takes no arguments).
+For a parameterized *family* of resources — content-addressed artifacts, per-id
+results, file trees — register a `ResourceTemplate` instead of one resource per URI.
+Templates use RFC 6570 level-1 placeholders (`{var}`, matching one path segment) and
+are advertised to clients via `resources/templates/list`:
+
+```julia
+artifact_template = ResourceTemplate(
+    name = "artifact",
+    uri_template = "app://artifact/{id}",
+    description = "Content-addressed result artifacts",
+    mime_type = "image/png",
+    data_provider = (uri, vars) -> BlobResourceContents(
+        uri = uri,
+        mime_type = "image/png",
+        blob = read(artifact_path(vars["id"]))
+    )
+)
+
+server = mcp_server(
+    name = "my-server",
+    resource_templates = [artifact_template]   # or register!(server, artifact_template)
+)
+```
+
+A `resources/read` whose URI matches no exact resource is routed through the
+templates: the first match with a provider serves it. The provider receives the
+requested URI — `provider(uri)` — or opts into `provider(uri, vars)` to also get the
+extracted placeholder values. Return values follow the same contract as resource
+providers (`ResourceContents`/vector, `String` verbatim, JSON fallback). Exact-URI
+resources always take precedence over templates.

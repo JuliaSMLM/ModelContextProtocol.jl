@@ -186,6 +186,8 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 - `version::String`: Your server implementation version (defaults to "1.0.0") - YOUR server's version, not the MCP protocol version
 - `tools`: Tools to expose to the model
 - `resources`: Resources available to the model
+- `resource_templates`: Parameterized resource families (RFC 6570 `{var}` URI templates
+  with a provider; advertised via `resources/templates/list`)
 - `prompts`: Predefined prompts for the model
 - `description::String`: Optional server description
 - `capabilities::Vector{Capability}`: Server capability configuration
@@ -218,6 +220,7 @@ function mcp_server(;
     version::String = "1.0.0",
     tools::Union{Vector{MCPTool}, MCPTool, Nothing} = nothing,
     resources::Union{Vector{MCPResource}, MCPResource, Nothing} = nothing,
+    resource_templates::Union{Vector{ResourceTemplate}, ResourceTemplate, Nothing} = nothing,
     prompts::Union{Vector{MCPPrompt}, MCPPrompt, Nothing} = nothing,
     description::String = "",
     capabilities::Vector{Capability} = default_capabilities(),
@@ -246,6 +249,12 @@ function mcp_server(;
     # Register resources if provided
     if !isnothing(resources)
         foreach(r -> register!(server, r), resources isa Vector ? resources : [resources])
+    end
+
+    # Register resource templates if provided
+    if !isnothing(resource_templates)
+        foreach(t -> register!(server, t),
+                resource_templates isa Vector ? resource_templates : [resource_templates])
     end
     
     # Register prompts if provided

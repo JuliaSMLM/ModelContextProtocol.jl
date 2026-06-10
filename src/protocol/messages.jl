@@ -211,6 +211,18 @@ Base.@kwdef struct CallToolResult <: ResponseResult
     _meta::Union{Nothing,AbstractDict} = nothing
 end
 
+"""
+    ListResourceTemplatesParams(; cursor::Union{String,Nothing}=nothing) <: RequestParams
+
+Parameters for a `resources/templates/list` request.
+
+# Fields
+- `cursor::Union{String,Nothing}`: Optional pagination cursor for long template lists
+"""
+Base.@kwdef struct ListResourceTemplatesParams <: RequestParams
+    cursor::Union{String,Nothing} = nothing
+end
+
 #= Task-Related Messages (MCP Tasks, SEP-1686, experimental) =#
 
 """

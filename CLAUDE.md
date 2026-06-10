@@ -473,6 +473,9 @@ negotiated version per session).
   RFC 7662 introspection, GitHub tokens + allowlist/org), RFC 9728 Protected Resource
   Metadata at `/.well-known/oauth-protected-resource`, per-request auth context.
   NOTE: `JWTValidator` validates claims only — no JWKS signature verification yet
+- **Resources**: exact-URI reads with rich provider returns (`ResourceContents`/vector
+  incl. binary `blob`, `String` verbatim, JSON fallback); **URI templates** (RFC 6570
+  level-1 `{var}`) with `resources/templates/list` + read routing to template providers
 - **Auto-registration** of components from directories
 
 ### ❌ Not Yet Implemented
