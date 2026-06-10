@@ -34,38 +34,14 @@ weather_resource = MCPResource(
 )</code></pre><p>Then auto-register from the directory:</p><pre><code class="language-julia hljs">server = mcp_server(
     name = &quot;my-server&quot;,
     auto_register_dir = &quot;my_server&quot;
-)</code></pre><h2 id="Advanced-Examples"><a class="docs-heading-anchor" href="#Advanced-Examples">Advanced Examples</a><a id="Advanced-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Advanced-Examples" title="Permalink"></a></h2><h3 id="Resource-with-Dynamic-URI-Patterns"><a class="docs-heading-anchor" href="#Resource-with-Dynamic-URI-Patterns">Resource with Dynamic URI Patterns</a><a id="Resource-with-Dynamic-URI-Patterns-1"></a><a class="docs-heading-anchor-permalink" href="#Resource-with-Dynamic-URI-Patterns" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Support URIs like file://path/to/file.txt
-file_resource = MCPResource(
-    uri = &quot;file://*&quot;,
-    name = &quot;File System Access&quot;,
-    description = &quot;Access local files&quot;,
-    mime_type = &quot;text/plain&quot;,
-    data_provider = function(uri::String)
-        # Extract path from URI
-        path = replace(uri, &quot;file://&quot; =&gt; &quot;&quot;)
-        
-        if isfile(path)
-            content = read(path, String)
-            return TextResourceContents(
-                uri = uri,
-                text = content,
-                mime_type = &quot;text/plain&quot;
-            )
-        else
-            error(&quot;File not found: $path&quot;)
-        end
+)</code></pre><h2 id="Advanced-Examples"><a class="docs-heading-anchor" href="#Advanced-Examples">Advanced Examples</a><a id="Advanced-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Advanced-Examples" title="Permalink"></a></h2><h3 id="Resource-with-Dynamic-Data"><a class="docs-heading-anchor" href="#Resource-with-Dynamic-Data">Resource with Dynamic Data</a><a id="Resource-with-Dynamic-Data-1"></a><a class="docs-heading-anchor-permalink" href="#Resource-with-Dynamic-Data" title="Permalink"></a></h3><p>The <code>data_provider</code> is called with no arguments on every <code>resources/read</code>, and its return value is JSON-encoded into the resource contents:</p><pre><code class="language-julia hljs">log_resource = MCPResource(
+    uri = &quot;app://logs/recent&quot;,
+    name = &quot;Recent Log Entries&quot;,
+    description = &quot;The most recent application log entries&quot;,
+    mime_type = &quot;application/json&quot;,
+    data_provider = function ()
+        entries = isfile(&quot;app.log&quot;) ?
+            collect(Iterators.take(eachline(&quot;app.log&quot;), 50)) : String[]
+        return Dict(&quot;count&quot; =&gt; length(entries), &quot;entries&quot; =&gt; entries)
     end
-)</code></pre><h3 id="Resource-with-Binary-Data"><a class="docs-heading-anchor" href="#Resource-with-Binary-Data">Resource with Binary Data</a><a id="Resource-with-Binary-Data-1"></a><a class="docs-heading-anchor-permalink" href="#Resource-with-Binary-Data" title="Permalink"></a></h3><pre><code class="language-julia hljs">image_resource = MCPResource(
-    uri = &quot;images://logo&quot;,
-    name = &quot;Logo Image&quot;,
-    description = &quot;Company logo&quot;,
-    mime_type = &quot;image/png&quot;,
-    data_provider = function(uri::String)
-        image_data = read(&quot;logo.png&quot;)  # Returns Vector{UInt8}
-        return BlobResourceContents(
-            uri = uri,
-            blob = image_data,
-            mime_type = &quot;image/png&quot;
-        )
-    end
-)</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tools/">« Tools</a><a class="docs-footer-nextpage" href="../prompts/">Prompts »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 10 June 2026 03:42">Wednesday 10 June 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+)</code></pre><h3 id="Current-Limitations"><a class="docs-heading-anchor" href="#Current-Limitations">Current Limitations</a><a id="Current-Limitations-1"></a><a class="docs-heading-anchor-permalink" href="#Current-Limitations" title="Permalink"></a></h3><ul><li>Resources are matched by <strong>exact URI</strong>; wildcard or template URIs (e.g. <code>file://*</code>) are not routed to providers.</li><li>The read path always JSON-encodes the provider&#39;s return value into a text contents entry with the resource&#39;s declared <code>mime_type</code>. Returning <code>TextResourceContents</code> or <code>BlobResourceContents</code> directly is not yet supported, so binary resources cannot be served via <code>resources/read</code> today.</li><li>To deliver binary data, use a tool that returns <code>ImageContent</code>/<code>AudioContent</code> or an <code>EmbeddedResource</code> instead.</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tools/">« Tools</a><a class="docs-footer-nextpage" href="../prompts/">Prompts »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 10 June 2026 04:02">Wednesday 10 June 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

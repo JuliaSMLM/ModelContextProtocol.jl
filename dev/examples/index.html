@@ -102,24 +102,18 @@ println(&quot;Multi-content tool configured: $(server.tools[1].name)&quot;)</cod
 using URIs  # For URI construction
 
 # Create a resource with a custom data provider
+# (called with no arguments; the return value is JSON-encoded into the contents)
 config_resource = MCPResource(
     uri = URI(&quot;config://app/settings&quot;),
     name = &quot;Application Settings&quot;,
     description = &quot;Current application configuration&quot;,
     mime_type = &quot;application/json&quot;,
-    data_provider = function(uri)
+    data_provider = function ()
         # In real implementation, read from actual config
-        config_json = &quot;&quot;&quot;
-        {
-            &quot;theme&quot;: &quot;dark&quot;,
-            &quot;language&quot;: &quot;en&quot;,
-            &quot;debug&quot;: false
-        }
-        &quot;&quot;&quot;
-        return TextResourceContents(
-            uri = uri,
-            text = config_json,
-            mime_type = &quot;application/json&quot;
+        return Dict(
+            &quot;theme&quot; =&gt; &quot;dark&quot;,
+            &quot;language&quot; =&gt; &quot;en&quot;,
+            &quot;debug&quot; =&gt; false
         )
     end,
     annotations = Dict{String,Any}()
@@ -130,15 +124,10 @@ file_resource = MCPResource(
     uri = URI(&quot;file:///readme.txt&quot;),
     name = &quot;README File&quot;,
     description = &quot;Project readme file&quot;,
-    mime_type = &quot;text/plain&quot;,
-    data_provider = function(uri)
+    mime_type = &quot;application/json&quot;,
+    data_provider = function ()
         # In real implementation, read the actual file
-        content = &quot;# Project README\n\nThis is the readme content.&quot;
-        return TextResourceContents(
-            uri = uri,
-            text = content,
-            mime_type = &quot;text/plain&quot;
-        )
+        return Dict(&quot;content&quot; =&gt; &quot;# Project README\n\nThis is the readme content.&quot;)
     end
 )
 
@@ -364,10 +353,10 @@ sleep 5
 # Test initialization
 curl -X POST http://127.0.0.1:8765/ \
   -H &quot;Content-Type: application/json&quot; \
-  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;test&quot;,&quot;version&quot;:&quot;1.0&quot;}},&quot;id&quot;:1}&#39;
+  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-11-25&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;test&quot;,&quot;version&quot;:&quot;1.0&quot;}},&quot;id&quot;:1}&#39;
 
 # Save session ID from response, then test tool listing
 curl -X POST http://127.0.0.1:8765/ \
   -H &quot;Content-Type: application/json&quot; \
   -H &quot;Mcp-Session-Id: YOUR_SESSION_ID&quot; \
-  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{},&quot;id&quot;:2}&#39;</code></pre><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><ol><li><strong>Always validate input parameters</strong> in tool handlers</li><li><strong>Use appropriate content types</strong> for different data formats</li><li><strong>Provide clear descriptions</strong> for tools, resources, and prompts</li><li><strong>Handle errors gracefully</strong> with CallToolResult when needed</li><li><strong>Test with MCP Inspector</strong> before deploying to production</li><li><strong>Use 127.0.0.1 instead of localhost</strong> on Windows for HTTP transport</li><li><strong>Organize complex servers</strong> using directory-based auto-registration</li><li><strong>Document parameter schemas</strong> thoroughly for better LLM understanding</li></ol><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../tools/">Tools Documentation</a> for detailed tool implementation</li><li><a href="../resources/">Resources Documentation</a> for resource management</li><li><a href="../prompts/">Prompts Documentation</a> for prompt templates</li><li><a href="../api/">API Reference</a> for complete function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../tools/">Tools »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 10 June 2026 03:42">Wednesday 10 June 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+  -d &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{},&quot;id&quot;:2}&#39;</code></pre><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><ol><li><strong>Always validate input parameters</strong> in tool handlers</li><li><strong>Use appropriate content types</strong> for different data formats</li><li><strong>Provide clear descriptions</strong> for tools, resources, and prompts</li><li><strong>Handle errors gracefully</strong> with CallToolResult when needed</li><li><strong>Test with MCP Inspector</strong> before deploying to production</li><li><strong>Use 127.0.0.1 instead of localhost</strong> on Windows for HTTP transport</li><li><strong>Organize complex servers</strong> using directory-based auto-registration</li><li><strong>Document parameter schemas</strong> thoroughly for better LLM understanding</li></ol><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../tools/">Tools Documentation</a> for detailed tool implementation</li><li><a href="../resources/">Resources Documentation</a> for resource management</li><li><a href="../prompts/">Prompts Documentation</a> for prompt templates</li><li><a href="../api/">API Reference</a> for complete function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../tools/">Tools »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 10 June 2026 04:02">Wednesday 10 June 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
