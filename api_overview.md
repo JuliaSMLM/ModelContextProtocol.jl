@@ -366,8 +366,14 @@ MCPTool(;
     description::String,                   # Human-readable description
     parameters::Vector{ToolParameter} = ToolParameter[],  # Input parameters (use [] for none)
     input_schema::Union{Nothing,AbstractDict} = nothing,  # Custom JSON Schema (takes precedence)
-    handler::Function,                     # (Dict -> Content) handler
-    return_type::Type = Vector{Content}    # Expected return type (default: Vector{Content})
+    handler::Function,                     # handler(args) or handler(args, ctx)
+    return_type::Type = Vector{Content},   # Expected return type (default: Vector{Content})
+    title::Union{String,Nothing} = nothing,        # Optional display name
+    icons::Union{Vector{MCPIcon},Nothing} = nothing,  # Optional icons (tools/list)
+    annotations::Union{Nothing,Dict{String,Any}} = nothing,  # Behavioral hints (readOnlyHint, ...)
+    output_schema::Union{Nothing,AbstractDict} = nothing,  # JSON Schema for structured output
+    _meta::Union{Nothing,Dict{String,Any}} = nothing,  # Protocol-extension metadata
+    task_support::Symbol = :forbidden      # MCP Tasks: :forbidden | :optional | :required
 )
 ```
 
@@ -861,6 +867,53 @@ file_tool = MCPTool(
     end
 )
 ```
+
+## Tasks (Experimental)
+
+MCP Tasks (SEP-1686, protocol 2025-11-25) run tool calls in the background: a
+task-augmented `tools/call` (params carry `"task": {"ttl": …}`) immediately returns a
+task handle, the handler executes in a background Julia task, and the client polls
+`tasks/get`, retrieves the payload with `tasks/result` (blocks until terminal, then
+returns exactly what the call would have returned), cancels with `tasks/cancel`, and
+enumerates with `tasks/list` (cursor-paginated).
+
+```julia
+# Opt a tool into task execution
+long_tool = MCPTool(
+    name = "long_job",
+    description = "Expensive computation",
+    parameters = [],
+    handler = (args, ctx) -> begin
+        for i in 1:100
+            task_cancelled(ctx) && return TextContent(text = "stopped")  # cooperative cancel
+            send_progress(ctx, i; total = 100)   # progressToken stays valid for the task
+            # ... work ...
+        end
+        TextContent(text = "done")
+    end,
+    task_support = :optional    # :forbidden (default) | :optional | :required
+)
+```
+
+**Semantics:**
+- `task_support = :forbidden` (default): task-augmented calls rejected with `-32601`
+- `:required`: synchronous calls rejected with `-32601`
+- Advertised per tool as `execution.taskSupport` in `tools/list`; the `tasks`
+  capability (`{"list":{},"cancel":{},"requests":{"tools":{"call":{}}}}`) is only
+  advertised to clients that negotiated `2025-11-25` — older sessions get spec
+  fallback (task metadata ignored, synchronous execution)
+- Tool `isError` results and handler exceptions map to task status `failed`;
+  `tasks/result` still returns the underlying payload or JSON-RPC error verbatim
+  (plus the `io.modelcontextprotocol/related-task` `_meta` key)
+- Cancelling a terminal task → `-32602`; a cancelled task stays cancelled (late
+  results are discarded); blocked `tasks/result` requests wake on cancel
+- TTL: requested per call, clamped to a 1-hour server max (default 5 minutes);
+  expired terminal tasks are swept; unknown/expired/foreign task ids → `-32602`
+- Security: with HTTP auth enabled, tasks are bound to the authenticated principal;
+  `tasks/list` is withheld on unauthenticated HTTP (requestors are unidentifiable);
+  task ids are cryptographically random
+- Optional `notifications/tasks/status` are emitted on terminal transitions (stdout
+  for stdio, SSE stream for HTTP)
 
 ## Transport Types
 

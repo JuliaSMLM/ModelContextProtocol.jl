@@ -49,6 +49,24 @@ Base.@kwdef struct LoggingCapability <: Capability
 end
 
 """
+    TaskCapability(; list::Bool=true, cancel::Bool=true)
+
+Configure MCP Tasks support (SEP-1686, experimental): task-augmented `tools/call`
+plus the `tasks/get`, `tasks/result`, and optionally `tasks/list`/`tasks/cancel`
+operations. Only advertised to clients that negotiated protocol 2025-11-25 or later.
+
+# Fields
+- `list::Bool`: Whether `tasks/list` is offered. Note: on an HTTP transport without
+  authentication the server cannot identify requestors, so `list` is withheld from the
+  advertised capability regardless of this setting (per the spec's security guidance).
+- `cancel::Bool`: Whether `tasks/cancel` is offered.
+"""
+Base.@kwdef struct TaskCapability <: Capability
+    list::Bool = true
+    cancel::Bool = true
+end
+
+"""
     to_protocol_format(cap::Capability) -> Dict{String,Any}
 
 Convert an MCP capability to the JSON format expected by the MCP protocol.
@@ -80,6 +98,16 @@ end
 
 function to_protocol_format(cap::LoggingCapability)
     LittleDict{String,Any}()  # Logging capability just needs to be present
+end
+
+function to_protocol_format(cap::TaskCapability)
+    d = LittleDict{String,Any}()
+    cap.list && (d["list"] = LittleDict{String,Any}())
+    cap.cancel && (d["cancel"] = LittleDict{String,Any}())
+    d["requests"] = LittleDict{String,Any}(
+        "tools" => LittleDict{String,Any}("call" => LittleDict{String,Any}())
+    )
+    d
 end
 
 """
@@ -136,6 +164,15 @@ function capabilities_to_protocol(capabilities::Vector{Capability}, server::Serv
             )
         elseif cap isa LoggingCapability
             result["logging"] = LittleDict{String,Any}()
+        elseif cap isa TaskCapability
+            tasks = to_protocol_format(cap)
+            # Security guidance (spec): receivers that cannot identify requestors
+            # should not offer tasks/list — on HTTP without auth, task metadata
+            # would be exposed to any requestor. stdio is inherently single-user.
+            if server.transport isa HttpTransport && server.transport.auth === nothing
+                delete!(tasks, "list")
+            end
+            result["tasks"] = tasks
         end
     end
     

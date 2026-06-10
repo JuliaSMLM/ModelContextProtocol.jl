@@ -26,6 +26,7 @@ Base.@kwdef mutable struct RequestContext
     request_id::Union{RequestId,Nothing} = nothing
     progress_token::Union{ProgressToken,Nothing} = nothing
     authenticated_user::Union{AuthenticatedUser,Nothing} = nothing  # per-request identity from HTTP auth, else nothing; treat as read-only (may be shared from a validator cache)
+    task::Union{TaskRecord,Nothing} = nothing  # set for task-augmented executions (MCP Tasks); enables task_cancelled(ctx)
 end
 
 """
@@ -63,6 +64,27 @@ function send_progress(ctx::RequestContext, progress::Real;
 end
 
 """
+    task_cancelled(ctx) -> Bool
+
+Check whether the current task-augmented execution has been cancelled by the client
+(via `tasks/cancel`). Long-running, context-aware tool handlers can poll this to stop
+work early; the discarded result is never delivered (cancelled tasks stay cancelled).
+Always `false` for ordinary (non-task) calls, so it is safe to call unconditionally.
+
+```julia
+handler = (args, ctx) -> begin
+    for chunk in work_chunks
+        task_cancelled(ctx) && return TextContent(text = "aborted")
+        process(chunk)
+    end
+    TextContent(text = "done")
+end
+```
+"""
+task_cancelled(ctx::RequestContext)::Bool =
+    ctx.task !== nothing && ctx.task.cancel_requested[]
+
+"""
     HandlerResult(; response::Union{Response,Nothing}=nothing, 
                 error::Union{ErrorInfo,Nothing}=nothing)
 
@@ -71,12 +93,15 @@ Represent the result of handling a request.
 # Fields
 - `response::Union{Response,Nothing}`: The response to send (if successful)
 - `error::Union{ErrorInfo,Nothing}`: Error information (if request failed)
+- `deferred::Bool`: When true, neither field is set and the response will be delivered
+  out-of-loop via `deliver_response` (used by the blocking `tasks/result`)
 
-A HandlerResult must contain either a response or an error, but not both.
+A HandlerResult must contain either a response, an error, or be deferred.
 """
 Base.@kwdef struct HandlerResult
     response::Union{Response,Nothing} = nothing
     error::Union{ErrorInfo,Nothing} = nothing
+    deferred::Bool = false  # response will be delivered later via deliver_response (e.g. blocking tasks/result)
 end
 
 """
@@ -177,6 +202,11 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
         ctx.server.config.capabilities,
         ctx.server
     )
+
+    # Tasks (experimental) are a 2025-11-25 feature: withhold the capability from
+    # clients that negotiated an earlier version (their task metadata is then
+    # ignored and tools/call always runs synchronously, per spec)
+    supports(negotiated_version, :tasks) || delete!(current_capabilities, "tasks")
 
     # Create initialization result with the negotiated version
     server_info = Dict{String,Any}(
@@ -627,41 +657,111 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
 
     tool = ctx.server.tools[tool_idx]
 
-    try
-        # Apply default values to arguments if not provided
-        args = isnothing(params.arguments) ? LittleDict{String,Any}() : copy(params.arguments)
-        
-        # Apply defaults for parameters that have them
-        for param in tool.parameters
-            if !isnothing(param.default) && !haskey(args, param.name)
-                args[param.name] = param.default
-            end
+    # Apply default values to arguments if not provided
+    args = isnothing(params.arguments) ? LittleDict{String,Any}() : copy(params.arguments)
+
+    # Apply defaults for parameters that have them
+    for param in tool.parameters
+        if !isnothing(param.default) && !haskey(args, param.name)
+            args[param.name] = param.default
         end
-        
+    end
+
+    # Task augmentation (MCP Tasks, experimental). The tool-level rules apply only
+    # when the tasks capability was declared to THIS client (negotiated 2025-11-25);
+    # when undeclared, the spec requires processing the request normally, ignoring
+    # any task metadata.
+    if tasks_supported(ctx)
+        support = tool.task_support in (:optional, :required) ? tool.task_support : :forbidden
+        task_requested = params.task !== nothing
+        if task_requested && support === :forbidden
+            return HandlerResult(
+                error=ErrorInfo(
+                    code=ErrorCodes.METHOD_NOT_FOUND,
+                    message="Tool does not support task-augmented execution: $(params.name)"
+                )
+            )
+        elseif !task_requested && support === :required
+            return HandlerResult(
+                error=ErrorInfo(
+                    code=ErrorCodes.METHOD_NOT_FOUND,
+                    message="Tool requires task-augmented execution: $(params.name)"
+                )
+            )
+        elseif task_requested
+            raw_ttl = get(params.task, "ttl", nothing)
+            if raw_ttl !== nothing && !(raw_ttl isa Real && !(raw_ttl isa Bool) && raw_ttl >= 0)
+                return HandlerResult(
+                    error=ErrorInfo(
+                        code=ErrorCodes.INVALID_PARAMS,
+                        message="Invalid task ttl: must be a non-negative number of milliseconds"
+                    )
+                )
+            end
+            requested_ttl = raw_ttl === nothing ? nothing : round(Int, raw_ttl)
+            record = create_task!(ctx.server.tasks, "tools/call";
+                                  requested_ttl_ms=requested_ttl,
+                                  principal=task_principal(ctx))
+            # Snapshot the wire shape before spawning so the CreateTaskResult always
+            # reports the creation-time "working" status
+            wire = lock(ctx.server.tasks.lock) do
+                task_wire(record)
+            end
+            spawn_task_execution!(ctx, tool, args, record)
+            return HandlerResult(
+                response=JSONRPCResponse(
+                    id=ctx.request_id,
+                    result=LittleDict{String,Any}("task" => wire)
+                )
+            )
+        end
+    end
+
+    # Synchronous execution (the default path)
+    outcome = execute_tool_call(tool, args, ctx)
+    if outcome isa ErrorInfo
+        HandlerResult(error=outcome)
+    else
+        HandlerResult(
+            response=JSONRPCResponse(
+                id=ctx.request_id,
+                result=outcome
+            )
+        )
+    end
+end
+
+"""
+    execute_tool_call(tool::MCPTool, args::AbstractDict, ctx::RequestContext)
+        -> Union{CallToolResult,ErrorInfo}
+
+Run a tool handler and normalize its return value to a `CallToolResult` (applying the
+documented convenience conversions and `return_type` validation), or an `ErrorInfo`
+when execution throws. Shared by the synchronous `tools/call` path and background
+task-augmented executions.
+"""
+function execute_tool_call(tool::MCPTool, args::AbstractDict,
+                           ctx::RequestContext)::Union{CallToolResult,ErrorInfo}
+    try
         # Call the tool handler. Handlers may opt into a context-aware form
         # `handler(args, ctx)` to access the RequestContext — `ctx.authenticated_user`,
         # progress reporting via `send_progress(ctx, ...)`, the request id, etc.; the
         # plain `handler(args)` form keeps working. Dispatch by applicability (not by
         # catching MethodError, which would mask errors thrown inside a handler).
         result = applicable(tool.handler, args, ctx) ? tool.handler(args, ctx) : tool.handler(args)
-        
+
         # Check if the handler returned a complete CallToolResult
         if result isa CallToolResult
             # Handler returned a complete result, use it directly
-            return HandlerResult(
-                response=JSONRPCResponse(
-                    id=ctx.request_id,
-                    result=result
-                )
-            )
+            return result
         end
-        
+
         # Apply the documented convenience conversions (Dict/String/bytes -> Content)
         result = convert_to_content_type(result)
 
         # Check if result is a vector of content or single content
         is_vector = result isa Vector && all(x -> x isa Content, result)
-        
+
         # Validate return type matches what's declared
         if is_vector
             # Check if return type accepts vectors of content
@@ -697,23 +797,306 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
             [content2dict(result)]
         end
 
-        HandlerResult(
-            response=JSONRPCResponse(
-                id=ctx.request_id,
-                result=CallToolResult(
-                    content=content,
-                    is_error=false
-                )
-            )
+        CallToolResult(
+            content=content,
+            is_error=false
         )
     catch e
-        HandlerResult(
+        ErrorInfo(
+            code=ErrorCodes.INTERNAL_ERROR,
+            message="Tool execution failed: $(e)"
+        )
+    end
+end
+
+#= MCP Tasks (SEP-1686, experimental) — task-augmented tools/call + tasks/* methods =#
+
+"""
+    tasks_supported(ctx::RequestContext) -> Bool
+
+Whether the tasks capability is in effect for THIS session: the server is configured
+with a `TaskCapability` AND the client negotiated a protocol version with task support
+(2025-11-25+). When false, task metadata on requests is ignored (per spec) and the
+`tasks/*` methods do not exist.
+"""
+function tasks_supported(ctx::RequestContext)::Bool
+    ctx.state.protocol_version !== nothing &&
+        supports(ctx.state.protocol_version, :tasks) &&
+        any(c -> c isa TaskCapability, ctx.server.config.capabilities)
+end
+
+"""
+    task_principal(ctx::RequestContext) -> Union{String,Nothing}
+
+The authorization principal tasks are bound to: the authenticated subject when HTTP
+auth is enabled, otherwise `nothing` (single-user transports like stdio).
+"""
+task_principal(ctx::RequestContext) =
+    ctx.authenticated_user === nothing ? nothing : ctx.authenticated_user.subject
+
+"""
+    tasks_list_offered(server::Server) -> Bool
+
+Whether `tasks/list` is offered: requires a `TaskCapability` with `list=true`, and is
+withheld on an HTTP transport without authentication (the server cannot identify
+requestors there, so listing would expose task metadata across clients).
+"""
+function tasks_list_offered(server::Server)::Bool
+    cap_idx = findfirst(c -> c isa TaskCapability, server.config.capabilities)
+    cap_idx === nothing && return false
+    server.config.capabilities[cap_idx].list || return false
+    !(server.transport isa HttpTransport && server.transport.auth === nothing)
+end
+
+"""
+    tasks_cancel_offered(server::Server) -> Bool
+
+Whether `tasks/cancel` is offered (a `TaskCapability` with `cancel=true`), matching
+what the capability advertises.
+"""
+function tasks_cancel_offered(server::Server)::Bool
+    cap_idx = findfirst(c -> c isa TaskCapability, server.config.capabilities)
+    cap_idx === nothing && return false
+    server.config.capabilities[cap_idx].cancel
+end
+
+"""
+    spawn_task_execution!(ctx::RequestContext, tool::MCPTool, args::AbstractDict,
+                          record::TaskRecord) -> Nothing
+
+Run a tool call in a background Julia task, recording the outcome into `record` and
+emitting a `notifications/tasks/status` on the terminal transition. The execution
+context carries the original request's progress token (valid for the task lifetime
+per spec) and the task record (for `task_cancelled(ctx)`). If the task was cancelled
+while running, the outcome is discarded.
+"""
+function spawn_task_execution!(ctx::RequestContext, tool::MCPTool, args::AbstractDict,
+                               record::TaskRecord)::Nothing
+    server = ctx.server
+    task_ctx = RequestContext(
+        server=server,
+        state=ctx.state,
+        request_id=ctx.request_id,
+        progress_token=ctx.progress_token,
+        authenticated_user=ctx.authenticated_user,
+        task=record
+    )
+    Threads.@spawn begin
+        outcome = try
+            execute_tool_call(tool, args, task_ctx)
+        catch e
+            # execute_tool_call catches handler errors itself; this guards the glue
+            ErrorInfo(code=ErrorCodes.INTERNAL_ERROR, message="Tool execution failed: $(e)")
+        end
+        if finish_task!(server.tasks, record, outcome)
+            notify_task_status(server, record)
+        end
+    end
+    nothing
+end
+
+"""
+    notify_task_status(server::Server, record::TaskRecord) -> Nothing
+
+Send an optional `notifications/tasks/status` with the task's full wire state.
+Best-effort: failures are logged at debug level and never propagate (requestors must
+not rely on these notifications per spec).
+"""
+function notify_task_status(server::Server, record::TaskRecord)::Nothing
+    transport = server.transport
+    transport === nothing && return nothing
+    params = lock(server.tasks.lock) do
+        Dict{String,Any}(task_wire(record))
+    end
+    try
+        send_notification(
+            transport,
+            serialize_message(JSONRPCNotification(method="notifications/tasks/status", params=params))
+        )
+    catch e
+        @debug "Failed to send task status notification" error=e
+    end
+    nothing
+end
+
+# Spec-mandated -32601 for tasks/* methods that are not in effect for this session
+tasks_unsupported_result(method::String) = HandlerResult(
+    error=ErrorInfo(
+        code=ErrorCodes.METHOD_NOT_FOUND,
+        message="Unknown method: $method"
+    )
+)
+
+# Spec-mandated -32602 for unknown/expired/forbidden task ids; deliberately identical
+# for "never existed", "expired and purged", and "bound to another principal" so task
+# existence is not leaked across authorization contexts
+task_not_found_result() = HandlerResult(
+    error=ErrorInfo(
+        code=ErrorCodes.INVALID_PARAMS,
+        message="Failed to retrieve task: Task not found"
+    )
+)
+
+"""
+    with_related_task_meta(result::CallToolResult, task_id::String) -> CallToolResult
+
+Return a copy of `result` whose `_meta` carries the spec-required
+`io.modelcontextprotocol/related-task` association for `tasks/result` responses.
+"""
+function with_related_task_meta(result::CallToolResult, task_id::String)::CallToolResult
+    meta = result._meta === nothing ? LittleDict{String,Any}() :
+           LittleDict{String,Any}(result._meta)
+    meta[RELATED_TASK_META_KEY] = LittleDict{String,Any}("taskId" => task_id)
+    CallToolResult(
+        content=result.content,
+        is_error=result.is_error,
+        structured_content=result.structured_content,
+        _meta=meta
+    )
+end
+
+"""
+    task_terminal_response(request_id, record::TaskRecord) -> Response
+
+Build the `tasks/result` response for a terminal task: exactly what the underlying
+request would have returned — its `CallToolResult` (with the related-task `_meta`
+added) or its JSON-RPC error. A task cancelled before completion has no underlying
+result, so it answers with an error. Caller must hold the store lock.
+"""
+function task_terminal_response(request_id, record::TaskRecord)::Response
+    if record.error !== nothing
+        JSONRPCError(id=request_id, error=record.error)
+    elseif record.result !== nothing
+        JSONRPCResponse(
+            id=request_id,
+            result=with_related_task_meta(record.result, record.task_id)
+        )
+    else
+        JSONRPCError(
+            id=request_id,
             error=ErrorInfo(
-                code=ErrorCodes.INTERNAL_ERROR,
-                message="Tool execution failed: $(e)"
+                code=ErrorCodes.INVALID_PARAMS,
+                message="Task was cancelled before completion: $(record.task_id)"
             )
         )
     end
+end
+
+"""
+    handle_get_task(ctx::RequestContext, params::GetTaskParams) -> HandlerResult
+
+Handle a `tasks/get` poll: return the task's current state, flattened into the result
+per the spec (`GetTaskResult = Result & Task`).
+"""
+function handle_get_task(ctx::RequestContext, params::GetTaskParams)::HandlerResult
+    tasks_supported(ctx) || return tasks_unsupported_result("tasks/get")
+    store = ctx.server.tasks
+    record = get_task(store, params.taskId, task_principal(ctx))
+    record === nothing && return task_not_found_result()
+    wire = lock(store.lock) do
+        task_wire(record)
+    end
+    HandlerResult(response=JSONRPCResponse(id=ctx.request_id, result=wire))
+end
+
+"""
+    handle_task_result(ctx::RequestContext, params::TaskResultParams) -> HandlerResult
+
+Handle a `tasks/result` retrieval. For a terminal task, respond immediately with the
+underlying call's result or error. For a non-terminal task the spec requires blocking
+until terminal — the response route is detached from the (serial) server loop and a
+waiter task delivers the response when the task finishes, so the loop stays free to
+process `tasks/get` polls and the `tasks/cancel` that may be what unblocks this very
+request.
+"""
+function handle_task_result(ctx::RequestContext, params::TaskResultParams)::HandlerResult
+    tasks_supported(ctx) || return tasks_unsupported_result("tasks/result")
+    store = ctx.server.tasks
+    record = get_task(store, params.taskId, task_principal(ctx))
+    record === nothing && return task_not_found_result()
+
+    immediate = lock(store.lock) do
+        task_is_terminal(record) ? task_terminal_response(ctx.request_id, record) : nothing
+    end
+    immediate !== nothing && return HandlerResult(response=immediate)
+
+    # Non-terminal: block off-loop. (If the task turns terminal between the check
+    # above and the wait below, the event is already set and the waiter returns
+    # immediately — no missed wakeup.)
+    transport = ctx.server.transport
+    route = capture_response_route(transport)
+    request_id = ctx.request_id
+    Threads.@spawn begin
+        wait(record.done)
+        response = lock(store.lock) do
+            task_terminal_response(request_id, record)
+        end
+        try
+            deliver_response(transport, route, serialize_message(response))
+        catch e
+            @debug "Failed to deliver deferred tasks/result response" error=e
+        end
+    end
+    HandlerResult(deferred=true)
+end
+
+"""
+    handle_cancel_task(ctx::RequestContext, params::CancelTaskParams) -> HandlerResult
+
+Handle a `tasks/cancel`: transition a non-terminal task to "cancelled" (waking any
+blocked `tasks/result` requests) and return the task state. Cancelling a task already
+in a terminal status is rejected with -32602 per spec.
+"""
+function handle_cancel_task(ctx::RequestContext, params::CancelTaskParams)::HandlerResult
+    tasks_supported(ctx) || return tasks_unsupported_result("tasks/cancel")
+    tasks_cancel_offered(ctx.server) || return tasks_unsupported_result("tasks/cancel")
+    store = ctx.server.tasks
+    record = get_task(store, params.taskId, task_principal(ctx))
+    record === nothing && return task_not_found_result()
+
+    if cancel_task!(store, record)
+        notify_task_status(ctx.server, record)
+        wire = lock(store.lock) do
+            task_wire(record)
+        end
+        HandlerResult(response=JSONRPCResponse(id=ctx.request_id, result=wire))
+    else
+        status = lock(store.lock) do
+            record.status
+        end
+        HandlerResult(
+            error=ErrorInfo(
+                code=ErrorCodes.INVALID_PARAMS,
+                message="Cannot cancel task: already in terminal status '$(status)'"
+            )
+        )
+    end
+end
+
+"""
+    handle_list_tasks(ctx::RequestContext, params::ListTasksParams) -> HandlerResult
+
+Handle a paginated `tasks/list`, restricted to the requestor's authorization context.
+Not offered (-32601) when the server cannot identify requestors (HTTP without auth).
+"""
+function handle_list_tasks(ctx::RequestContext, params::ListTasksParams)::HandlerResult
+    tasks_supported(ctx) || return tasks_unsupported_result("tasks/list")
+    tasks_list_offered(ctx.server) || return tasks_unsupported_result("tasks/list")
+    store = ctx.server.tasks
+    page, next = try
+        list_tasks(store, task_principal(ctx), params.cursor)
+    catch e
+        e isa ArgumentError || rethrow(e)
+        return HandlerResult(
+            error=ErrorInfo(code=ErrorCodes.INVALID_PARAMS, message="Invalid cursor")
+        )
+    end
+    result = lock(store.lock) do
+        d = LittleDict{String,Any}("tasks" => [task_wire(r) for r in page])
+        next !== nothing && (d["nextCursor"] = next)
+        d
+    end
+    HandlerResult(response=JSONRPCResponse(id=ctx.request_id, result=result))
 end
 
 """
@@ -769,6 +1152,11 @@ function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::Handle
             !isnothing(tool.annotations) && (d["annotations"] = tool.annotations)
             !isnothing(tool.output_schema) && (d["outputSchema"] = tool.output_schema)
             !isnothing(tool._meta) && (d["_meta"] = tool._meta)
+            # Tool-level task negotiation (MCP Tasks): only meaningful — and only
+            # emitted — for sessions where the tasks capability is in effect
+            if tasks_supported(ctx) && tool.task_support in (:optional, :required)
+                d["execution"] = LittleDict{String,Any}("taskSupport" => String(tool.task_support))
+            end
             d
         end
 
@@ -846,7 +1234,7 @@ Any exceptions thrown during processing are caught and converted to INTERNAL_ERR
 - `Response`: Either a successful response or an error response depending on the handler result
 """
 function handle_request(server::Server, state::ServerState, request::Request;
-                        authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Response
+                        authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
     ctx = RequestContext(
         server=server,
         state=state,
@@ -883,6 +1271,16 @@ function handle_request(server::Server, state::ServerState, request::Request;
                 handle_get_prompt(ctx, request.params::GetPromptParams)
             elseif request.method == "logging/setLevel"
                 handle_set_level(ctx, request.params::SetLevelParams)
+            elseif request.method == "tasks/get"
+                handle_get_task(ctx, request.params::GetTaskParams)
+            elseif request.method == "tasks/result"
+                handle_task_result(ctx, request.params::TaskResultParams)
+            elseif request.method == "tasks/cancel"
+                handle_cancel_task(ctx, request.params::CancelTaskParams)
+            elseif request.method == "tasks/list"
+                # Handle null params (cursor is optional)
+                params = isnothing(request.params) ? ListTasksParams() : request.params::ListTasksParams
+                handle_list_tasks(ctx, params)
             else
                 HandlerResult(
                     error=ErrorInfo(
@@ -896,9 +1294,12 @@ function handle_request(server::Server, state::ServerState, request::Request;
         # logging/setLevel "debug" to see method/id/duration/outcome per request
         @debug "request completed" method=request.method id=request.id duration_ms=round((time() - request_start) * 1000; digits=2) ok=isnothing(result.error)
 
-        # Return response or error
+        # Return response or error. A deferred result (e.g. a blocking tasks/result)
+        # returns nothing: the response will be delivered later via deliver_response.
         if !isnothing(result.error)
             JSONRPCError(id=ctx.request_id, error=result.error)
+        elseif result.deferred
+            nothing
         else
             result.response
         end

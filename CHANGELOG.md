@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Tasks (SEP-1686, experimental)** — spec-native support for long-running tool
+  calls (protocol 2025-11-25). Clients augment `tools/call` with `"task": {"ttl": …}`;
+  the server answers immediately with a `CreateTaskResult` while the handler runs in a
+  background Julia task, then serves `tasks/get` (status polling), `tasks/result`
+  (blocks until terminal, then returns exactly what the call would have returned, with
+  the spec's `io.modelcontextprotocol/related-task` `_meta`), `tasks/cancel`
+  (terminal-state cancels rejected with -32602), and cursor-paginated `tasks/list`.
+  Optional `notifications/tasks/status` fire on terminal transitions over the
+  transport-correct channel (stdout / SSE).
+  - Tools opt in via `MCPTool(task_support = :optional)` (or `:required`); the default
+    `:forbidden` rejects task-augmented calls with -32601 per spec, and `:required`
+    tools reject synchronous calls likewise. Advertised per tool as
+    `execution.taskSupport` in `tools/list`.
+  - The `tasks` capability (with the spec's `requests.tools.call` shape) is only
+    advertised to clients that negotiated 2025-11-25; older sessions get the
+    spec-mandated fallback — task metadata ignored, synchronous execution.
+  - Security per spec: tasks are bound to the authenticated principal when HTTP auth
+    is enabled (cross-principal access is indistinguishable from not-found), task ids
+    are cryptographically random, and `tasks/list` is withheld on unauthenticated HTTP
+    where requestors cannot be identified.
+  - TTLs are clamped to a server maximum (1h; default 5min), expired terminal tasks
+    are swept, and a cancelled task stays cancelled even if its work later completes
+    (the late result is discarded).
+  - New exported helper `task_cancelled(ctx)` lets context-aware handlers observe
+    cancellation cooperatively; `send_progress(ctx, …)` keeps working for the task's
+    lifetime via the original request's `progressToken`.
+  - Internals: a blocking `tasks/result` cannot occupy the serial server loop (it
+    would deadlock against the very `tasks/cancel` that unblocks it), so handlers can
+    now defer a response and deliver it out-of-loop via the new transport pair
+    `capture_response_route`/`deliver_response` — on HTTP the original POST simply
+    stays open (spec-blocking for free); on stdio writes are serialized by a new
+    transport write lock, and the HTTP per-request channel registry is lock-guarded
+    against concurrent access from connection tasks and waiters. Disconnect-driven
+    cleanup of a blocked `tasks/result` is tracked in #61 (retention is bounded by
+    task lifetime).
+
 ### Documentation
 
 - Fixed the documented MCP Inspector invocation: `inspector stdio -- <command>` made the

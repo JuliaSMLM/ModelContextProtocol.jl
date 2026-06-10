@@ -15,6 +15,7 @@ Represent a running MCP server instance that manages resources, tools, and promp
 - `resource_templates::Vector{ResourceTemplate}`: Available resource templates
 - `subscriptions::DefaultDict{String,Vector{Subscription}}`: Resource subscription registry
 - `progress_trackers::Dict{Union{String,Int},Progress}`: Progress tracking for operations
+- `tasks::TaskStore`: Registry of server-side tasks (MCP Tasks, experimental)
 - `active::Bool`: Whether the server is currently active
 
 # Constructor
@@ -29,8 +30,9 @@ mutable struct Server
     resource_templates::Vector{ResourceTemplate}
     subscriptions::DefaultDict{String,Vector{Subscription}}
     progress_trackers::Dict{Union{String,Int}, Progress}
+    tasks::TaskStore
     active::Bool
-    
+
     function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing)
         new(
             config,
@@ -41,6 +43,7 @@ mutable struct Server
             ResourceTemplate[],
             DefaultDict{String,Vector{Subscription}}(() -> Subscription[]),
             Dict{Union{String,Int}, Progress}(),
+            TaskStore(),
             false
         )
     end

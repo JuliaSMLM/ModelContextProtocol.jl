@@ -30,6 +30,10 @@ Following the MCP Streamable HTTP specification (latest protocol version 2025-11
 - **`complex_schema_server.jl`** - Advanced JSON Schema tool inputs
   - Raw `input_schema` with arrays, enums, and nested objects
 
+- **`task_server.jl`** - MCP Tasks demo (experimental)
+  - Long-running tool executed in the background (`task_support = :optional`)
+  - Status polling, blocking result retrieval, cooperative cancellation, progress
+
 - **`reg_dir.jl`** - Directory registration example (stdio)
   - Auto-registers components from `mcp_tools/` subdirectories
 

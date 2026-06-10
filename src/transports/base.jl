@@ -83,6 +83,45 @@ never corrupts that request's response.
 send_notification(transport::Transport, message::String) = write_message(transport, message)
 
 """
+    capture_response_route(transport::Transport) -> Any
+
+Capture a route handle for delivering the CURRENT request's response later, from
+outside the server loop (used by `tasks/result`, which must block until the task
+completes without blocking the loop). The returned handle is passed to
+`deliver_response`.
+
+The default returns `nothing` — for stream transports like stdio, responses carry
+their correlation in the JSON-RPC `id`, so no per-request route exists. Transports
+that route responses per request (HTTP) override this to detach and return the
+current request's route so the loop can move on to the next request.
+
+# Arguments
+- `transport::Transport`: The transport instance
+
+# Returns
+- An opaque route handle understood by `deliver_response` for this transport
+"""
+capture_response_route(::Transport) = nothing
+
+"""
+    deliver_response(transport::Transport, route::Any, message::String) -> Nothing
+
+Deliver a serialized JSON-RPC response for a request whose route was captured earlier
+with `capture_response_route`. Safe to call from a background task. The default
+ignores the route and writes to the shared stream (correct for stdio, where
+`write_message` is lock-serialized).
+
+# Arguments
+- `transport::Transport`: The transport instance
+- `route::Any`: The handle returned by `capture_response_route`
+- `message::String`: The serialized JSON-RPC response
+
+# Returns
+- `Nothing`
+"""
+deliver_response(transport::Transport, ::Any, message::String) = write_message(transport, message)
+
+"""
     set_negotiated_version!(transport::Transport, version::String) -> Nothing
 
 Inform the transport of the protocol version negotiated during `initialize`, so

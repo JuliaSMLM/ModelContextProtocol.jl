@@ -9,6 +9,10 @@ const REQUEST_PARAMS_MAP = Dict{String,Type}(
     "prompts/list" => ListPromptsParams,
     "prompts/get" => GetPromptParams,
     "logging/setLevel" => SetLevelParams,
+    "tasks/get" => GetTaskParams,
+    "tasks/result" => TaskResultParams,
+    "tasks/cancel" => CancelTaskParams,
+    "tasks/list" => ListTasksParams,
     "notifications/progress" => ProgressParams
 )
 

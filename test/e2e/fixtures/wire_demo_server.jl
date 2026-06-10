@@ -47,6 +47,14 @@ structured = MCPTool(
     ),
 )
 
+count_slow = MCPTool(
+    name = "count_slow",
+    description = "Task-augmented execution demo (MCP Tasks)",
+    parameters = [],
+    handler = args -> (sleep(0.3); TextContent(text = "counted")),
+    task_support = :optional,
+)
+
 media_prompt = MCPPrompt(
     name = "media_demo",
     description = "Prompt with all media content types",
@@ -71,7 +79,7 @@ server = mcp_server(
     name = "wire-demo",
     version = "0.1.0",
     description = "Wire conformance demo server",
-    tools = [analyze, structured],
+    tools = [analyze, structured, count_slow],
     prompts = [media_prompt],
     resources = [res],
 )

@@ -56,6 +56,7 @@ mutable struct HttpTransport <: Transport
     allowed_origins::Vector{String}  # CORS security
     auth::Union{AuthMiddleware,Nothing}  # OAuth Resource Server token validation (nothing = disabled)
     resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 Protected Resource Metadata
+    channels_lock::ReentrantLock  # guards response_channels/active_streams (HTTP connection tasks + server loop + deferred-response waiters)
 
     function HttpTransport(;
         host::String="127.0.0.1",
@@ -87,7 +88,8 @@ mutable struct HttpTransport <: Transport
             0,  # Event counter starts at 0
             allowed_origins,
             auth,
-            resource_metadata
+            resource_metadata,
+            ReentrantLock()
         )
     end
 end
@@ -514,8 +516,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         
         # Create response channel for this request (buffer size 1 for single response)
         response_channel = Channel{String}(1)
-        transport.response_channels[request_id] = response_channel
-        transport.active_streams[request_id] = stream
+        lock(transport.channels_lock) do
+            transport.response_channels[request_id] = response_channel
+            transport.active_streams[request_id] = stream
+        end
         
         # Queue the request for processing
         put!(transport.request_queue, QueuedHttpRequest(request_id, body, authenticated_user))
@@ -584,8 +588,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             end
         finally
             # Cleanup
-            delete!(transport.active_streams, request_id)
-            delete!(transport.response_channels, request_id)
+            lock(transport.channels_lock) do
+                delete!(transport.active_streams, request_id)
+                delete!(transport.response_channels, request_id)
+            end
             Base.close(response_channel)
         end
         
@@ -670,8 +676,11 @@ function close(transport::HttpTransport)::Nothing
     
     transport.connected = false
     
-    # Close all response channels
-    for (id, channel) in transport.response_channels
+    # Close all response channels (snapshot under the lock; close outside it)
+    channels = lock(transport.channels_lock) do
+        collect(values(transport.response_channels))
+    end
+    for channel in channels
         try
             Base.close(channel)
         catch
@@ -771,11 +780,14 @@ function write_message(transport::HttpTransport, message::String)::Nothing
     # Get the current request ID
     if isdefined(transport, :current_request_id) && !isnothing(transport.current_request_id)
         request_id = transport.current_request_id
-        
-        # Send message to the response channel
-        if haskey(transport.response_channels, request_id)
+
+        # Send message to the response channel (look up under the lock, put! outside)
+        channel = lock(transport.channels_lock) do
+            get(transport.response_channels, request_id, nothing)
+        end
+        if channel !== nothing
             try
-                put!(transport.response_channels[request_id], message)
+                put!(channel, message)
                 # Clear current request ID after sending response
                 transport.current_request_id = nothing
             catch e
@@ -785,10 +797,46 @@ function write_message(transport::HttpTransport, message::String)::Nothing
     else
         @debug "No active request to write response to"
     end
-    
+
     nothing
 end
 
+"""
+    capture_response_route(transport::HttpTransport) -> Union{String,Nothing}
+
+Detach the current request's response route so its response can be delivered later
+from a background task (see `deliver_response`). Clears `current_request_id` so the
+loop's subsequent `write_message` calls cannot route into this request's channel.
+"""
+function capture_response_route(transport::HttpTransport)::Union{String,Nothing}
+    route = transport.current_request_id
+    transport.current_request_id = nothing
+    route
+end
+
+"""
+    deliver_response(transport::HttpTransport, route::Union{String,Nothing}, message::String) -> Nothing
+
+Deliver a deferred response to the request identified by `route` (captured earlier via
+`capture_response_route`). The HTTP connection handler is still blocked on the
+request's response channel, so the POST stays open until this delivers — which is
+exactly the blocking behavior `tasks/result` requires. Dropped silently when the
+client has disconnected (its channel is gone or closed).
+"""
+function deliver_response(transport::HttpTransport, route::Union{String,Nothing},
+                          message::String)::Nothing
+    route === nothing && return nothing
+    channel = lock(transport.channels_lock) do
+        get(transport.response_channels, route, nothing)
+    end
+    channel === nothing && return nothing
+    try
+        put!(channel, message)
+    catch e
+        @debug "Failed to deliver deferred response (client likely disconnected)" error=e
+    end
+    nothing
+end
 
 """
     set_negotiated_version!(transport::HttpTransport, version::String) -> Nothing

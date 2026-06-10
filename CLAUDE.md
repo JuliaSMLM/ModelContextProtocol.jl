@@ -385,9 +385,11 @@ end
   response channel).
 - `RequestContext` is intentionally NOT exported: handlers use the `ctx` value and
   exported helpers without naming the type, keeping its shape free to evolve.
-- Note: requests are processed serially by a single server loop. Progress keeps clients
-  informed during a long call, but does not unblock the next request (concurrency and
-  spec Tasks are roadmap).
+- Note: synchronous requests are processed serially by a single server loop. For long
+  tool calls, **MCP Tasks** (see below) move the work off-loop: a task-augmented call
+  returns immediately and the loop stays free for polls/cancels while the handler runs
+  in a background Julia task. Inside such handlers, `task_cancelled(ctx)` observes a
+  client's `tasks/cancel` cooperatively.
 
 ## Technical Notes
 - Use 127.0.0.1 instead of localhost on Windows for HTTP transport
@@ -456,6 +458,17 @@ negotiated version per session).
   `_meta` on component definitions, Content types, and `CallToolResult`
 - **Progress notifications** from ctx-aware handlers (see section above); transport-correct
   delivery (stdout / SSE)
+- **Tasks (SEP-1686, experimental)**: task-augmented `tools/call` (opt-in per tool via
+  `MCPTool(task_support = :optional | :required)`, advertised as `execution.taskSupport`);
+  `tasks/get`, blocking `tasks/result` (delivered out-of-loop via
+  `capture_response_route`/`deliver_response` so the serial loop stays free),
+  `tasks/cancel` (terminal cancels rejected -32602), paginated `tasks/list`,
+  `notifications/tasks/status`; principal-bound under HTTP auth, `tasks/list` withheld
+  on unauthenticated HTTP; capability only advertised to 2025-11-25 sessions (older
+  sessions: task metadata ignored, sync execution per spec); `task_cancelled(ctx)` for
+  cooperative cancellation
+- **logging/setLevel** (eight RFC-5424 levels) + per-request lifecycle `@debug` log
+  (method/id/duration_ms/ok), runtime-enableable
 - **OAuth Resource Server** (2025-11-25 authorization): bearer validation (JWT claims,
   RFC 7662 introspection, GitHub tokens + allowlist/org), RFC 9728 Protected Resource
   Metadata at `/.well-known/oauth-protected-resource`, per-request auth context.
@@ -464,13 +477,11 @@ negotiated version per session).
 
 ### ❌ Not Yet Implemented
 
-- **Tasks** (experimental, SEP-1686 — long-running calls); planned next headline feature
-- **logging/setLevel + request-lifecycle logging** (issue #24; capability advertised,
-  `MCPLogger` emits `notifications/message`; handler in progress for 0.5.2)
 - **OAuth Authorization Server** (token issuance — DCR, PKCE; tracked in issue #51) and
   RS hardening (JWKS verification, per-tool scopes, SSE principal binding)
 - **Elicitation**; **client-side features** (roots, sampling, completion)
-- **Stream resumption** (Last-Event-ID); **concurrent request handling** (single serialized
+- **Stream resumption** (Last-Event-ID); **concurrent SYNC request handling** (Tasks give
+  long calls background execution, but plain requests still go through the single serialized
   server loop today)
 
 ### Versioning policy
