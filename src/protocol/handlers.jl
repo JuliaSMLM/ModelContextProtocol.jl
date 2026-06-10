@@ -82,7 +82,7 @@ end
 ```
 """
 task_cancelled(ctx::RequestContext)::Bool =
-    ctx.task !== nothing && ctx.task.cancel_requested
+    ctx.task !== nothing && ctx.task.cancel_requested[]
 
 """
     HandlerResult(; response::Union{Response,Nothing}=nothing, 
@@ -690,7 +690,15 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
             )
         elseif task_requested
             raw_ttl = get(params.task, "ttl", nothing)
-            requested_ttl = raw_ttl isa Real ? round(Int, raw_ttl) : nothing
+            if raw_ttl !== nothing && !(raw_ttl isa Real && !(raw_ttl isa Bool) && raw_ttl >= 0)
+                return HandlerResult(
+                    error=ErrorInfo(
+                        code=ErrorCodes.INVALID_PARAMS,
+                        message="Invalid task ttl: must be a non-negative number of milliseconds"
+                    )
+                )
+            end
+            requested_ttl = raw_ttl === nothing ? nothing : round(Int, raw_ttl)
             record = create_task!(ctx.server.tasks, "tools/call";
                                   requested_ttl_ms=requested_ttl,
                                   principal=task_principal(ctx))
@@ -838,6 +846,18 @@ function tasks_list_offered(server::Server)::Bool
     cap_idx === nothing && return false
     server.config.capabilities[cap_idx].list || return false
     !(server.transport isa HttpTransport && server.transport.auth === nothing)
+end
+
+"""
+    tasks_cancel_offered(server::Server) -> Bool
+
+Whether `tasks/cancel` is offered (a `TaskCapability` with `cancel=true`), matching
+what the capability advertises.
+"""
+function tasks_cancel_offered(server::Server)::Bool
+    cap_idx = findfirst(c -> c isa TaskCapability, server.config.capabilities)
+    cap_idx === nothing && return false
+    server.config.capabilities[cap_idx].cancel
 end
 
 """
@@ -1029,6 +1049,7 @@ in a terminal status is rejected with -32602 per spec.
 """
 function handle_cancel_task(ctx::RequestContext, params::CancelTaskParams)::HandlerResult
     tasks_supported(ctx) || return tasks_unsupported_result("tasks/cancel")
+    tasks_cancel_offered(ctx.server) || return tasks_unsupported_result("tasks/cancel")
     store = ctx.server.tasks
     record = get_task(store, params.taskId, task_principal(ctx))
     record === nothing && return task_not_found_result()

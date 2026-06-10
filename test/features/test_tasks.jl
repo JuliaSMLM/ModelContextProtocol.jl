@@ -70,7 +70,7 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
 
         # cancel beats late completion: outcome discarded
         @test cancel_task!(store, t3)
-        @test t3.status == "cancelled" && t3.cancel_requested
+        @test t3.status == "cancelled" && t3.cancel_requested[]
         @test !finish_task!(store, t3, ok)
         @test t3.status == "cancelled" && t3.result === nothing
 
@@ -311,6 +311,35 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         bad = JSON3.read(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tasks/list","params":{"cursor":"junk"}}"""))
         @test bad.error.code == -32602
+    end
+
+    @testset "ttl validation + cancel capability gating" begin
+        opt = MCPTool(name="opt", description="d", parameters=[],
+            handler=args -> TextContent(text="ok"), task_support=:optional)
+        server, state, _, _ = _tasks_test_server(tools=[opt])
+
+        # non-numeric / negative ttl -> -32602 (not silently defaulted)
+        bad1 = JSON3.read(_tasks_msg(server, state,
+            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"opt","task":{"ttl":"soon"}}}"""))
+        @test bad1.error.code == -32602
+        bad2 = JSON3.read(_tasks_msg(server, state,
+            """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"opt","task":{"ttl":-5}}}"""))
+        @test bad2.error.code == -32602
+
+        # TaskCapability(cancel=false): capability omits "cancel" AND the handler rejects
+        server2 = mcp_server(name="no-cancel", version="0.0.1", tools=[opt],
+            capabilities=ModelContextProtocol.Capability[TaskCapability(cancel=false)])
+        server2.transport = StdioTransport(input=IOBuffer(), output=IOBuffer())
+        state2 = ServerState()
+        init2 = JSON3.read(process_message(server2, state2,
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"""))
+        @test !haskey(init2.result.capabilities.tasks, :cancel)
+        c = JSON3.read(process_message(server2, state2,
+            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"opt","task":{}}}"""))
+        tid = String(c.result.task.taskId)
+        x = JSON3.read(process_message(server2, state2,
+            """{"jsonrpc":"2.0","id":3,"method":"tasks/cancel","params":{"taskId":"$tid"}}"""))
+        @test x.error.code == -32601
     end
 
     @testset "tasks/list withheld on unauthenticated HTTP" begin

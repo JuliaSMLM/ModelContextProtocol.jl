@@ -39,7 +39,8 @@ Mutable record of one server-side task (a task-augmented request execution).
 - `result::Union{CallToolResult,Nothing}`: Final result when the underlying call succeeded (or failed via `isError`)
 - `error::Union{ErrorInfo,Nothing}`: Final JSON-RPC error when the underlying call errored
 - `done::Base.Event`: Set exactly once when the task reaches a terminal status
-- `cancel_requested::Bool`: True once tasks/cancel accepted; handlers may poll via `task_cancelled(ctx)`
+- `cancel_requested::Threads.Atomic{Bool}`: Set once tasks/cancel is accepted; atomic so
+  handlers can poll it lock-free from worker threads via `task_cancelled(ctx)`
 
 All mutation goes through the owning `TaskStore` under its lock.
 """
@@ -56,7 +57,7 @@ mutable struct TaskRecord
     result::Union{CallToolResult,Nothing}
     error::Union{ErrorInfo,Nothing}
     done::Base.Event
-    cancel_requested::Bool
+    cancel_requested::Threads.Atomic{Bool}
 end
 
 """
@@ -127,7 +128,7 @@ function create_task!(store::TaskStore, method::String;
         nothing,
         nothing,
         Base.Event(),
-        false
+        Threads.Atomic{Bool}(false)
     )
     lock(store.lock) do
         sweep_expired!(store)
@@ -215,7 +216,7 @@ function cancel_task!(store::TaskStore, record::TaskRecord)::Bool
         task_is_terminal(record) && return false
         record.status = "cancelled"
         record.status_message = "The task was cancelled by request."
-        record.cancel_requested = true
+        record.cancel_requested[] = true
         record.last_updated_at = Dates.now(Dates.UTC)
         notify(record.done)
         true

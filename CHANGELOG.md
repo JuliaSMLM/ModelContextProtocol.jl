@@ -40,7 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     now defer a response and deliver it out-of-loop via the new transport pair
     `capture_response_route`/`deliver_response` — on HTTP the original POST simply
     stays open (spec-blocking for free); on stdio writes are serialized by a new
-    transport write lock.
+    transport write lock, and the HTTP per-request channel registry is lock-guarded
+    against concurrent access from connection tasks and waiters. Disconnect-driven
+    cleanup of a blocked `tasks/result` is tracked in #61 (retention is bounded by
+    task lifetime).
 
 ### Documentation
 
