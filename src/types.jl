@@ -527,7 +527,11 @@ Resources represent data that can be read by models and tools.
 - `name::String`: Human-readable name for the resource
 - `description::String`: Detailed description of the resource
 - `mime_type::String`: MIME type of the resource data
-- `data_provider::Function`: Function that provides the resource data when called
+- `data_provider::Function`: Zero-argument function returning the resource data for
+  `resources/read`. Return a `TextResourceContents`/`BlobResourceContents` (or a vector
+  of them) for full control — `BlobResourceContents` is how binary resources are served
+  (base64 `blob` on the wire). A `String` is used as the text verbatim; any other value
+  is JSON-encoded into a text contents entry with the resource's `mime_type`.
 - `annotations::AbstractDict{String,Any}`: Additional metadata for the resource
 """
 struct MCPResource <: Resource
@@ -556,7 +560,9 @@ Create a resource with automatic URI conversion from strings or URIs.
 - `name::String`: Human-readable name for the resource
 - `description::String`: Detailed description
 - `mime_type::String`: MIME type of the resource
-- `data_provider::Function`: Function that returns the resource data when called
+- `data_provider::Function`: Zero-argument function returning the resource data
+  (`ResourceContents`/vector for full control incl. binary `blob`; `String` verbatim;
+  anything else JSON-encoded — see `MCPResource` field docs)
 - `annotations::AbstractDict{String,Any}`: Additional metadata for the resource
 - `title::Union{String,Nothing}`: Optional human-friendly display name
 - `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display

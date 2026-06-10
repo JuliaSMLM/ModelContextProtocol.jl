@@ -110,10 +110,17 @@ server = mcp_server(
 
 ### Resource with Dynamic Data
 
-The `data_provider` is called with no arguments on every `resources/read`, and its
-return value is JSON-encoded into the resource contents:
+The `data_provider` is called with no arguments on every `resources/read`. What it
+returns determines the wire contents:
+
+- A **`TextResourceContents`** or **`BlobResourceContents`** (or a vector of them) is
+  serialized directly — this is how binary resources are served (base64 `blob` on the
+  wire) and how you control the contents `uri`/`mimeType` per entry.
+- A **`String`** becomes the text contents verbatim, with the resource's `mime_type`.
+- Anything else is **JSON-encoded** into a text contents entry.
 
 ```julia
+# JSON data (encoded automatically)
 log_resource = MCPResource(
     uri = "app://logs/recent",
     name = "Recent Log Entries",
@@ -127,13 +134,28 @@ log_resource = MCPResource(
 )
 ```
 
+### Resource with Binary Data
+
+Return a `BlobResourceContents` to serve binary data (base64-encoded on the wire):
+
+```julia
+image_resource = MCPResource(
+    uri = "images://logo",
+    name = "Logo Image",
+    description = "Company logo",
+    mime_type = "image/png",
+    data_provider = () -> BlobResourceContents(
+        uri = "images://logo",
+        mime_type = "image/png",
+        blob = read("logo.png")   # Vector{UInt8}
+    )
+)
+```
+
+This pairs naturally with `ResourceLink` tool results: a tool can return a link to a
+large artifact, and the client then reads the binary via `resources/read`.
+
 ### Current Limitations
 
 - Resources are matched by **exact URI**; wildcard or template URIs (e.g. `file://*`)
-  are not routed to providers.
-- The read path always JSON-encodes the provider's return value into a text contents
-  entry with the resource's declared `mime_type`. Returning `TextResourceContents` or
-  `BlobResourceContents` directly is not yet supported, so binary resources cannot be
-  served via `resources/read` today.
-- To deliver binary data, use a tool that returns `ImageContent`/`AudioContent` or an
-  `EmbeddedResource` instead.
+  are not routed to providers (`data_provider` takes no arguments).
