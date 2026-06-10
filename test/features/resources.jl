@@ -111,6 +111,9 @@
         @test match_uri_template("a://r/{id}", "a://r/x/y") === nothing   # {var} won't cross '/'
         @test match_uri_template("a://r/{id}", "b://r/x") === nothing
         @test match_uri_template("a://r.x/{id}", "a://rqx/1") === nothing # literal '.' escaped
+        @test match_uri_template("a://{a}{b}", "a://xy") === nothing      # adjacent vars: ambiguous, never match
+        @test match_uri_template("a://{id}/{id}", "a://x/x") == Dict("id" => "x")  # repeats must agree
+        @test match_uri_template("a://{id}/{id}", "a://x/y") === nothing
 
         png = UInt8[0x89, 0x50, 0x4E, 0x47]
         tmpl = ResourceTemplate(
@@ -175,6 +178,10 @@
         register!(server, boom)
         r = handle_read_resource(ctx, ReadResourceParams(uri = "test://boom/1"))
         @test r.error.code == Int(ModelContextProtocol.ErrorCodes.INTERNAL_ERROR)
+
+        # pre-0.5.4 six-field positional construction still works
+        legacy = ResourceTemplate("legacy", "test://l/{x}", "text/plain", "d", nothing, nothing)
+        @test legacy.data_provider === nothing && legacy._meta === nothing
     end
 
     @testset "resources/read unknown URI is a resource error" begin

@@ -168,6 +168,11 @@ _regex_escape(s::AbstractString) =
 Match `uri` against an RFC 6570 level-1 URI template. Each `{var}` placeholder matches
 one path segment (one or more characters excluding `/`). Returns the extracted
 variables on a full match, `nothing` otherwise.
+
+Deliberate subset of RFC 6570: variable names are `[A-Za-z0-9_]+` (no dotted or
+pct-encoded names); adjacent placeholders with no literal between them (`{a}{b}`) are
+ambiguous and never match; a repeated variable name must capture the same value in
+every position.
 """
 function match_uri_template(template::String, uri::String)::Union{Nothing,Dict{String,String}}
     names = String[]
@@ -175,6 +180,10 @@ function match_uri_template(template::String, uri::String)::Union{Nothing,Dict{S
     print(pattern, "^")
     pos = 1
     for m in eachmatch(r"\{([A-Za-z0-9_]+)\}", template)
+        # Adjacent placeholders ({a}{b}) have no separator to split the captures
+        # on — ambiguous extraction and a regex-backtracking hazard on
+        # client-controlled URIs. Treat the template as unmatchable.
+        m.offset == pos && !isempty(names) && return nothing
         print(pattern, _regex_escape(template[pos:prevind(template, m.offset)]))
         push!(names, String(m.captures[1]))
         print(pattern, "([^/]+)")
@@ -183,7 +192,14 @@ function match_uri_template(template::String, uri::String)::Union{Nothing,Dict{S
     print(pattern, _regex_escape(template[pos:end]), "\$")
     mm = match(Regex(String(take!(pattern))), uri)
     mm === nothing && return nothing
-    Dict{String,String}(n => String(c) for (n, c) in zip(names, mm.captures))
+    vars = Dict{String,String}()
+    for (n, c) in zip(names, mm.captures)
+        v = String(c)
+        # A repeated variable name must capture one consistent value
+        haskey(vars, n) && vars[n] != v && return nothing
+        vars[n] = v
+    end
+    vars
 end
 
 """

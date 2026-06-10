@@ -624,6 +624,12 @@ Base.@kwdef struct ResourceTemplate
     _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in resources/templates/list when set
 end
 
+# Back-compat: the pre-0.5.4 six-field positional shape still constructs
+ResourceTemplate(name::String, uri_template::String, mime_type::Union{String,Nothing},
+                 description::String, title::Union{String,Nothing},
+                 icons::Union{Vector{MCPIcon},Nothing}) =
+    ResourceTemplate(name, uri_template, mime_type, description, title, icons, nothing, nothing)
+
 #==============================================================================
 # 7. Subscription and Progress Types
 ==============================================================================#
