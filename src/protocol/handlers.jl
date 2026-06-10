@@ -105,26 +105,27 @@ Base.@kwdef struct HandlerResult
 end
 
 """
-    serialize_resource_contents(resource::ResourceContents) -> Dict{String,Any}
+    serialize_resource_contents(resource::ResourceContents) -> LittleDict{String,Any}
 
-Serialize resource contents to protocol format.
+Serialize resource contents to the spec wire shape: `{uri, text, mimeType}` for
+`TextResourceContents`, `{uri, blob, mimeType}` (base64) for `BlobResourceContents`.
 
 # Arguments
 - `resource::ResourceContents`: The resource contents to serialize
 
 # Returns
-- `Dict{String,Any}`: The serialized resource contents
+- `LittleDict{String,Any}`: The serialized resource contents entry
 """
 function serialize_resource_contents(resource::ResourceContents)
     if resource isa TextResourceContents
         LittleDict{String,Any}(
-            "uri" => resource.uri,
+            "uri" => string(resource.uri),
             "text" => resource.text,
             "mimeType" => resource.mime_type
         )
     elseif resource isa BlobResourceContents
         LittleDict{String,Any}(
-            "uri" => resource.uri,
+            "uri" => string(resource.uri),
             "blob" => base64encode(resource.blob),
             "mimeType" => resource.mime_type
         )
@@ -604,12 +605,27 @@ function handle_read_resource(ctx::RequestContext, params::ReadResourceParams)::
 
     try
         data = resource.data_provider()
-        
-        contents = [LittleDict{String,Any}(
-            "uri" => string(resource.uri),
-            "text" => JSON3.write(data),
-            "mimeType" => resource.mime_type
-        )]
+
+        # Normalize the provider's return value into spec contents entries:
+        # - TextResourceContents/BlobResourceContents (or a vector of them)
+        #   serialize directly — the only path that can produce binary `blob`
+        #   contents. Dispatch is on the two concrete spec types, so a custom
+        #   ResourceContents subtype falls through to the JSON fallback instead
+        #   of erroring inside serialize_resource_contents.
+        # - a String becomes the text verbatim (with the resource's mime type)
+        # - anything else keeps the JSON-encoded fallback
+        wire_contents = Union{TextResourceContents,BlobResourceContents}
+        contents = if data isa wire_contents
+            [serialize_resource_contents(data)]
+        elseif data isa Vector && !isempty(data) && all(x -> x isa wire_contents, data)
+            [serialize_resource_contents(x) for x in data]
+        else
+            [LittleDict{String,Any}(
+                "uri" => string(resource.uri),
+                "text" => data isa AbstractString ? String(data) : JSON3.write(data),
+                "mimeType" => resource.mime_type
+            )]
+        end
 
         # Use the proper ReadResourceResult struct
         HandlerResult(

@@ -137,7 +137,8 @@ using ModelContextProtocol
 using URIs  # For URI construction
 
 # Create a resource with a custom data provider
-# (called with no arguments; the return value is JSON-encoded into the contents)
+# (called with no arguments; plain data is JSON-encoded — return a String for
+# verbatim text or Text/BlobResourceContents for full control incl. binary)
 config_resource = MCPResource(
     uri = URI("config://app/settings"),
     name = "Application Settings",

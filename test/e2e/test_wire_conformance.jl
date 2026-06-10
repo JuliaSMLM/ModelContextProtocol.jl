@@ -18,9 +18,11 @@ const _WIRE_REQUESTS = [
     """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_stats","arguments":{}},"id":4}""",
     """{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"media_demo"},"id":5}""",
     """{"jsonrpc":"2.0","method":"resources/list","params":{},"id":6}""",
+    """{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"demo://logo"},"id":7}""",
+    """{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"demo://readme"},"id":8}""",
 ]
 
-# Shared assertions on the six responses (Dict id => parsed JSON3 object),
+# Shared assertions on the eight responses (Dict id => parsed JSON3 object),
 # used by both the stdio and HTTP passes.
 function _wire_assert(resp)
     # 1: initialize — negotiated version + serverInfo.description
@@ -65,6 +67,17 @@ function _wire_assert(resp)
 
     # 6: resources/list — _meta emitted
     @test resp[6].result.resources[1]._meta["lab/resource"] == 1
+
+    # 7: binary resource served as base64 blob contents (BlobResourceContents return)
+    blob_c = resp[7].result.contents[1]
+    @test blob_c.uri == "demo://logo"
+    @test blob_c.blob == base64encode(UInt8[0x89, 0x50, 0x4E, 0x47])
+    @test blob_c.mimeType == "image/png"
+    @test !haskey(blob_c, :text)
+
+    # 8: String provider data is the text verbatim (not JSON-quoted)
+    @test resp[8].result.contents[1].text == "plain, not JSON-quoted"
+    @test resp[8].result.contents[1].mimeType == "text/plain"
 end
 
 @testset "E2E wire conformance (real subprocesses)" begin
@@ -80,8 +93,8 @@ end
             msg = JSON3.read(line)
             haskey(msg, :id) && (resp[msg.id] = msg)
         end
-        @test length(resp) == 6
-        length(resp) == 6 && _wire_assert(resp)
+        @test length(resp) == 8
+        length(resp) == 8 && _wire_assert(resp)
     end
 
     @testset "stdio logging/setLevel takes effect live" begin
@@ -146,8 +159,8 @@ end
                     # The response HEADER echoes the NEGOTIATED version on every
                     # response (client asked 2025-06-18; transport default is latest)
                     @test all(==("2025-06-18"), versions)
-                    @test length(resp) == 6
-                    length(resp) == 6 && _wire_assert(resp)
+                    @test length(resp) == 8
+                    length(resp) == 8 && _wire_assert(resp)
                 end
             finally
                 kill(proc)

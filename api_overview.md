@@ -556,12 +556,29 @@ MCPResource(;
     name::String,                         # Human-readable name
     description::String = "",             # Description
     mime_type::String = "application/json", # MIME type
-    data_provider::Function,              # () -> data function
+    data_provider::Function,              # () -> data function (see note below)
     annotations::AbstractDict = LittleDict{String,Any}()  # Metadata (uses LittleDict for performance)
 )
 ```
 
 **Note:** The `uri` is stored internally as a `URI` object but accepts strings for convenience.
+
+**Provider return values** (`resources/read` contents):
+- `TextResourceContents` / `BlobResourceContents` (or a `Vector` of them): serialized
+  directly — `BlobResourceContents` is how binary resources are served (base64 `blob`)
+- `String`: used as the text verbatim with the resource's `mime_type`
+- anything else: JSON-encoded into a text contents entry
+
+```julia
+# Binary resource
+logo = MCPResource(
+    uri = "images://logo",
+    name = "Logo",
+    mime_type = "image/png",
+    data_provider = () -> BlobResourceContents(
+        uri = "images://logo", mime_type = "image/png", blob = read("logo.png"))
+)
+```
 
 #### `ResourceTemplate`
 

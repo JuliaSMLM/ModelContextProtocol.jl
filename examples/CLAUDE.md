@@ -105,8 +105,9 @@ hello_tool = MCPTool(
     end
 )
 
-# Define a resource (data_provider takes no arguments; its return value
-# is JSON-encoded into the resource contents)
+# Define a resource (data_provider takes no arguments; plain data is JSON-encoded,
+# a String is used verbatim, and Text/BlobResourceContents serialize directly —
+# BlobResourceContents is how binary resources are served)
 data_resource = MCPResource(
     uri = "example://data",
     name = "Example Data",

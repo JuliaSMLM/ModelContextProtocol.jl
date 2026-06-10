@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Binary and rich resource contents** (closes #59): `resources/read` now serializes
+  `TextResourceContents`/`BlobResourceContents` (or a vector of them) returned from a
+  resource's `data_provider` directly to the spec wire shape — `BlobResourceContents`
+  makes binary resources servable for the first time (base64 `blob` contents entry,
+  per-entry `uri`/`mimeType`). Plain data keeps the JSON-encoded text fallback. This
+  pairs with `ResourceLink` tool results: link to a large artifact, read the binary
+  via `resources/read`.
+
+### Fixed
+
+- A `String` returned from a `data_provider` is now used as the text contents verbatim
+  instead of arriving JSON-quoted (`"\"…\""`).
+
 ## [0.5.3] - 2026-06-10
 
 ### Added

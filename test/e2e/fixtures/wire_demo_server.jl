@@ -75,13 +75,30 @@ res = MCPResource(
     _meta = Dict{String,Any}("lab/resource" => 1),
 )
 
+res_blob = MCPResource(
+    uri = "demo://logo",
+    name = "logo",
+    description = "Binary resource (BlobResourceContents demo)",
+    mime_type = "image/png",
+    data_provider = () -> BlobResourceContents(
+        uri = "demo://logo", mime_type = "image/png", blob = png_bytes),
+)
+
+res_text = MCPResource(
+    uri = "demo://readme",
+    name = "readme",
+    description = "Verbatim String resource demo",
+    mime_type = "text/plain",
+    data_provider = () -> "plain, not JSON-quoted",
+)
+
 server = mcp_server(
     name = "wire-demo",
     version = "0.1.0",
     description = "Wire conformance demo server",
     tools = [analyze, structured, count_slow],
     prompts = [media_prompt],
-    resources = [res],
+    resources = [res, res_blob, res_text],
 )
 
 if "http" in ARGS
