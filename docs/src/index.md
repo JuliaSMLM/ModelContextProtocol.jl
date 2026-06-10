@@ -10,12 +10,14 @@ Julia implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 - ✅ **Structured Tool Output** - `output_schema` declarations with `structuredContent` results
 - ✅ **Tool Annotations** - behavioral hints (`readOnlyHint`, `destructiveHint`, …) for client trust decisions
 - ✅ **Progress Notifications** - long-running tools report progress through context-aware handlers
+- ✅ **Tasks (experimental)** - background tool execution with status polling, blocking
+  result retrieval, and cancellation ([SEP-1686](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks))
 - ✅ **OAuth Resource Server** - bearer-token validation for HTTP (GitHub tokens, JWT claims, RFC 7662 introspection) with RFC 9728 discovery
 - ✅ **Logging Control** - runtime `logging/setLevel` plus opt-in per-request lifecycle logs
 - ✅ **Auto-Registration** - automatic component discovery from directory structure
 - ✅ **Type-Safe** - leverages Julia's type system for robust implementations
 
-**Note:** This is a server-side implementation. Client features (roots, sampling), spec Tasks, elicitation, and the OAuth *Authorization Server* (token issuance) are not yet implemented.
+**Note:** This is a server-side implementation. Client features (roots, sampling), elicitation, and the OAuth *Authorization Server* (token issuance) are not yet implemented.
 
 ## Installation
 

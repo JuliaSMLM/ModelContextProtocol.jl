@@ -38,6 +38,8 @@ server = mcp_server(
 - **Structured tool output**: declare an `output_schema`, return `structuredContent`
 - **Tool annotations**: behavioral hints (`readOnlyHint`, `destructiveHint`, …) for client trust decisions
 - **Progress notifications**: long-running tools report progress via context-aware handlers
+- **Tasks (experimental)**: background tool execution with status polling, blocking result
+  retrieval, and cancellation (`task_support = :optional` per tool)
 - **OAuth Resource Server** (HTTP): bearer-token validation (GitHub tokens, JWT claims, RFC 7662
   introspection) with RFC 9728 discovery metadata
 - **Logging control**: clients adjust verbosity at runtime via `logging/setLevel`; opt-in
