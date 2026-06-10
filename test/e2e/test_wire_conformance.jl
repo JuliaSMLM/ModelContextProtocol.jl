@@ -20,9 +20,11 @@ const _WIRE_REQUESTS = [
     """{"jsonrpc":"2.0","method":"resources/list","params":{},"id":6}""",
     """{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"demo://logo"},"id":7}""",
     """{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"demo://readme"},"id":8}""",
+    """{"jsonrpc":"2.0","method":"resources/templates/list","params":{},"id":9}""",
+    """{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"demo://artifact/ab12"},"id":10}""",
 ]
 
-# Shared assertions on the eight responses (Dict id => parsed JSON3 object),
+# Shared assertions on the ten responses (Dict id => parsed JSON3 object),
 # used by both the stdio and HTTP passes.
 function _wire_assert(resp)
     # 1: initialize — negotiated version + serverInfo.description
@@ -78,6 +80,18 @@ function _wire_assert(resp)
     # 8: String provider data is the text verbatim (not JSON-quoted)
     @test resp[8].result.contents[1].text == "plain, not JSON-quoted"
     @test resp[8].result.contents[1].mimeType == "text/plain"
+
+    # 9: resources/templates/list — spec wire keys
+    t = only(resp[9].result.resourceTemplates)
+    @test t.uriTemplate == "demo://artifact/{id}"
+    @test t.name == "artifact"
+    @test t.mimeType == "image/png"
+
+    # 10: templated read — provider received the uri + extracted {id}
+    art = resp[10].result.contents[1]
+    @test art.uri == "demo://artifact/ab12"
+    @test art.blob == base64encode(vcat(UInt8[0x89, 0x50, 0x4E, 0x47], Vector{UInt8}("ab12")))
+    @test art.mimeType == "image/png"
 end
 
 @testset "E2E wire conformance (real subprocesses)" begin
@@ -93,8 +107,8 @@ end
             msg = JSON3.read(line)
             haskey(msg, :id) && (resp[msg.id] = msg)
         end
-        @test length(resp) == 8
-        length(resp) == 8 && _wire_assert(resp)
+        @test length(resp) == 10
+        length(resp) == 10 && _wire_assert(resp)
     end
 
     @testset "stdio logging/setLevel takes effect live" begin
@@ -159,8 +173,8 @@ end
                     # The response HEADER echoes the NEGOTIATED version on every
                     # response (client asked 2025-06-18; transport default is latest)
                     @test all(==("2025-06-18"), versions)
-                    @test length(resp) == 8
-                    length(resp) == 8 && _wire_assert(resp)
+                    @test length(resp) == 10
+                    length(resp) == 10 && _wire_assert(resp)
                 end
             finally
                 kill(proc)

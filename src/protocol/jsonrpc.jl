@@ -4,6 +4,7 @@ const REQUEST_PARAMS_MAP = Dict{String,Type}(
     "initialize" => InitializeParams,
     "resources/list" => ListResourcesParams,
     "resources/read" => ReadResourceParams,
+    "resources/templates/list" => ListResourceTemplatesParams,
     "tools/call" => CallToolParams,
     "tools/list" => ListToolsParams,
     "prompts/list" => ListPromptsParams,

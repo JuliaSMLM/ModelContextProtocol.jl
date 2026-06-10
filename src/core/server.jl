@@ -30,6 +30,11 @@ function register!(server::Server, prompt::MCPPrompt)
     server
 end
 
+function register!(server::Server, template::ResourceTemplate)
+    push!(server.resource_templates, template)
+    server
+end
+
 """
     process_message(server::Server, state::ServerState, message::String) -> Union{String,Nothing}
 

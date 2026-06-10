@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Resource URI templates** (closes #63): `ResourceTemplate` now carries a
+  `data_provider`, and a `resources/read` whose URI matches no exact resource is routed
+  through the registered templates (RFC 6570 level-1 `{var}` placeholders, one path
+  segment each). The provider receives the requested URI — `provider(uri)` — or opts
+  into `provider(uri, vars)` for the extracted placeholder values; return values follow
+  the same contract as resource providers. Templates are advertised via the spec's
+  `resources/templates/list`, registered through `mcp_server(resource_templates=…)` or
+  `register!(server, template)`. Exact-URI resources take precedence. Requested by the
+  aimg downstream for content-addressed artifact namespaces.
 - **Binary and rich resource contents** (closes #59): `resources/read` now serializes
   `TextResourceContents`/`BlobResourceContents` (or a vector of them) returned from a
   resource's `data_provider` directly to the spec wire shape — `BlobResourceContents`

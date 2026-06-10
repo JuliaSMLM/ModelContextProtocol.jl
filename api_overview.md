@@ -569,6 +569,23 @@ MCPResource(;
 - `String`: used as the text verbatim with the resource's `mime_type`
 - anything else: JSON-encoded into a text contents entry
 
+**URI templates** (`ResourceTemplate`): parameterized resource families. RFC 6570
+level-1 `{var}` placeholders (one path segment each); advertised via
+`resources/templates/list`; a `resources/read` with no exact-URI match routes to the
+first matching template's provider — `provider(uri)` or `provider(uri, vars)` for the
+extracted placeholders, same return contract as above. Register via
+`mcp_server(resource_templates = [...])` or `register!(server, template)`.
+
+```julia
+tmpl = ResourceTemplate(
+    name = "artifact",
+    uri_template = "app://artifact/{id}",
+    mime_type = "image/png",
+    data_provider = (uri, vars) -> BlobResourceContents(
+        uri = uri, mime_type = "image/png", blob = load_artifact(vars["id"]))
+)
+```
+
 ```julia
 # Binary resource
 logo = MCPResource(

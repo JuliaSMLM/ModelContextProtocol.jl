@@ -92,6 +92,16 @@ res_text = MCPResource(
     data_provider = () -> "plain, not JSON-quoted",
 )
 
+tmpl_artifact = ResourceTemplate(
+    name = "artifact",
+    uri_template = "demo://artifact/{id}",
+    description = "Content-addressed artifact family (URI template demo)",
+    mime_type = "image/png",
+    data_provider = (uri, vars) -> BlobResourceContents(
+        uri = uri, mime_type = "image/png",
+        blob = vcat(png_bytes, Vector{UInt8}(vars["id"]))),
+)
+
 server = mcp_server(
     name = "wire-demo",
     version = "0.1.0",
@@ -99,6 +109,7 @@ server = mcp_server(
     tools = [analyze, structured, count_slow],
     prompts = [media_prompt],
     resources = [res, res_blob, res_text],
+    resource_templates = [tmpl_artifact],
 )
 
 if "http" in ARGS

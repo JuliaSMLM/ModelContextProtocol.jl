@@ -20,6 +20,8 @@ using ModelContextProtocol: WELL_KNOWN_PATH, handle_well_known_request  # For pr
 using ModelContextProtocol: TaskStore, TaskRecord, TaskCapability, create_task!, get_task,
     finish_task!, cancel_task!, task_wire, task_is_terminal,
     encode_task_cursor, decode_task_cursor  # For MCP Tasks tests
+using ModelContextProtocol: match_uri_template, handle_list_resource_templates,
+    ListResourceTemplatesParams  # For resource template tests
 
 # End-to-end tests spawn the example servers as real subprocesses (slow JIT
 # startup), so they run locally by default and are skipped on CI. Force either

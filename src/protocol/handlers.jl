@@ -135,6 +135,74 @@ function serialize_resource_contents(resource::ResourceContents)
 end
 
 """
+    normalize_read_contents(data, fallback_uri::String, fallback_mime::String)
+        -> Vector{LittleDict{String,Any}}
+
+Normalize a resource provider's return value into spec `resources/read` contents
+entries: `TextResourceContents`/`BlobResourceContents` (or a vector of them) serialize
+directly — the only path that can produce binary `blob` contents; a `String` becomes
+the text verbatim; anything else (including custom `ResourceContents` subtypes) is
+JSON-encoded into a text entry carrying `fallback_uri`/`fallback_mime`.
+"""
+function normalize_read_contents(data, fallback_uri::String, fallback_mime::String)
+    wire_contents = Union{TextResourceContents,BlobResourceContents}
+    if data isa wire_contents
+        [serialize_resource_contents(data)]
+    elseif data isa Vector && !isempty(data) && all(x -> x isa wire_contents, data)
+        [serialize_resource_contents(x) for x in data]
+    else
+        [LittleDict{String,Any}(
+            "uri" => fallback_uri,
+            "text" => data isa AbstractString ? String(data) : JSON3.write(data),
+            "mimeType" => fallback_mime
+        )]
+    end
+end
+
+_regex_escape(s::AbstractString) =
+    replace(s, r"([\\^\$\.\|\?\*\+\(\)\[\]\{\}])" => s"\\\1")
+
+"""
+    match_uri_template(template::String, uri::String) -> Union{Nothing,Dict{String,String}}
+
+Match `uri` against an RFC 6570 level-1 URI template. Each `{var}` placeholder matches
+one path segment (one or more characters excluding `/`). Returns the extracted
+variables on a full match, `nothing` otherwise.
+
+Deliberate subset of RFC 6570: variable names are `[A-Za-z0-9_]+` (no dotted or
+pct-encoded names); adjacent placeholders with no literal between them (`{a}{b}`) are
+ambiguous and never match; a repeated variable name must capture the same value in
+every position.
+"""
+function match_uri_template(template::String, uri::String)::Union{Nothing,Dict{String,String}}
+    names = String[]
+    pattern = IOBuffer()
+    print(pattern, "^")
+    pos = 1
+    for m in eachmatch(r"\{([A-Za-z0-9_]+)\}", template)
+        # Adjacent placeholders ({a}{b}) have no separator to split the captures
+        # on — ambiguous extraction and a regex-backtracking hazard on
+        # client-controlled URIs. Treat the template as unmatchable.
+        m.offset == pos && !isempty(names) && return nothing
+        print(pattern, _regex_escape(template[pos:prevind(template, m.offset)]))
+        push!(names, String(m.captures[1]))
+        print(pattern, "([^/]+)")
+        pos = m.offset + ncodeunits(m.match)
+    end
+    print(pattern, _regex_escape(template[pos:end]), "\$")
+    mm = match(Regex(String(take!(pattern))), uri)
+    mm === nothing && return nothing
+    vars = Dict{String,String}()
+    for (n, c) in zip(names, mm.captures)
+        v = String(c)
+        # A repeated variable name must capture one consistent value
+        haskey(vars, n) && vars[n] != v && return nothing
+        vars[n] = v
+    end
+    vars
+end
+
+"""
     convert_to_content_type(result::Any) -> Any
 
 Apply the documented convenience conversions for tool handler return values:
@@ -595,6 +663,35 @@ function handle_read_resource(ctx::RequestContext, params::ReadResourceParams)::
     end
 
     if isnothing(resource)
+        # No exact match: route through resource templates (RFC 6570 level-1
+        # {var} segments). First matching template with a provider serves the read.
+        for tmpl in ctx.server.resource_templates
+            tmpl.data_provider === nothing && continue
+            vars = match_uri_template(tmpl.uri_template, params.uri)
+            vars === nothing && continue
+            return try
+                provider = tmpl.data_provider
+                # Providers may opt into a two-arg form to receive the extracted
+                # template variables (dispatch by applicability, like tool handlers)
+                data = applicable(provider, params.uri, vars) ?
+                       provider(params.uri, vars) : provider(params.uri)
+                contents = normalize_read_contents(
+                    data, params.uri, something(tmpl.mime_type, "application/json"))
+                HandlerResult(
+                    response = JSONRPCResponse(
+                        id = ctx.request_id,
+                        result = ReadResourceResult(contents = contents)
+                    )
+                )
+            catch e
+                HandlerResult(
+                    error=ErrorInfo(
+                        code=ErrorCodes.INTERNAL_ERROR,
+                        message="Error reading resource: $(e)"
+                    )
+                )
+            end
+        end
         return HandlerResult(
             error=ErrorInfo(
                 code=ErrorCodes.RESOURCE_NOT_FOUND,
@@ -605,27 +702,7 @@ function handle_read_resource(ctx::RequestContext, params::ReadResourceParams)::
 
     try
         data = resource.data_provider()
-
-        # Normalize the provider's return value into spec contents entries:
-        # - TextResourceContents/BlobResourceContents (or a vector of them)
-        #   serialize directly — the only path that can produce binary `blob`
-        #   contents. Dispatch is on the two concrete spec types, so a custom
-        #   ResourceContents subtype falls through to the JSON fallback instead
-        #   of erroring inside serialize_resource_contents.
-        # - a String becomes the text verbatim (with the resource's mime type)
-        # - anything else keeps the JSON-encoded fallback
-        wire_contents = Union{TextResourceContents,BlobResourceContents}
-        contents = if data isa wire_contents
-            [serialize_resource_contents(data)]
-        elseif data isa Vector && !isempty(data) && all(x -> x isa wire_contents, data)
-            [serialize_resource_contents(x) for x in data]
-        else
-            [LittleDict{String,Any}(
-                "uri" => string(resource.uri),
-                "text" => data isa AbstractString ? String(data) : JSON3.write(data),
-                "mimeType" => resource.mime_type
-            )]
-        end
+        contents = normalize_read_contents(data, string(resource.uri), resource.mime_type)
 
         # Use the proper ReadResourceResult struct
         HandlerResult(
@@ -643,6 +720,36 @@ function handle_read_resource(ctx::RequestContext, params::ReadResourceParams)::
             )
         )
     end
+end
+
+"""
+    handle_list_resource_templates(ctx::RequestContext, params::ListResourceTemplatesParams)
+        -> HandlerResult
+
+Handle a `resources/templates/list` request: advertise the server's resource templates
+in the spec wire shape (`resourceTemplates` entries with `uriTemplate`, `name`, and
+optional `description`/`mimeType`/`title`/`icons`/`_meta`).
+"""
+function handle_list_resource_templates(ctx::RequestContext,
+                                        params::ListResourceTemplatesParams)::HandlerResult
+    templates = map(ctx.server.resource_templates) do t
+        d = LittleDict{String,Any}(
+            "uriTemplate" => t.uri_template,
+            "name" => t.name
+        )
+        isempty(t.description) || (d["description"] = t.description)
+        t.mime_type !== nothing && (d["mimeType"] = t.mime_type)
+        t.title !== nothing && (d["title"] = t.title)
+        t.icons !== nothing && (d["icons"] = [icon_to_dict(i) for i in t.icons])
+        t._meta !== nothing && (d["_meta"] = t._meta)
+        d
+    end
+    HandlerResult(
+        response = JSONRPCResponse(
+            id = ctx.request_id,
+            result = LittleDict{String,Any}("resourceTemplates" => templates)
+        )
+    )
 end
 
 """
@@ -1273,6 +1380,10 @@ function handle_request(server::Server, state::ServerState, request::Request;
                 handle_list_resources(ctx, params)
             elseif request.method == "resources/read"
                 handle_read_resource(ctx, request.params::ReadResourceParams)
+            elseif request.method == "resources/templates/list"
+                # Handle null params (cursor is optional)
+                params = isnothing(request.params) ? ListResourceTemplatesParams() : request.params::ListResourceTemplatesParams
+                handle_list_resource_templates(ctx, params)
             elseif request.method == "tools/call"
                 handle_call_tool(ctx, request.params::CallToolParams)
             elseif request.method == "tools/list"
