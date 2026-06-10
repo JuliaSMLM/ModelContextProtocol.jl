@@ -183,11 +183,14 @@ Template placeholders like `{language}` are substituted from the arguments suppl
 Test your server using the official MCP Inspector:
 
 ```bash
-# For stdio transport
-npx @modelcontextprotocol/inspector stdio -- julia --project server.jl
+# For stdio transport (Inspector spawns the server command directly)
+npx @modelcontextprotocol/inspector julia --project=. server.jl
 
 # For HTTP transport
 npx @modelcontextprotocol/inspector http://127.0.0.1:3000/
+
+# Quick smoke test without the browser UI (CLI mode)
+npx @modelcontextprotocol/inspector --cli julia --project=. server.jl --method tools/list
 ```
 
 ### With curl (HTTP only)

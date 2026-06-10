@@ -16,7 +16,7 @@ On Windows, use `127.0.0.1` instead of `localhost` to avoid IPv6 connection issu
 
 2. **MCP Inspector with mcp-remote bridge**:
    ```bash
-   npx @modelcontextprotocol/inspector stdio -- npx mcp-remote http://127.0.0.1:3000 --allow-http
+   npx @modelcontextprotocol/inspector -- npx mcp-remote http://127.0.0.1:3000 --allow-http
    ```
 
 3. **Claude Desktop configuration**:
