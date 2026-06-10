@@ -45,13 +45,13 @@ server = mcp_server(
 ### Breaking Changes and Migration
 
 **From Earlier Versions:**
-- Protocol version 2025-06-18 is strictly enforced (no negotiation)
+- Protocol version is negotiated per client: the server advertises `2025-11-25` and falls back through `2025-06-18` and `2025-03-26` to `2024-11-05`
 - JSON-RPC batching is no longer supported
-- ResourceLink is a new content type
+- ResourceLink is a new content type (spec wire shape `{"type":"resource_link","uri":...,"name":...}`)
 - Session management added for HTTP transport
 
 **Migration Tips:**
-- Update all protocol version references to "2025-06-18"
+- Send the latest protocol version you support in `initialize`; the server negotiates the rest
 - Split batch requests into individual calls
 - Use ResourceLink for resource references instead of embedding
 
@@ -108,7 +108,7 @@ start!(server)  # Uses stdio by default
 
 ### Core Principles
 
-1. **Protocol-First Design**: Strict compliance with MCP 2025-06-18 specification. No version negotiation complexity, no legacy support.
+1. **Protocol-First Design**: Targets the MCP 2025-11-25 specification, with per-client version negotiation back through 2025-06-18 and 2025-03-26 to 2024-11-05.
 
 2. **Layered Architecture**: 
    - **Transport Layer**: Abstract interface with stdio and HTTP implementations
@@ -195,6 +195,7 @@ abstract type Transport end
 abstract type Content end
 ├── TextContent       # Text-based content
 ├── ImageContent      # Binary image data
+├── AudioContent      # Binary audio data
 ├── EmbeddedResource  # Embedded resource content
 └── ResourceLink      # Reference to a resource
 ```
@@ -226,7 +227,7 @@ mcp_server(;
 ) -> Server
 ```
 
-**Protocol Version:** This implementation exclusively supports MCP protocol version `2025-06-18`.
+**Protocol Version:** The server advertises `2025-11-25` and negotiates per client down through `2025-06-18` and `2025-03-26` to `2024-11-05`.
 
 **Examples:**
 
@@ -743,6 +744,20 @@ ImageContent(;
 
 **Important:** Pass raw bytes, not base64. Encoding happens automatically during serialization.
 
+#### `AudioContent`
+
+```julia
+AudioContent(;
+    type::String = "audio",               # Content type identifier (always "audio")
+    data::Vector{UInt8},                   # Raw audio data (NOT base64)
+    mime_type::String,                     # e.g., "audio/wav"
+    annotations::Union{Nothing,Dict{String,Any}} = nothing,  # Optional annotations
+    _meta::Union{Nothing,Dict{String,Any}} = nothing  # Optional metadata
+)
+```
+
+Available for clients speaking protocol `2025-03-26` or later.
+
 ### Advanced Content
 
 #### `EmbeddedResource`
@@ -760,13 +775,19 @@ EmbeddedResource(;
 
 ```julia
 ResourceLink(;
-    type::String = "link",                # Content type identifier (always "link")
-    href::String,                          # URL or URI of the linked resource
+    type::String = "resource_link",       # Content type identifier (always "resource_link")
+    uri::String,                           # URI of the linked resource
+    name::String,                          # Name of the resource (required)
+    description::Union{String,Nothing} = nothing,  # Optional description
+    mime_type::Union{String,Nothing} = nothing,    # Optional MIME type (serialized as mimeType)
+    size::Union{Int,Nothing} = nothing,    # Optional resource size in bytes
     title::Union{String,Nothing} = nothing,  # Optional human-readable title
     annotations::Union{Nothing,Dict{String,Any}} = nothing,  # Optional annotations
     _meta::Union{Nothing,Dict{String,Any}} = nothing  # Optional metadata
 )
 ```
+
+Serialized per the MCP spec as `{"type": "resource_link", "uri": ..., "name": ..., ...}`.
 
 ### Resource Contents
 
@@ -801,7 +822,9 @@ Return explicit results or errors from tool handlers.
 ```julia
 CallToolResult(;
     content::Vector{Dict{String,Any}},    # Serialized content dicts
-    is_error::Bool = false                # Whether this is an error
+    is_error::Bool = false,               # Whether this is an error (serialized as "isError")
+    structured_content::Union{Nothing,AbstractDict} = nothing,  # Structured output matching the tool's output_schema (serialized as "structuredContent")
+    _meta::Union{Nothing,AbstractDict} = nothing  # Optional result metadata
 )
 ```
 
@@ -861,9 +884,11 @@ HttpTransport(;
     host::String = "127.0.0.1",          # Bind address
     port::Int = 8080,                    # Port number
     endpoint::String = "/",              # Endpoint path
-    protocol_version::String = "2025-06-18",  # Must be this value
+    allowed_origins::Vector{String} = String[],  # CORS origins
+    protocol_version::String = LATEST_PROTOCOL_VERSION,  # "2025-11-25"; response headers echo the per-session negotiated version
     session_required::Bool = false,      # Require session validation
-    allowed_origins::Vector{String} = [] # CORS origins
+    auth::Union{AuthMiddleware,Nothing} = nothing,  # OAuth Resource Server token validation (nothing = disabled)
+    resource_metadata::Union{ProtectedResourceMetadata,Nothing} = nothing  # RFC 9728 Protected Resource Metadata
 )
 ```
 
@@ -1291,12 +1316,12 @@ Edit Claude Desktop config:
 
 ### Protocol Version Support
 
-ModelContextProtocol.jl **strictly enforces MCP protocol version 2025-06-18**.
+ModelContextProtocol.jl advertises **MCP protocol version 2025-11-25** and negotiates per client.
 
-- **Single Version**: Only protocol version `2025-06-18` is accepted
-- **No Negotiation**: Protocol version negotiation is not supported
-- **Automatic Handling**: The protocol version is managed internally
-- **Error on Mismatch**: Other protocol versions result in immediate error
+- **Supported Versions**: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`
+- **Negotiation**: If the client requests a supported version, the server echoes it; otherwise it responds with the latest version (per spec)
+- **Automatic Handling**: Negotiation happens internally at `initialize`; handlers can gate features with `supports(ctx.state.protocol_version, :feature)`
+- **HTTP Header**: Streamable HTTP responses echo the negotiated version in `MCP-Protocol-Version`
 
 ### API Stability Guarantees
 
@@ -1306,7 +1331,7 @@ ModelContextProtocol.jl **strictly enforces MCP protocol version 2025-06-18**.
 | Type Constructors | Stable | `MCPTool`, `MCPResource`, `MCPPrompt` |
 | Content Types | Stable | `TextContent`, `ImageContent`, etc. |
 | Transport APIs | Stable | `StdioTransport`, `HttpTransport` |
-| Handler Signatures | Stable | `Dict{String,Any} -> Content` pattern |
+| Handler Signatures | Stable | `Dict{String,Any} -> Content` pattern; opt-in two-arg `(args, ctx)` form |
 | Auto-registration | Stable | Directory-based component loading |
 | Progress Monitoring | Experimental | Limited implementation |
 | Resource Subscriptions | Not Implemented | Placeholder only |
@@ -1486,18 +1511,21 @@ start!(server)
    julia --project server.jl
    ```
 
-9. **Expecting RequestContext in handlers**
+9. **Mixing up the handler forms**
    ```julia
-   # ❌ Handlers don't receive context
-   handler = function(params, ctx)  # Wrong signature!
-       # ...
-   end
-   
-   # ✅ Only params dictionary
+   # ✅ Default: params dictionary only
    handler = function(params)
-       # Use closures for state
+       # Use closures for server-side state
+   end
+
+   # ✅ Opt-in: two-arg form receives the per-request context
+   handler = function(params, ctx)
+       send_progress(ctx, 0.5; message = "halfway")  # progress notifications
+       # ctx also carries request_id, progress_token, authenticated_user, state
    end
    ```
+   Dispatch is by `applicable` — define whichever form you need; the two-arg form
+   wins when both would apply.
 
 10. **Returning wrong Content format in CallToolResult**
     ```julia
@@ -1575,7 +1603,7 @@ transport = HttpTransport(host = "127.0.0.1", port = 3000)
 ```bash
 # Save session ID from init response
 SESSION_ID=$(curl -X POST http://127.0.0.1:3000/ \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
   | jq -r '.sessionId')
 
 # Use in subsequent requests
@@ -1737,25 +1765,33 @@ The protocol supports progress notifications, but current implementation has lim
 ## Important Implementation Notes
 
 ### Handler Parameters
-**Critical:** Tool handlers receive `Dict{String,Any}` parameters, NOT `RequestContext`:
+Tool handlers receive `Dict{String,Any}` parameters by default; a two-arg form opting into the per-request context is also supported:
 ```julia
-# ✓ Correct
+# Default: params only
 handler = function(params::Dict{String,Any})
     value = params["key"]
-    # Process the value
     result = string(value) * " processed"
     return TextContent(text = result)
 end
 
-# ✗ Incorrect - handlers don't receive RequestContext
-handler = function(params, ctx::RequestContext)
-    # This won't work
+# Opt-in: (params, ctx) receives the per-request context
+handler = function(params, ctx)
+    for i in 1:10
+        send_progress(ctx, i; total = 10, message = "step $i")
+        # ... work ...
+    end
+    return TextContent(text = "done")
 end
 ```
+`ctx` carries `request_id`, `progress_token`, `authenticated_user` (when HTTP auth is
+enabled), and `state` (for `supports(ctx.state.protocol_version, :feature)` gating).
+`send_progress` is a safe no-op when the client sent no `progressToken`. Note: do NOT
+annotate the second argument with `::RequestContext` — the type is intentionally not
+exported; just take `ctx` untyped.
 
 ### Accessing Server State from Handlers
 
-While handlers don't receive server context directly, you can use closures to access shared state:
+Beyond the per-request `ctx`, you can use closures to access shared server-side state:
 
 ```julia
 # Create shared state
@@ -1961,14 +1997,14 @@ println("Server version: ", server.config.version)
 # Test HTTP server with verbose output
 curl -v -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}},"id":1}' \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
   | jq .
 ```
 
 ## Notes
 
 ### Critical Implementation Details
-- Tool handlers receive `Dict{String,Any}` parameters (not RequestContext)
+- Tool handlers receive `Dict{String,Any}` parameters; add a second `ctx` argument to opt into the per-request context (progress, auth, negotiated version)
 - Parameters field is ALWAYS required for tools (use `[]` for no parameters)
 - Binary data in ImageContent must be raw bytes (`Vector{UInt8}`), NOT base64
 - HTTP transport requires `connect()` before `start!()`
@@ -1981,11 +2017,11 @@ curl -v -X POST http://127.0.0.1:3000/ \
 ### Type System Notes
 - Abstract types (`Content`, `Transport`, `Resource`) for extensibility
 - Concrete types use `@kwdef` for keyword constructors
-- Small dictionaries use `LittleDict` from DataStructures.jl (auto-imported)
+- Small dictionaries use `LittleDict` from OrderedCollections.jl (auto-imported)
 - URI fields accept strings but store as `URI` objects internally
 
 ### Protocol Compliance
-- Strictly enforces protocol version 2025-06-18 (no negotiation)
+- Advertises protocol version 2025-11-25, negotiating per client down to 2024-11-05
 - JSON-RPC batching not supported (returns error)
-- Session management required for HTTP transport
+- Session management available for HTTP transport (opt-in via `session_required=true`)
 - ResourceLink is new in protocol version 2025-06-18

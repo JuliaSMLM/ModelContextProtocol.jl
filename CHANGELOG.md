@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Fixed the documented MCP Inspector invocation: `inspector stdio -- <command>` made the
+  Inspector spawn a program literally named `stdio` (`spawn stdio ENOENT`, #53); the
+  server command is now passed directly (UI mode) or after `--cli`.
+- Docs audit pass against 0.5.2 reality (fixes #53 fallout plus staleness the 0.5.2
+  refresh missed): `api_overview.md` no longer claims 2025-06-18-only/no-negotiation,
+  teaches the current `ResourceLink` shape (`uri`/`name`, wire type `resource_link`),
+  documents `AudioContent`, `CallToolResult.structured_content`/`_meta`, OAuth kwargs on
+  `HttpTransport`, and the two-arg `(args, ctx)` handler form it previously called
+  invalid; `docs/src/api.md` drops the stale "ResourceLink not yet exported" note;
+  `examples/README.md` drops references to example files that don't exist;
+  `examples/CLAUDE.md` and `docs/CLAUDE.md` templates rewritten from the fictional
+  `Server(...)`/`add_tool!` API to the real `mcp_server`/`register!` API.
+- Resource docs now state the actual `data_provider` contract (called with no arguments,
+  return value JSON-encoded into text contents) and the current limitations (exact-URI
+  matching only; no binary contents via `resources/read` — see #59); the previous
+  `data_provider = function(uri)` examples returning `TextResourceContents`/
+  `BlobResourceContents` never worked.
+- `simple_http_server.jl` and `reg_dir_http.jl` no longer print a hardcoded stale
+  protocol version; they report `LATEST_PROTOCOL_VERSION`.
+
 ## [0.5.2] - 2026-06-09
 
 ### Added

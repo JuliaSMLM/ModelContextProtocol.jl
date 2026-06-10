@@ -6,14 +6,19 @@ This directory contains the ModelContextProtocol.jl package documentation using 
 
 ```
 docs/
-├── Project.toml      # Documentation-specific dependencies
-├── make.jl          # Build configuration
-├── src/             # Markdown source files
-│   ├── index.md     # Home page
-│   ├── api.md       # API reference
-│   ├── guide.md     # User guide
-│   └── protocol.md  # MCP protocol details
-└── build/           # Generated documentation (gitignored)
+├── Project.toml             # Documentation-specific dependencies
+├── make.jl                  # Build configuration
+├── src/                     # Markdown source files
+│   ├── index.md             # Home page
+│   ├── examples.md          # Worked examples
+│   ├── tools.md             # User guide: tools
+│   ├── resources.md         # User guide: resources
+│   ├── prompts.md           # User guide: prompts
+│   ├── transports.md        # User guide: transports
+│   ├── auto-registration.md # User guide: auto-registration
+│   ├── claude.md            # Integration: Claude Desktop
+│   └── api.md               # API reference
+└── build/                   # Generated documentation (gitignored)
 ```
 
 ## Setting Up Documentation
@@ -30,34 +35,49 @@ HTTP = "..."   # For HTTP examples
 
 ### docs/make.jl Structure
 
-Current configuration:
+Current configuration (see `docs/make.jl` for the authoritative version):
 ```julia
 using Documenter
 using ModelContextProtocol
 
 # Set up doctests
-DocMeta.setdocmeta!(ModelContextProtocol, :DocTestSetup, 
+DocMeta.setdocmeta!(ModelContextProtocol, :DocTestSetup,
     :(using ModelContextProtocol); recursive=true)
 
-makedocs(
-    sitename = "ModelContextProtocol.jl",
-    format = Documenter.HTML(
-        prettyurls = get(ENV, "CI", nothing) == "true",
-        canonical = "https://juliasmlm.github.io/ModelContextProtocol.jl/stable/",
-    ),
+makedocs(;
     modules = [ModelContextProtocol],
+    sitename = "ModelContextProtocol.jl",
+    format = Documenter.HTML(;
+        prettyurls = get(ENV, "CI", "false") == "true",
+        canonical = "https://JuliaSMLM.github.io/ModelContextProtocol.jl",
+        size_threshold_ignore = ["api.md"],  # api.md aggregates every docstring
+    ),
     pages = [
         "Home" => "index.md",
-        "User Guide" => "guide.md",
-        "Protocol" => "protocol.md",
+        "Examples" => "examples.md",
+        "User Guide" => [
+            "Tools" => "tools.md",
+            "Resources" => "resources.md",
+            "Prompts" => "prompts.md",
+            "Transports" => "transports.md",
+            "Auto-Registration" => "auto-registration.md",
+        ],
+        "Integration" => [
+            "Claude Desktop" => "claude.md",
+        ],
         "API Reference" => "api.md",
     ],
+    doctest = true,
+    linkcheck = true,
+    warnonly = true,
+    checkdocs = :exports,
 )
 
 # Deploy docs (from CI)
-deploydocs(
-    repo = "github.com/JuliaSMLM/ModelContextProtocol.jl.git",
+deploydocs(;
+    repo = "github.com/JuliaSMLM/ModelContextProtocol.jl",
     devbranch = "main",
+    push_preview = true,
 )
 ```
 
@@ -70,8 +90,8 @@ deploydocs(
 Julia implementation of the Model Context Protocol (MCP) for seamless LLM-application integration.
 
 ## Features
-- Full MCP 2025-06-18 protocol support
-- stdio and HTTP/SSE transports
+- MCP 2025-11-25 protocol support with per-client version negotiation
+- stdio and Streamable HTTP (+SSE) transports
 - Tools, Resources, and Prompts
 - Multi-content returns
 - Session management
@@ -85,19 +105,22 @@ Pkg.add("ModelContextProtocol")
 
 ## Quick Start
 
-```@example
+```julia
 using ModelContextProtocol
 
-# Create a simple MCP server
-server = Server("my-server", "1.0.0")
+# Create a simple MCP server with a tool
+server = mcp_server(
+    name = "my-server",
+    version = "1.0.0",
+    tools = MCPTool(
+        name = "hello",
+        description = "Say hello",
+        parameters = [],
+        handler = p -> TextContent(text = "Hello!")
+    )
+)
 
-# Add a tool
-add_tool!(server, MCPTool(
-    name = "hello",
-    handler = p -> TextContent(text = "Hello!")
-))
-
-# Start server (stdio by default)
+# Start server (stdio by default; blocks)
 start!(server)
 ```
 ```
@@ -114,7 +137,7 @@ Structure for comprehensive guide:
 ```@example
 using ModelContextProtocol
 
-server = Server(
+server = mcp_server(
     name = "example-server",
     version = "1.0.0"
 )
@@ -155,7 +178,8 @@ curl -X POST http://127.0.0.1:3000/ ...
 # MCP Protocol Details
 
 ## Protocol Version
-ModelContextProtocol.jl implements MCP specification version `2025-06-18`.
+ModelContextProtocol.jl targets MCP specification version `2025-11-25`, negotiating
+per client down through `2025-06-18` and `2025-03-26` to `2024-11-05`.
 
 ## JSON-RPC 2.0
 All communication uses JSON-RPC 2.0...
@@ -212,11 +236,10 @@ ModelContextProtocol.HttpTransport
 
 ### Functions
 ```@docs
-ModelContextProtocol.add_tool!
-ModelContextProtocol.add_resource!
-ModelContextProtocol.add_prompt!
+ModelContextProtocol.mcp_server
+ModelContextProtocol.register!
 ModelContextProtocol.start!
-ModelContextProtocol.register_directory!
+ModelContextProtocol.stop!
 ```
 
 ## Internal API
@@ -236,15 +259,20 @@ Public = false
 ```@example server
 using ModelContextProtocol
 
-# Create server with HTTP transport
-transport = HttpTransport(host="127.0.0.1", port=3000)
-server = Server("docs-example", "1.0.0", transport=transport)
+# Create server with components
+server = mcp_server(
+    name = "docs-example",
+    version = "1.0.0",
+    tools = MCPTool(
+        name = "example",
+        description = "Example tool",
+        parameters = [],
+        handler = p -> TextContent(text = "Example output")
+    )
+)
 
-# Add components
-add_tool!(server, MCPTool(
-    name = "example",
-    handler = p -> TextContent(text = "Example output")
-))
+# Attach an HTTP transport (stdio is the default when none is set)
+server.transport = HttpTransport(host="127.0.0.1", port=3000)
 
 server  # Display server info
 ```
@@ -273,17 +301,18 @@ JSON3.pretty(request)
 Add verified examples to docstrings:
 ```julia
 """
-    add_tool!(server::Server, tool::MCPTool)
+    register!(server::Server, tool::MCPTool)
 
 Add a tool to the MCP server.
 
 # Examples
 ```jldoctest
-julia> server = Server("test", "1.0.0");
+julia> server = mcp_server(name="test", version="1.0.0");
 
-julia> tool = MCPTool(name="test", handler=p->TextContent(text="ok"));
+julia> tool = MCPTool(name="test", description="demo", parameters=[],
+                      handler=p->TextContent(text="ok"));
 
-julia> add_tool!(server, tool);
+julia> register!(server, tool);
 
 julia> length(server.tools)
 1
@@ -300,11 +329,11 @@ julia> length(server.tools)
 
 2. **Cross-references**:
    - Link to types: `[`Server`](@ref ModelContextProtocol.Server)`
-   - Link to functions: `[`add_tool!`](@ref)`
+   - Link to functions: `[`register!`](@ref)`
    - Link to sections: `[User Guide](@ref)`
 
 3. **Protocol Details**:
-   - Always mention protocol version `2025-06-18`
+   - State the latest protocol version (`2025-11-25`) and that it is negotiated per client
    - Show JSON examples for protocol messages
    - Include curl commands for testing
 
@@ -363,7 +392,7 @@ Documentation builds and deploys via GitHub Actions:
 ## Documentation Standards
 
 ### For MCP-Specific Docs
-- Always specify protocol version `2025-06-18`
+- Specify the latest protocol version (`2025-11-25`) and the negotiation floor (`2024-11-05`)
 - Include both stdio and HTTP examples
 - Show Inspector CLI and curl testing methods
 - Document session management for HTTP

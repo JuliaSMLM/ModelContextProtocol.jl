@@ -52,7 +52,7 @@ julia --project examples/simple_http_server.jl
 ### Testing stdio Servers
 ```bash
 # Direct JSON-RPC test
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | \
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | \
   julia --project examples/time_server.jl 2>/dev/null | jq .
 
 # With MCP Inspector CLI
@@ -69,9 +69,9 @@ julia --project examples/simple_http_server.jl
 # Test with curl (in another terminal)
 curl -X POST http://127.0.0.1:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18"},"id":1}' | jq .
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25"},"id":1}' | jq .
 
 # With MCP Inspector CLI (via mcp-remote)
 npx @modelcontextprotocol/inspector --cli \
@@ -87,20 +87,10 @@ npx @modelcontextprotocol/inspector --cli \
 # No Pkg.activate needed - examples use main project environment
 using ModelContextProtocol
 
-# Create server
-server = Server(
-    name = "example-server",
-    version = "1.0.0"
-)
-
-# Add a simple tool
-add_tool!(server, MCPTool(
+# Define a tool
+hello_tool = MCPTool(
     name = "hello",
     description = "Say hello",
-    handler = function(params)
-        name = get(params, "name", "World")
-        return TextContent(text = "Hello, $name!")
-    end,
     parameters = [
         ToolParameter(
             name = "name",
@@ -108,23 +98,34 @@ add_tool!(server, MCPTool(
             description = "Name to greet",
             required = false
         )
-    ]
-))
+    ],
+    handler = function(params)
+        name = get(params, "name", "World")
+        return TextContent(text = "Hello, $name!")
+    end
+)
 
-# Add a resource
-add_resource!(server, MCPResource(
+# Define a resource (data_provider takes no arguments; its return value
+# is JSON-encoded into the resource contents)
+data_resource = MCPResource(
     uri = "example://data",
     name = "Example Data",
-    handler = function(uri)
-        return TextContent(
-            text = "This is example data",
-            uri = uri
-        )
-    end
-))
+    description = "Static example data",
+    mime_type = "application/json",
+    data_provider = () -> Dict("data" => "This is example data")
+)
+
+# Create server with components
+server = mcp_server(
+    name = "example-server",
+    version = "1.0.0",
+    tools = [hello_tool],
+    resources = [data_resource]
+)
 
 # Start server (stdio by default)
-println("Starting example MCP server...")
+# Note: use stderr for status output - stdout carries the JSON-RPC stream
+println(stderr, "Starting example MCP server...")
 start!(server)
 ```
 
@@ -133,21 +134,20 @@ start!(server)
 #!/usr/bin/env julia
 using ModelContextProtocol
 
-# Create HTTP transport
+# Create server with components (tools/resources/prompts as in the stdio example)
+server = mcp_server(
+    name = "http-example",
+    version = "1.0.0",
+    tools = [hello_tool]
+)
+
+# Create HTTP transport, attach it, and connect before start!
 transport = HttpTransport(
     host = "127.0.0.1",
     port = 3000
 )
-
-# Create server with HTTP transport
-server = Server(
-    name = "http-example",
-    version = "1.0.0",
-    transport = transport
-)
-
-# Add components...
-# (same as stdio example)
+server.transport = transport
+ModelContextProtocol.connect(transport)
 
 println("Starting HTTP server on http://127.0.0.1:3000")
 println("Test with: curl -X POST http://127.0.0.1:3000/ ...")
@@ -159,17 +159,18 @@ start!(server)
 #!/usr/bin/env julia
 using ModelContextProtocol
 
-# Create server
-server = Server("auto-reg-example", "1.0.0")
+# Components are auto-registered during server creation
+components_dir = joinpath(@__DIR__, "mcp_tools")
+server = mcp_server(
+    name = "auto-reg-example",
+    version = "1.0.0",
+    auto_register_dir = components_dir
+)
 
-# Auto-register from directory
-components_dir = joinpath(@__DIR__, "example_components")
-register_directory!(server, components_dir)
-
-println("Registered components from: $components_dir")
-println("Tools: ", [t.name for t in server.tools])
-println("Resources: ", [r.name for r in server.resources])
-println("Prompts: ", [p.name for p in server.prompts])
+println(stderr, "Registered components from: $components_dir")
+println(stderr, "Tools: ", [t.name for t in server.tools])
+println(stderr, "Resources: ", [r.name for r in server.resources])
+println(stderr, "Prompts: ", [p.name for p in server.prompts])
 
 start!(server)
 ```
@@ -204,12 +205,11 @@ using ModelContextProtocol
 MCPResource(
     uri = "example://resource",
     name = "Example Resource",
-    mime_type = "text/plain",
-    handler = function(uri)
-        return TextContent(
-            text = "Resource content",
-            uri = uri
-        )
+    description = "Example resource data",
+    mime_type = "application/json",
+    data_provider = function()
+        # Called with no arguments; return the resource data
+        return Dict("content" => "Resource content")
     end
 )
 ```
@@ -221,18 +221,17 @@ using ModelContextProtocol
 MCPPrompt(
     name = "example_prompt",
     description = "An example prompt",
-    handler = function(params)
-        user_input = get(params, "input", "default")
-        return PromptMessage(
-            role = "user",
-            content = TextContent(text = "Prompt with: $user_input")
-        )
-    end,
     arguments = [
         PromptArgument(
             name = "input",
             description = "User input",
             required = false
+        )
+    ],
+    messages = [
+        PromptMessage(
+            role = ModelContextProtocol.user,  # Role enum
+            content = TextContent(text = "Prompt with: {input}")
         )
     ]
 )
@@ -248,11 +247,11 @@ MCPPrompt(
 ### Console Output
 Examples should provide clear feedback:
 ```julia
-println("Starting server: $(server.name) v$(server.version)")
-println("Transport: $(typeof(server.transport))")
-println("Registered $(length(server.tools)) tools")
-println("Registered $(length(server.resources)) resources")
-println("Registered $(length(server.prompts)) prompts")
+println(stderr, "Starting server: $(server.config.name) v$(server.config.version)")
+println(stderr, "Transport: $(typeof(server.transport))")
+println(stderr, "Registered $(length(server.tools)) tools")
+println(stderr, "Registered $(length(server.resources)) resources")
+println(stderr, "Registered $(length(server.prompts)) prompts")
 ```
 
 ## Best Practices
@@ -271,7 +270,7 @@ Before adding a new example, verify:
 - [ ] Works with direct JSON-RPC testing
 - [ ] Works with MCP Inspector CLI
 - [ ] Handles errors gracefully
-- [ ] Uses protocol version `2025-06-18`
+- [ ] Works against the negotiated protocol version (latest `2025-11-25`)
 - [ ] Has clear console output
 - [ ] Includes helpful comments
 - [ ] Follows naming conventions

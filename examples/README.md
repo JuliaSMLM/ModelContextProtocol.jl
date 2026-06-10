@@ -10,29 +10,16 @@ This directory contains example implementations of MCP servers demonstrating var
   - Good starting point for local MCP servers
 
 ### Streamable HTTP Transport
-Following the MCP Streamable HTTP specification (protocol version 2025-06-18):
+Following the MCP Streamable HTTP specification (latest protocol version 2025-11-25):
 
 - **`simple_http_server.jl`** - Simplest Streamable HTTP server
   - Basic tools (echo, greet)
   - Minimal configuration
   - Good for testing with MCP Inspector
 
-- **`streamable_http_basic.jl`** - Basic Streamable HTTP setup
-  - Shows standard server configuration
-  - Simple tool registration
-
-- **`streamable_http_demo.jl`** - Full-featured Streamable HTTP demonstration
-  - Server-Sent Events (SSE) streaming
-  - Session management with `Mcp-Session-Id`
-  - Protocol version negotiation
-  - Security features (Origin validation)
-  - Notification support (202 Accepted)
-  - Real-time data streaming examples
-
-- **`streamable_http_advanced.jl`** - Advanced HTTP usage
-  - Direct HTTP API interaction
-  - Low-level transport control
-  - Custom request/response handling
+- **`reg_dir_http.jl`** - Auto-registration over Streamable HTTP
+  - Loads tools/resources/prompts from the `mcp_tools/` directory
+  - Same component model as `reg_dir.jl`, served over HTTP
 
 ## Feature Examples
 
@@ -40,12 +27,11 @@ Following the MCP Streamable HTTP specification (protocol version 2025-06-18):
   - Shows how to return text, images, and mixed content
   - Useful for complex tool responses
 
-- **`test_http_client.jl`** - HTTP client for testing servers
-  - Shows how to interact with MCP servers via HTTP
-  - Useful for debugging and testing
+- **`complex_schema_server.jl`** - Advanced JSON Schema tool inputs
+  - Raw `input_schema` with arrays, enums, and nested objects
 
-- **`reg_dir.jl`** - Directory registration example
-  - Shows resource management patterns
+- **`reg_dir.jl`** - Directory registration example (stdio)
+  - Auto-registers components from `mcp_tools/` subdirectories
 
 ## Running Examples
 
@@ -62,7 +48,7 @@ julia --project examples/simple_http_server.jl
 # In another terminal, test with curl:
 curl -X POST http://localhost:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}'
 
 # Or use MCP Inspector:
@@ -72,23 +58,18 @@ npx @modelcontextprotocol/inspector
 
 ### Testing SSE Streaming
 ```bash
-# Start the streaming demo
-julia --project examples/streamable_http_demo.jl
+# Start an HTTP server
+julia --project examples/simple_http_server.jl
 
-# Connect SSE client
-curl -N -H 'Accept: text/event-stream' http://localhost:3001/
-
-# Trigger streaming in another terminal
-curl -X POST http://localhost:3001/ \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"stream_data"},"id":1}'
+# Connect an SSE client for server-to-client notifications
+curl -N -H 'Accept: text/event-stream' http://localhost:3000/
 ```
 
 ## Protocol Information
 
 These examples implement the **Streamable HTTP** transport specification, which replaced the deprecated HTTP+SSE transport from protocol version 2024-11-05.
 
-Current protocol version: **2025-06-18**
+Current protocol version: **2025-11-25** (negotiated per client, down to 2024-11-05)
 
 Key features of Streamable HTTP:
 - Single endpoint for POST and GET
@@ -100,7 +81,7 @@ Key features of Streamable HTTP:
 ## Development Tips
 
 1. Start with `simple_http_server.jl` for basic HTTP setup
-2. Use `streamable_http_demo.jl` to understand advanced features
+2. Use `reg_dir_http.jl` to understand component auto-registration over HTTP
 3. Test with MCP Inspector for visual debugging
 4. Use curl for manual testing and debugging
 5. Check server logs (stderr) for debugging information

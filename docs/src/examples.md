@@ -137,24 +137,18 @@ using ModelContextProtocol
 using URIs  # For URI construction
 
 # Create a resource with a custom data provider
+# (called with no arguments; the return value is JSON-encoded into the contents)
 config_resource = MCPResource(
     uri = URI("config://app/settings"),
     name = "Application Settings",
     description = "Current application configuration",
     mime_type = "application/json",
-    data_provider = function(uri)
+    data_provider = function ()
         # In real implementation, read from actual config
-        config_json = """
-        {
-            "theme": "dark",
-            "language": "en",
-            "debug": false
-        }
-        """
-        return TextResourceContents(
-            uri = uri,
-            text = config_json,
-            mime_type = "application/json"
+        return Dict(
+            "theme" => "dark",
+            "language" => "en",
+            "debug" => false
         )
     end,
     annotations = Dict{String,Any}()
@@ -165,15 +159,10 @@ file_resource = MCPResource(
     uri = URI("file:///readme.txt"),
     name = "README File",
     description = "Project readme file",
-    mime_type = "text/plain",
-    data_provider = function(uri)
+    mime_type = "application/json",
+    data_provider = function ()
         # In real implementation, read the actual file
-        content = "# Project README\n\nThis is the readme content."
-        return TextResourceContents(
-            uri = uri,
-            text = content,
-            mime_type = "text/plain"
-        )
+        return Dict("content" => "# Project README\n\nThis is the readme content.")
     end
 )
 
@@ -458,7 +447,7 @@ sleep 5
 # Test initialization
 curl -X POST http://127.0.0.1:8765/ \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}'
 
 # Save session ID from response, then test tool listing
 curl -X POST http://127.0.0.1:8765/ \

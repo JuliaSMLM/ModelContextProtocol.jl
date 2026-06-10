@@ -108,48 +108,32 @@ server = mcp_server(
 
 ## Advanced Examples
 
-### Resource with Dynamic URI Patterns
+### Resource with Dynamic Data
+
+The `data_provider` is called with no arguments on every `resources/read`, and its
+return value is JSON-encoded into the resource contents:
 
 ```julia
-# Support URIs like file://path/to/file.txt
-file_resource = MCPResource(
-    uri = "file://*",
-    name = "File System Access",
-    description = "Access local files",
-    mime_type = "text/plain",
-    data_provider = function(uri::String)
-        # Extract path from URI
-        path = replace(uri, "file://" => "")
-        
-        if isfile(path)
-            content = read(path, String)
-            return TextResourceContents(
-                uri = uri,
-                text = content,
-                mime_type = "text/plain"
-            )
-        else
-            error("File not found: $path")
-        end
+log_resource = MCPResource(
+    uri = "app://logs/recent",
+    name = "Recent Log Entries",
+    description = "The most recent application log entries",
+    mime_type = "application/json",
+    data_provider = function ()
+        entries = isfile("app.log") ?
+            collect(Iterators.take(eachline("app.log"), 50)) : String[]
+        return Dict("count" => length(entries), "entries" => entries)
     end
 )
 ```
 
-### Resource with Binary Data
+### Current Limitations
 
-```julia
-image_resource = MCPResource(
-    uri = "images://logo",
-    name = "Logo Image",
-    description = "Company logo",
-    mime_type = "image/png",
-    data_provider = function(uri::String)
-        image_data = read("logo.png")  # Returns Vector{UInt8}
-        return BlobResourceContents(
-            uri = uri,
-            blob = image_data,
-            mime_type = "image/png"
-        )
-    end
-)
-```
+- Resources are matched by **exact URI**; wildcard or template URIs (e.g. `file://*`)
+  are not routed to providers.
+- The read path always JSON-encodes the provider's return value into a text contents
+  entry with the resource's declared `mime_type`. Returning `TextResourceContents` or
+  `BlobResourceContents` directly is not yet supported, so binary resources cannot be
+  served via `resources/read` today.
+- To deliver binary data, use a tool that returns `ImageContent`/`AudioContent` or an
+  `EmbeddedResource` instead.

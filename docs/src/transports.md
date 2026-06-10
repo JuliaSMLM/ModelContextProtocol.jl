@@ -86,14 +86,14 @@ HTTP transport uses session-based communication for security and state tracking:
 # Initialize and get session ID
 curl -X POST http://localhost:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}' \
   -i
 
 # Use session ID in subsequent requests  
 curl -X POST http://localhost:3000/ \
   -H 'Content-Type: application/json' \
-  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
   -H 'Mcp-Session-Id: <session-id-from-response>' \
   -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}'
 ```

@@ -56,12 +56,10 @@ ResourceContents
 ```@docs
 TextContent
 ImageContent
+AudioContent
 EmbeddedResource
+ResourceLink
 ```
-
-!!! note "ResourceLink"
-    `ResourceLink` is part of the 2025-06-18 protocol but not yet exported.
-    It will be available in a future release.
 
 ### Resource Content Types
 
