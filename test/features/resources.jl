@@ -71,6 +71,25 @@
         @test cs[2]["blob"] == base64encode(png) && cs[2]["uri"] == "test://bundle/raw"
     end
 
+    @testset "resources/read edge returns keep the JSON fallback" begin
+        # custom ResourceContents subtypes are not wire types: JSON fallback, not an error
+        struct _FakeContents <: ModelContextProtocol.ResourceContents end
+        custom = MCPResource(uri = "test://custom", name = "custom",
+                             data_provider = () -> _FakeContents())
+        # empty vectors carry no usable contents: JSON fallback ("[]")
+        empty_v = MCPResource(uri = "test://empty", name = "empty",
+                              data_provider = () -> TextResourceContents[])
+        server = mcp_server(name = "test", version = "1.0.0", resources = [custom, empty_v])
+        ctx = RequestContext(server = server, request_id = 1)
+
+        r1 = handle_read_resource(ctx, ReadResourceParams(uri = "test://custom"))
+        @test isnothing(r1.error)
+        @test haskey(r1.response.result.contents[1], "text")
+
+        r2 = handle_read_resource(ctx, ReadResourceParams(uri = "test://empty"))
+        @test r2.response.result.contents[1]["text"] == "[]"
+    end
+
     @testset "resources/read String returns are verbatim text" begin
         plain = MCPResource(
             uri = "test://motd",

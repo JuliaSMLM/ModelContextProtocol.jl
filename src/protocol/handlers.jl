@@ -607,14 +607,17 @@ function handle_read_resource(ctx::RequestContext, params::ReadResourceParams)::
         data = resource.data_provider()
 
         # Normalize the provider's return value into spec contents entries:
-        # - ResourceContents (or a vector of them) serialize directly — the only
-        #   path that can produce binary `blob` contents
+        # - TextResourceContents/BlobResourceContents (or a vector of them)
+        #   serialize directly — the only path that can produce binary `blob`
+        #   contents. Dispatch is on the two concrete spec types, so a custom
+        #   ResourceContents subtype falls through to the JSON fallback instead
+        #   of erroring inside serialize_resource_contents.
         # - a String becomes the text verbatim (with the resource's mime type)
         # - anything else keeps the JSON-encoded fallback
-        contents = if data isa ResourceContents
+        wire_contents = Union{TextResourceContents,BlobResourceContents}
+        contents = if data isa wire_contents
             [serialize_resource_contents(data)]
-        elseif data isa Vector{<:ResourceContents} ||
-               (data isa Vector && !isempty(data) && all(x -> x isa ResourceContents, data))
+        elseif data isa Vector && !isempty(data) && all(x -> x isa wire_contents, data)
             [serialize_resource_contents(x) for x in data]
         else
             [LittleDict{String,Any}(

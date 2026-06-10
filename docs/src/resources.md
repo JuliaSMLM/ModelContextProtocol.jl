@@ -37,17 +37,19 @@ Note: The `uri` field accepts both strings and URI objects. Strings are automati
 
 ## Data Providers
 
-The `data_provider` function can return different types of data:
+The `data_provider` is a **zero-argument** function called on every `resources/read`.
+It can return different types of data:
 
 1. **For simple data (automatically serialized to JSON)**:
    - Return Julia objects (Dict, Array, etc.) that can be JSON-serialized
-   - These are wrapped in `TextResourceContents` with JSON serialization
+   - These become a text contents entry with the resource's `mime_type`
 
-2. **For explicit control over content**:
+2. **For verbatim text**: return a `String` — used as the text contents as-is
+
+3. **For explicit control over content** (including binary):
    - Return `TextResourceContents` for text data
-   - Return `BlobResourceContents` for binary data
-   
-The `data_provider` receives the requested URI as a parameter when using wildcards.
+   - Return `BlobResourceContents` for binary data (base64 `blob` on the wire)
+   - Return a `Vector` of them for multiple contents entries
 
 ## Registering Resources
 
