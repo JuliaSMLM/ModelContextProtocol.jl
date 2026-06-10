@@ -421,3 +421,13 @@ for the task's lifetime.
     Tasks are experimental in the MCP spec and may evolve in future protocol
     versions. Client-initiated task flows (`input_required`, task-augmented
     elicitation/sampling) are not applicable server-side and are not implemented.
+
+!!! tip "CPU-bound task handlers"
+    Task handlers run via `Threads.@spawn`. In our measurements (Julia 1.10 and
+    1.12, single-threaded server processes), even CPU-bound handlers did not
+    starve the request loop — long blocking `tasks/result` calls, polling, and
+    cancellation stayed responsive while a busy handler ran. Still, Julia's
+    scheduler cannot preempt a loop with no yield points, so for servers running
+    heavy compute tools the robust configuration is to start Julia with threads
+    (`julia -t auto`) and/or call `yield()` (or `task_cancelled(ctx)`, which is
+    also a natural cancellation point) periodically inside hot loops.
