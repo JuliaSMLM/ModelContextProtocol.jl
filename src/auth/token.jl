@@ -351,8 +351,13 @@ function fetch_jwks_http_body(url::String)
     # HTTP.open returns the Response, not the closure's value, so capture the body
     # into a closed-over variable. It stays `nothing` on non-200 or oversize, both of
     # which leave callers failing closed.
+    #
+    # Accept-Encoding identity: this raw stream read bypasses HTTP.jl's transparent
+    # decompression, so a gzip-encoded body (e.g. any CDN/proxy in front of the AS)
+    # would arrive compressed and fail JSON parsing. Ask for the bytes uncompressed.
     body = nothing
-    HTTP.open("GET", url; connect_timeout=10, readtimeout=10, retry=false) do io
+    HTTP.open("GET", url, ["Accept-Encoding" => "identity", "Accept" => "application/json"];
+              connect_timeout=10, readtimeout=10, retry=false) do io
         HTTP.startread(io)
         HTTP.status(io.message) == 200 || return
         buf = IOBuffer()

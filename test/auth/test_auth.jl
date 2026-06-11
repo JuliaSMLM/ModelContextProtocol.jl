@@ -648,3 +648,34 @@ end
         @test validate_token(v, string(jwt), cfg).success
     end
 end
+
+@testset "JWKSValidator - gzip-encoding proxy (live-tunnel finding)" begin
+    # Live-spike finding: CDNs/proxies in front of an AS gzip the JWKS when the client
+    # advertises gzip (HTTP.jl default). The raw streaming read bypasses HTTP.jl's
+    # transparent decompression, so the fetch must request identity encoding. This
+    # server emulates the proxy contract: it serves valid JSON only when the client
+    # explicitly asked for identity, and garbage "compressed" bytes otherwise.
+    small = read(joinpath(@__DIR__, "fixtures", "jwks_test.json"), String)
+    port = rand(20000:40000)
+    server = HTTP.serve!("127.0.0.1", port; stream = true) do http
+        enc = HTTP.header(http.message, "Accept-Encoding", "")
+        HTTP.setstatus(http, 200)
+        HTTP.setheader(http, "Content-Type" => "application/json")
+        HTTP.startwrite(http)
+        if occursin("identity", enc)
+            write(http, small)
+        else
+            HTTP.setheader(http, "Content-Encoding" => "gzip")
+            write(http, UInt8[0x1f, 0x8b, 0x00, 0x00])  # gzip magic + junk: unparseable as JSON
+        end
+    end
+    try
+        sleep(0.3)
+        body = ModelContextProtocol.fetch_jwks_http_body("http://127.0.0.1:$port/jwks.json")
+        @test body !== nothing
+        keys = ModelContextProtocol.fetch_jwks_keys("http://127.0.0.1:$port/jwks.json")
+        @test keys !== nothing && length(keys) == 1
+    finally
+        HTTP.close(server)
+    end
+end
