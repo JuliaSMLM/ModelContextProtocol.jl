@@ -619,3 +619,32 @@ end
         end
     end
 end
+
+@testset "JWKSValidator - real-world JWKS with encryption keys (Keycloak shape)" begin
+    # Live-Keycloak finding: JWKS documents commonly include use="enc" keys (RSA-OAEP)
+    # alongside the signing keys. They can never verify a token and must be filtered
+    # out (JWTs.refresh! would warn on every fetch otherwise).
+    fixture_dir = joinpath(@__DIR__, "fixtures")
+    sig_entry = JSON3.read(read(joinpath(fixture_dir, "jwks_test.json"), String))["keys"][1]
+    mktempdir() do dir
+        mixed = joinpath(dir, "jwks.json")
+        enc_entry = Dict("kty" => "RSA", "kid" => "enc-key-1", "use" => "enc",
+                         "alg" => "RSA-OAEP", "n" => sig_entry["n"], "e" => sig_entry["e"])
+        write(mixed, JSON3.write(Dict("keys" => [enc_entry, Dict(sig_entry)])))
+        keys = ModelContextProtocol.fetch_jwks_keys("file://" * mixed)
+        @test keys !== nothing
+        @test length(keys) == 1  # enc entry filtered
+        @test keys[1]["kid"] == "test-key-1"
+        # And the validator still verifies a real signed token from the mixed document
+        JWTs = ModelContextProtocol.JWTs
+        _MbedTLS = JWTs.MbedTLS
+        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, "jwks_test_key.pem")))
+        jwt = JWTs.JWT(payload = Dict{String,Any}(
+            "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "u",
+            "exp" => round(Int, datetime2unix(now(UTC))) + 3600))
+        JWTs.sign!(jwt, signing_key, "test-key-1")
+        v = JWKSValidator("file://" * mixed)
+        cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
+        @test validate_token(v, string(jwt), cfg).success
+    end
+end

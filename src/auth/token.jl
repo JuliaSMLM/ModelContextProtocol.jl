@@ -328,8 +328,12 @@ function fetch_jwks_keys(url::String)
         end
         parsed = JSON3.read(body)
         haskey(parsed, "keys") || return nothing
+        # Keep signature keys only: real-world JWKS documents (e.g. Keycloak) also
+        # publish encryption keys (use="enc", alg=RSA-OAEP) that can never verify a
+        # token and make JWTs.refresh! warn on every fetch.
         # JWTs.refresh! expects plain Dicts (JSON.parse shape); JWK fields are flat strings
-        return [Dict{String,Any}(String(k) => v for (k, v) in pairs(key)) for key in parsed["keys"]]
+        return [Dict{String,Any}(String(k) => v for (k, v) in pairs(key))
+                for key in parsed["keys"] if get(key, "use", "sig") == "sig"]
     catch e
         @debug "JWKS fetch failed" url=url error=e
         return nothing
