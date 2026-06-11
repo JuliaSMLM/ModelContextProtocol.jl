@@ -388,3 +388,142 @@ end
     @test whoami(alice) == "alice"
     @test whoami(nothing) == "anon"
 end
+
+@testset "JWKSValidator - signature verification (RFC 7517)" begin
+    JWTs = ModelContextProtocol.JWTs
+    _MbedTLS = JWTs.MbedTLS
+    fixture_dir = joinpath(@__DIR__, "fixtures")
+    fixture_url(name) = "file://" * abspath(joinpath(fixture_dir, name))
+
+    # Signing helpers backed by the committed fixture keypairs (test-only keys)
+    _sign(payload; key_pem, kid) = begin
+        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, key_pem)))
+        jwt = JWTs.JWT(payload = payload)
+        JWTs.sign!(jwt, signing_key, kid)
+        string(jwt)
+    end
+    future = round(Int, datetime2unix(now(UTC))) + 3600
+    past = round(Int, datetime2unix(now(UTC))) - 3600
+    base_claims(; overrides...) = merge(Dict{String,Any}(
+        "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "user-1",
+        "exp" => future, "preferred_username" => "alice", "scope" => "mcp:read mcp:write",
+    ), Dict{String,Any}(string(k) => v for (k, v) in overrides))
+    cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
+    valid_token = _sign(base_claims(); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+
+    @testset "construction is lazy (no fetch)" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        @test isempty(v.keyset.keys)
+        @test v.allowed_algs == ["RS256", "RS384", "RS512"]
+    end
+
+    @testset "valid signed token accepted with claims" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        result = validate_token(v, valid_token, cfg)
+        @test result.success
+        @test result.user.subject == "user-1"
+        @test result.user.username == "alice"
+        @test "mcp:read" in result.user.scopes
+        @test !isempty(v.keyset.keys)  # lazy fetch happened on first use
+    end
+
+    @testset "tampered payload and signature rejected" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        h, p, s = split(valid_token, ".")
+        # Forged payload (admin claims) with the original signature
+        forged_payload = replace(String(p), r"^." => "A")
+        @test !validate_token(v, "$h.$forged_payload.$s", cfg).success
+        # Corrupted signature
+        @test validate_token(v, "$h.$p.$(reverse(String(s)))", cfg).error_code == :invalid_token
+        # Empty signature
+        @test validate_token(v, "$h.$p.", cfg).error_code == :invalid_token
+    end
+
+    @testset "token signed by the wrong key rejected" begin
+        # Signed with key 2 but claiming kid test-key-1 (kid spoofing)
+        spoofed = _sign(base_claims(); key_pem = "jwks_test_key2.pem", kid = "test-key-1")
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        @test validate_token(v, spoofed, cfg).error_code == :invalid_token
+    end
+
+    @testset "header gate: alg/kid policy before crypto" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        _b64url(s) = replace(base64encode(s), "+" => "-", "/" => "_", "=" => "")
+        payload_b64 = _b64url(JSON3.write(base_claims()))
+        # alg=none
+        none_token = "$(_b64url("""{"alg":"none","kid":"test-key-1"}"""))" * ".$payload_b64."
+        @test validate_token(v, none_token, cfg).error_code == :invalid_token
+        # alg not allowlisted (HS256)
+        hs_token = "$(_b64url("""{"alg":"HS256","kid":"test-key-1"}"""))" * ".$payload_b64.AAAA"
+        @test validate_token(v, hs_token, cfg).error_code == :invalid_token
+        # kid missing
+        nokid_token = "$(_b64url("""{"alg":"RS256"}"""))" * ".$payload_b64.AAAA"
+        @test validate_token(v, nokid_token, cfg).error_code == :invalid_token
+        # malformed token
+        @test validate_token(v, "not-a-jwt", cfg).error_code == :invalid_format
+    end
+
+    @testset "claims still enforced after valid signature" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        expired = _sign(base_claims(exp = past); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        @test validate_token(v, expired, cfg).error_code == :expired
+        wrong_aud = _sign(base_claims(aud = "other"); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        @test validate_token(v, wrong_aud, cfg).error_code == :invalid_audience
+        scoped_cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp",
+                                 required_scopes = ["mcp:admin"])
+        @test validate_token(v, valid_token, scoped_cfg).error_code == :insufficient_scope
+    end
+
+    @testset "key rotation: unknown kid triggers re-fetch" begin
+        mktempdir() do dir
+            jwks_path = joinpath(dir, "jwks.json")
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test.json"), String))
+            v = JWKSValidator("file://" * jwks_path; refresh_interval_seconds = 0)
+            @test validate_token(v, valid_token, cfg).success
+            # Rotate the published key set to key 2; a token under the new kid validates
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test2.json"), String))
+            rotated = _sign(base_claims(); key_pem = "jwks_test_key2.pem", kid = "test-key-2")
+            @test validate_token(v, rotated, cfg).success
+        end
+    end
+
+    @testset "unknown-kid refresh is rate-limited" begin
+        mktempdir() do dir
+            jwks_path = joinpath(dir, "jwks.json")
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test.json"), String))
+            v = JWKSValidator("file://" * jwks_path; refresh_interval_seconds = 3600)
+            @test validate_token(v, valid_token, cfg).success  # initial fetch stamps the attempt
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test2.json"), String))
+            rotated = _sign(base_claims(); key_pem = "jwks_test_key2.pem", kid = "test-key-2")
+            # Within the interval the unknown kid must NOT trigger another fetch: fail closed
+            @test validate_token(v, rotated, cfg).error_code == :invalid_token
+            # Known-kid tokens keep validating against the cached keys
+            @test validate_token(v, valid_token, cfg).success
+        end
+    end
+
+    @testset "fetch_jwks_keys fails closed" begin
+        mktempdir() do dir
+            bad = joinpath(dir, "bad.json")
+            write(bad, "{not json")
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * bad) === nothing
+            nokeys = joinpath(dir, "nokeys.json")
+            write(nokeys, "{\"foo\": 1}")
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * nokeys) === nothing
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * joinpath(dir, "missing.json")) === nothing
+        end
+    end
+
+    @testset "end-to-end through AuthMiddleware" begin
+        auth = create_auth_middleware(cfg;
+            validator = JWKSValidator(fixture_url("jwks_test.json")),
+            allowlist = Set(["alice"]))
+        ok = authenticate_request(auth, "Bearer $valid_token")
+        @test ok.success && ok.user.username == "alice"
+        # Signature-valid token for a non-allowlisted user is rejected
+        eve_token = _sign(base_claims(preferred_username = "eve", sub = "user-2");
+                          key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        denied = authenticate_request(auth, "Bearer $eve_token")
+        @test !denied.success && denied.error_code == :forbidden
+    end
+end

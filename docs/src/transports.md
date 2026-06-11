@@ -118,7 +118,7 @@ SSE streams carry:
 
 The HTTP transport can require a bearer token on every request. Validators include GitHub
 tokens (validated against the GitHub API with optional allowlist/organization checks),
-JWT claims, and RFC 7662 token introspection:
+JWTs verified against a JWKS endpoint, JWT claims, and RFC 7662 token introspection:
 
 ```julia
 using ModelContextProtocol
@@ -133,13 +133,33 @@ transport = HttpTransport(host = "0.0.0.0", port = 3000,
                           auth = auth, resource_metadata = meta)
 ```
 
+For JWTs issued by an external authorization server (Keycloak, Auth0, etc.), use
+`JWKSValidator` — it verifies token signatures against the server's published JSON Web
+Key Set (RFC 7517) and then applies the standard claim checks (issuer, audience,
+expiry, scopes), all fail-closed:
+
+```julia
+auth = create_auth_middleware(
+    OAuthConfig(
+        issuer   = "https://auth.example.org/realms/lab",
+        audience = "https://mcp.example.org",
+    ),
+    validator = JWKSValidator("https://auth.example.org/realms/lab/protocol/openid-connect/certs"),
+)
+```
+
+Keys are fetched lazily and re-fetched on unknown key ids (rotation), rate-limited to
+one fetch per `refresh_interval_seconds` (default 300) so attacker-supplied `kid`
+values cannot hammer the JWKS endpoint. The `alg` allowlist defaults to the RSA family
+(`RS256`/`RS384`/`RS512`) and rejects `alg=none` outright.
+
 Clients send `Authorization: Bearer <token>`; unauthorized requests get `401`/`403` with an
 RFC 6750 `WWW-Authenticate` header, and discovery metadata is served at
 `/.well-known/oauth-protected-resource` (RFC 9728). Tool handlers can read the verified
 identity by accepting the request context: `handler = (args, ctx) -> ...` and using
-`ctx.authenticated_user`. Note: `JWTValidator` checks claims only (no JWKS signature
-verification yet); prefer the GitHub or introspection validators when tokens must be
-verified against an authority.
+`ctx.authenticated_user`. Note: `JWTValidator` checks claims only (no signature
+verification); prefer `JWKSValidator` for tokens from external issuers, or the GitHub /
+introspection validators when tokens must be verified against an authority.
 
 #### Origin Validation
 
