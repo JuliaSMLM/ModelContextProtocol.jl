@@ -388,3 +388,294 @@ end
     @test whoami(alice) == "alice"
     @test whoami(nothing) == "anon"
 end
+
+@testset "JWKSValidator - signature verification (RFC 7517)" begin
+    JWTs = ModelContextProtocol.JWTs
+    _MbedTLS = JWTs.MbedTLS
+    fixture_dir = joinpath(@__DIR__, "fixtures")
+    fixture_url(name) = "file://" * abspath(joinpath(fixture_dir, name))
+
+    # Signing helpers backed by the committed fixture keypairs (test-only keys)
+    _sign(payload; key_pem, kid) = begin
+        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, key_pem)))
+        jwt = JWTs.JWT(payload = payload)
+        JWTs.sign!(jwt, signing_key, kid)
+        string(jwt)
+    end
+    future = round(Int, datetime2unix(now(UTC))) + 3600
+    past = round(Int, datetime2unix(now(UTC))) - 3600
+    base_claims(; overrides...) = merge(Dict{String,Any}(
+        "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "user-1",
+        "exp" => future, "preferred_username" => "alice", "scope" => "mcp:read mcp:write",
+    ), Dict{String,Any}(string(k) => v for (k, v) in overrides))
+    cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
+    valid_token = _sign(base_claims(); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+
+    @testset "construction is lazy (no fetch)" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        @test isempty(v.keyset.keys)
+        @test v.allowed_algs == ["RS256", "RS384", "RS512"]
+    end
+
+    @testset "valid signed token accepted with claims" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        result = validate_token(v, valid_token, cfg)
+        @test result.success
+        @test result.user.subject == "user-1"
+        @test result.user.username == "alice"
+        @test "mcp:read" in result.user.scopes
+        @test !isempty(v.keyset.keys)  # lazy fetch happened on first use
+    end
+
+    @testset "tampered payload and signature rejected" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        h, p, s = split(valid_token, ".")
+        # Forged payload (admin claims) with the original signature
+        forged_payload = replace(String(p), r"^." => "A")
+        @test !validate_token(v, "$h.$forged_payload.$s", cfg).success
+        # Corrupted signature
+        @test validate_token(v, "$h.$p.$(reverse(String(s)))", cfg).error_code == :invalid_token
+        # Empty signature
+        @test validate_token(v, "$h.$p.", cfg).error_code == :invalid_token
+    end
+
+    @testset "token signed by the wrong key rejected" begin
+        # Signed with key 2 but claiming kid test-key-1 (kid spoofing)
+        spoofed = _sign(base_claims(); key_pem = "jwks_test_key2.pem", kid = "test-key-1")
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        @test validate_token(v, spoofed, cfg).error_code == :invalid_token
+    end
+
+    @testset "header gate: alg/kid policy before crypto" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        _b64url(s) = replace(base64encode(s), "+" => "-", "/" => "_", "=" => "")
+        payload_b64 = _b64url(JSON3.write(base_claims()))
+        # alg=none
+        none_token = "$(_b64url("""{"alg":"none","kid":"test-key-1"}"""))" * ".$payload_b64."
+        @test validate_token(v, none_token, cfg).error_code == :invalid_token
+        # alg not allowlisted (HS256)
+        hs_token = "$(_b64url("""{"alg":"HS256","kid":"test-key-1"}"""))" * ".$payload_b64.AAAA"
+        @test validate_token(v, hs_token, cfg).error_code == :invalid_token
+        # kid missing
+        nokid_token = "$(_b64url("""{"alg":"RS256"}"""))" * ".$payload_b64.AAAA"
+        @test validate_token(v, nokid_token, cfg).error_code == :invalid_token
+        # malformed token
+        @test validate_token(v, "not-a-jwt", cfg).error_code == :invalid_format
+    end
+
+    @testset "claims still enforced after valid signature" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        expired = _sign(base_claims(exp = past); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        @test validate_token(v, expired, cfg).error_code == :expired
+        wrong_aud = _sign(base_claims(aud = "other"); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        @test validate_token(v, wrong_aud, cfg).error_code == :invalid_audience
+        scoped_cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp",
+                                 required_scopes = ["mcp:admin"])
+        @test validate_token(v, valid_token, scoped_cfg).error_code == :insufficient_scope
+    end
+
+    @testset "key rotation: unknown kid triggers re-fetch" begin
+        mktempdir() do dir
+            jwks_path = joinpath(dir, "jwks.json")
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test.json"), String))
+            v = JWKSValidator("file://" * jwks_path; refresh_interval_seconds = 0)
+            @test validate_token(v, valid_token, cfg).success
+            # Rotate the published key set to key 2; a token under the new kid validates
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test2.json"), String))
+            rotated = _sign(base_claims(); key_pem = "jwks_test_key2.pem", kid = "test-key-2")
+            @test validate_token(v, rotated, cfg).success
+        end
+    end
+
+    @testset "unknown-kid refresh is rate-limited" begin
+        mktempdir() do dir
+            jwks_path = joinpath(dir, "jwks.json")
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test.json"), String))
+            v = JWKSValidator("file://" * jwks_path; refresh_interval_seconds = 3600)
+            @test validate_token(v, valid_token, cfg).success  # initial fetch stamps the attempt
+            write(jwks_path, read(joinpath(fixture_dir, "jwks_test2.json"), String))
+            rotated = _sign(base_claims(); key_pem = "jwks_test_key2.pem", kid = "test-key-2")
+            # Within the interval the unknown kid must NOT trigger another fetch: fail closed
+            @test validate_token(v, rotated, cfg).error_code == :invalid_token
+            # Known-kid tokens keep validating against the cached keys
+            @test validate_token(v, valid_token, cfg).success
+        end
+    end
+
+    @testset "fetch_jwks_keys fails closed" begin
+        mktempdir() do dir
+            bad = joinpath(dir, "bad.json")
+            write(bad, "{not json")
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * bad) === nothing
+            nokeys = joinpath(dir, "nokeys.json")
+            write(nokeys, "{\"foo\": 1}")
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * nokeys) === nothing
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * joinpath(dir, "missing.json")) === nothing
+        end
+    end
+
+    @testset "end-to-end through AuthMiddleware" begin
+        auth = create_auth_middleware(cfg;
+            validator = JWKSValidator(fixture_url("jwks_test.json")),
+            allowlist = Set(["alice"]))
+        ok = authenticate_request(auth, "Bearer $valid_token")
+        @test ok.success && ok.user.username == "alice"
+        # Signature-valid token for a non-allowlisted user is rejected
+        eve_token = _sign(base_claims(preferred_username = "eve", sub = "user-2");
+                          key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        denied = authenticate_request(auth, "Bearer $eve_token")
+        @test !denied.success && denied.error_code == :forbidden
+    end
+end
+
+@testset "JWKSValidator - hardening (Codex review)" begin
+    JWTs = ModelContextProtocol.JWTs
+    _MbedTLS = JWTs.MbedTLS
+    fixture_dir = joinpath(@__DIR__, "fixtures")
+    fixture_url(name) = "file://" * abspath(joinpath(fixture_dir, name))
+    cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
+    future = round(Int, datetime2unix(now(UTC))) + 3600
+    _sign(payload; key_pem, kid) = begin
+        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, key_pem)))
+        jwt = JWTs.JWT(payload = payload)
+        JWTs.sign!(jwt, signing_key, kid)
+        string(jwt)
+    end
+    base_claims(; overrides...) = merge(Dict{String,Any}(
+        "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "u",
+        "exp" => future,
+    ), Dict{String,Any}(string(k) => v for (k, v) in overrides))
+
+    @testset "plaintext http:// JWKS rejected at construction" begin
+        @test_throws ArgumentError JWKSValidator("http://auth.example/jwks.json")
+        # opt-in for localhost/testing, and https/file always allowed
+        @test JWKSValidator("http://127.0.0.1:9/jwks.json"; allow_insecure_http = true) isa JWKSValidator
+        @test JWKSValidator("https://auth.example/jwks.json") isa JWKSValidator
+        @test JWKSValidator(fixture_url("jwks_test.json")) isa JWKSValidator
+    end
+
+    @testset "negative refresh interval clamped to 0" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"); refresh_interval_seconds = -100)
+        @test v.refresh_interval_seconds == 0.0
+    end
+
+    @testset "non-numeric nbf rejected (not silently ignored)" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        bad_nbf = _sign(base_claims(nbf = "9999999999"); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        r = validate_token(v, bad_nbf, cfg)
+        @test !r.success
+        @test r.error_code == :invalid_token
+        # a valid numeric (past) nbf still passes
+        ok = _sign(base_claims(nbf = future - 7200); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        @test validate_token(v, ok, cfg).success
+    end
+
+    @testset "oversize file JWKS rejected" begin
+        mktempdir() do dir
+            big = joinpath(dir, "big.json")
+            # > MAX_JWKS_BYTES of padding inside an otherwise-valid envelope
+            open(big, "w") do io
+                write(io, "{\"keys\":[],\"pad\":\"")
+                write(io, repeat("A", ModelContextProtocol.MAX_JWKS_BYTES + 10))
+                write(io, "\"}")
+            end
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * big) === nothing
+        end
+    end
+
+    @testset "malformed JWK entry fails closed (no exception)" begin
+        mktempdir() do dir
+            bad = joinpath(dir, "jwks.json")
+            write(bad, """{"keys":[{}]}""")  # entry missing kid/kty -> JWTs.refresh! throws
+            v = JWKSValidator("file://" * bad; refresh_interval_seconds = 0)
+            token = _sign(base_claims(); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+            r = validate_token(v, token, cfg)  # must not throw
+            @test !r.success
+            @test r.error_code == :invalid_token
+        end
+    end
+
+    @testset "live http(s) fetch path: streaming + size cap" begin
+        port = rand(20000:40000)
+        small = read(joinpath(fixture_dir, "jwks_test.json"), String)
+        huge = "{\"keys\":[],\"pad\":\"" * repeat("A", ModelContextProtocol.MAX_JWKS_BYTES + 64) * "\"}"
+        server = HTTP.serve!("127.0.0.1", port; stream = true) do http
+            target = http.message.target
+            HTTP.setstatus(http, 200)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            write(http, occursin("huge", target) ? huge : small)
+        end
+        try
+            sleep(0.3)
+            # Small document over real HTTP validates a signed token
+            v = JWKSValidator("http://127.0.0.1:$port/jwks.json"; allow_insecure_http = true)
+            token = _sign(base_claims(sub = "u", aud = "my-mcp"); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+            @test validate_token(v, token, cfg).success
+            # Oversize body is aborted -> no keys -> fails closed
+            @test ModelContextProtocol.fetch_jwks_http_body("http://127.0.0.1:$port/huge.json") === nothing
+        finally
+            HTTP.close(server)
+        end
+    end
+end
+
+@testset "JWKSValidator - real-world JWKS with encryption keys (Keycloak shape)" begin
+    # Live-Keycloak finding: JWKS documents commonly include use="enc" keys (RSA-OAEP)
+    # alongside the signing keys. They can never verify a token and must be filtered
+    # out (JWTs.refresh! would warn on every fetch otherwise).
+    fixture_dir = joinpath(@__DIR__, "fixtures")
+    sig_entry = JSON3.read(read(joinpath(fixture_dir, "jwks_test.json"), String))["keys"][1]
+    mktempdir() do dir
+        mixed = joinpath(dir, "jwks.json")
+        enc_entry = Dict("kty" => "RSA", "kid" => "enc-key-1", "use" => "enc",
+                         "alg" => "RSA-OAEP", "n" => sig_entry["n"], "e" => sig_entry["e"])
+        write(mixed, JSON3.write(Dict("keys" => [enc_entry, Dict(sig_entry)])))
+        keys = ModelContextProtocol.fetch_jwks_keys("file://" * mixed)
+        @test keys !== nothing
+        @test length(keys) == 1  # enc entry filtered
+        @test keys[1]["kid"] == "test-key-1"
+        # And the validator still verifies a real signed token from the mixed document
+        JWTs = ModelContextProtocol.JWTs
+        _MbedTLS = JWTs.MbedTLS
+        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, "jwks_test_key.pem")))
+        jwt = JWTs.JWT(payload = Dict{String,Any}(
+            "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "u",
+            "exp" => round(Int, datetime2unix(now(UTC))) + 3600))
+        JWTs.sign!(jwt, signing_key, "test-key-1")
+        v = JWKSValidator("file://" * mixed)
+        cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
+        @test validate_token(v, string(jwt), cfg).success
+    end
+end
+
+@testset "JWKSValidator - gzip-encoding proxy (live-tunnel finding)" begin
+    # Live-spike finding: CDNs/proxies in front of an AS gzip the JWKS when the client
+    # advertises gzip (HTTP.jl default). The raw streaming read bypasses HTTP.jl's
+    # transparent decompression, so the fetch must request identity encoding. This
+    # server emulates the proxy contract: it serves valid JSON only when the client
+    # explicitly asked for identity, and garbage "compressed" bytes otherwise.
+    small = read(joinpath(@__DIR__, "fixtures", "jwks_test.json"), String)
+    port = rand(20000:40000)
+    server = HTTP.serve!("127.0.0.1", port; stream = true) do http
+        enc = HTTP.header(http.message, "Accept-Encoding", "")
+        HTTP.setstatus(http, 200)
+        HTTP.setheader(http, "Content-Type" => "application/json")
+        HTTP.startwrite(http)
+        if occursin("identity", enc)
+            write(http, small)
+        else
+            HTTP.setheader(http, "Content-Encoding" => "gzip")
+            write(http, UInt8[0x1f, 0x8b, 0x00, 0x00])  # gzip magic + junk: unparseable as JSON
+        end
+    end
+    try
+        sleep(0.3)
+        body = ModelContextProtocol.fetch_jwks_http_body("http://127.0.0.1:$port/jwks.json")
+        @test body !== nothing
+        keys = ModelContextProtocol.fetch_jwks_keys("http://127.0.0.1:$port/jwks.json")
+        @test keys !== nothing && length(keys) == 1
+    finally
+        HTTP.close(server)
+    end
+end

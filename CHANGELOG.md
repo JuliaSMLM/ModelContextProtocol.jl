@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`JWKSValidator` — JWT signature verification against a JWKS endpoint (RFC 7517)**:
+  the recommended validator for tokens from external authorization servers (Keycloak,
+  Auth0, …). Verifies RSA signatures (`RS256`/`RS384`/`RS512` allowlist; `alg=none` and
+  non-allowlisted algorithms rejected before any cryptography), then applies the same
+  fail-closed claim checks as `JWTValidator` (iss, aud, exp, nbf, scopes). Keys load
+  lazily and re-fetch on unknown `kid` (rotation), rate-limited to one fetch per
+  `refresh_interval_seconds` (default 300) so attacker-supplied `kid` values cannot
+  hammer the JWKS endpoint; fetches use bounded HTTP timeouts, a streaming response
+  size cap (1 MB), and happen outside the validator lock. Plaintext `http://` JWKS
+  URLs are rejected at construction (a MITM could swap signing keys) unless
+  `allow_insecure_http=true` is passed for localhost/testing; `https://` and `file://`
+  key sets plus pre-built `JWTs.JWKSet` injection are supported. A malformed upstream
+  JWKS document fails authentication closed (retaining cached keys) rather than
+  erroring the request. New dependency: JWTs.jl.
+
 ## [0.5.4] - 2026-06-10
 
 ### Added

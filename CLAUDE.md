@@ -469,10 +469,11 @@ negotiated version per session).
   cooperative cancellation
 - **logging/setLevel** (eight RFC-5424 levels) + per-request lifecycle `@debug` log
   (method/id/duration_ms/ok), runtime-enableable
-- **OAuth Resource Server** (2025-11-25 authorization): bearer validation (JWT claims,
+- **OAuth Resource Server** (2025-11-25 authorization): bearer validation (`JWKSValidator`
+  with RFC 7517 signature verification + rate-limited key rotation, JWT claims,
   RFC 7662 introspection, GitHub tokens + allowlist/org), RFC 9728 Protected Resource
   Metadata at `/.well-known/oauth-protected-resource`, per-request auth context.
-  NOTE: `JWTValidator` validates claims only — no JWKS signature verification yet
+  NOTE: `JWTValidator` (claims-only) remains for trusted-issuer setups; prefer `JWKSValidator`
 - **Resources**: exact-URI reads with rich provider returns (`ResourceContents`/vector
   incl. binary `blob`, `String` verbatim, JSON fallback); **URI templates** (RFC 6570
   level-1 `{var}`) with `resources/templates/list` + read routing to template providers
@@ -481,7 +482,7 @@ negotiated version per session).
 ### ❌ Not Yet Implemented
 
 - **OAuth Authorization Server** (token issuance — DCR, PKCE; tracked in issue #51) and
-  RS hardening (JWKS verification, per-tool scopes, SSE principal binding)
+  remaining RS hardening (per-tool scopes, SSE principal binding)
 - **Elicitation**; **client-side features** (roots, sampling, completion)
 - **Stream resumption** (Last-Event-ID); **concurrent SYNC request handling** (Tasks give
   long calls background execution, but plain requests still go through the single serialized
