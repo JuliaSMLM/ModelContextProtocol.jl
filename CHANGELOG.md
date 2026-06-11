@@ -16,9 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail-closed claim checks as `JWTValidator` (iss, aud, exp, nbf, scopes). Keys load
   lazily and re-fetch on unknown `kid` (rotation), rate-limited to one fetch per
   `refresh_interval_seconds` (default 300) so attacker-supplied `kid` values cannot
-  hammer the JWKS endpoint; fetches use bounded HTTP timeouts and happen outside the
-  validator lock. Supports `https://` and `file://` key sets plus pre-built
-  `JWTs.JWKSet` injection. New dependency: JWTs.jl.
+  hammer the JWKS endpoint; fetches use bounded HTTP timeouts, a streaming response
+  size cap (1 MB), and happen outside the validator lock. Plaintext `http://` JWKS
+  URLs are rejected at construction (a MITM could swap signing keys) unless
+  `allow_insecure_http=true` is passed for localhost/testing; `https://` and `file://`
+  key sets plus pre-built `JWTs.JWKSet` injection are supported. A malformed upstream
+  JWKS document fails authentication closed (retaining cached keys) rather than
+  erroring the request. New dependency: JWTs.jl.
 
 ## [0.5.4] - 2026-06-10
 

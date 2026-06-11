@@ -527,3 +527,95 @@ end
         @test !denied.success && denied.error_code == :forbidden
     end
 end
+
+@testset "JWKSValidator - hardening (Codex review)" begin
+    JWTs = ModelContextProtocol.JWTs
+    _MbedTLS = JWTs.MbedTLS
+    fixture_dir = joinpath(@__DIR__, "fixtures")
+    fixture_url(name) = "file://" * abspath(joinpath(fixture_dir, name))
+    cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
+    future = round(Int, datetime2unix(now(UTC))) + 3600
+    _sign(payload; key_pem, kid) = begin
+        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, key_pem)))
+        jwt = JWTs.JWT(payload = payload)
+        JWTs.sign!(jwt, signing_key, kid)
+        string(jwt)
+    end
+    base_claims(; overrides...) = merge(Dict{String,Any}(
+        "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "u",
+        "exp" => future,
+    ), Dict{String,Any}(string(k) => v for (k, v) in overrides))
+
+    @testset "plaintext http:// JWKS rejected at construction" begin
+        @test_throws ArgumentError JWKSValidator("http://auth.example/jwks.json")
+        # opt-in for localhost/testing, and https/file always allowed
+        @test JWKSValidator("http://127.0.0.1:9/jwks.json"; allow_insecure_http = true) isa JWKSValidator
+        @test JWKSValidator("https://auth.example/jwks.json") isa JWKSValidator
+        @test JWKSValidator(fixture_url("jwks_test.json")) isa JWKSValidator
+    end
+
+    @testset "negative refresh interval clamped to 0" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"); refresh_interval_seconds = -100)
+        @test v.refresh_interval_seconds == 0.0
+    end
+
+    @testset "non-numeric nbf rejected (not silently ignored)" begin
+        v = JWKSValidator(fixture_url("jwks_test.json"))
+        bad_nbf = _sign(base_claims(nbf = "9999999999"); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        r = validate_token(v, bad_nbf, cfg)
+        @test !r.success
+        @test r.error_code == :invalid_token
+        # a valid numeric (past) nbf still passes
+        ok = _sign(base_claims(nbf = future - 7200); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+        @test validate_token(v, ok, cfg).success
+    end
+
+    @testset "oversize file JWKS rejected" begin
+        mktempdir() do dir
+            big = joinpath(dir, "big.json")
+            # > MAX_JWKS_BYTES of padding inside an otherwise-valid envelope
+            open(big, "w") do io
+                write(io, "{\"keys\":[],\"pad\":\"")
+                write(io, repeat("A", ModelContextProtocol.MAX_JWKS_BYTES + 10))
+                write(io, "\"}")
+            end
+            @test ModelContextProtocol.fetch_jwks_keys("file://" * big) === nothing
+        end
+    end
+
+    @testset "malformed JWK entry fails closed (no exception)" begin
+        mktempdir() do dir
+            bad = joinpath(dir, "jwks.json")
+            write(bad, """{"keys":[{}]}""")  # entry missing kid/kty -> JWTs.refresh! throws
+            v = JWKSValidator("file://" * bad; refresh_interval_seconds = 0)
+            token = _sign(base_claims(); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+            r = validate_token(v, token, cfg)  # must not throw
+            @test !r.success
+            @test r.error_code == :invalid_token
+        end
+    end
+
+    @testset "live http(s) fetch path: streaming + size cap" begin
+        port = rand(20000:40000)
+        small = read(joinpath(fixture_dir, "jwks_test.json"), String)
+        huge = "{\"keys\":[],\"pad\":\"" * repeat("A", ModelContextProtocol.MAX_JWKS_BYTES + 64) * "\"}"
+        server = HTTP.serve!("127.0.0.1", port; stream = true) do http
+            target = http.message.target
+            HTTP.setstatus(http, 200)
+            HTTP.setheader(http, "Content-Type" => "application/json")
+            HTTP.startwrite(http)
+            write(http, occursin("huge", target) ? huge : small)
+        end
+        try
+            sleep(0.3)
+            # Small document over real HTTP validates a signed token
+            v = JWKSValidator("http://127.0.0.1:$port/jwks.json"; allow_insecure_http = true)
+            token = _sign(base_claims(sub = "u", aud = "my-mcp"); key_pem = "jwks_test_key.pem", kid = "test-key-1")
+            @test validate_token(v, token, cfg).success
+            # Oversize body is aborted -> no keys -> fails closed
+            @test ModelContextProtocol.fetch_jwks_http_body("http://127.0.0.1:$port/huge.json") === nothing
+        finally
+            HTTP.close(server)
+        end
+    end
+end

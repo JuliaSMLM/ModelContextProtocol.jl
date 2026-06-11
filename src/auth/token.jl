@@ -141,10 +141,13 @@ function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, cloc
         return AuthResult("Token expired", :expired)
     end
 
-    # Check not-before
+    # Check not-before. A present `nbf` MUST be numeric (RFC 7519 NumericDate); a
+    # non-numeric value is malformed and rejected rather than silently ignored (which
+    # would let a string nbf bypass the not-before gate).
     if haskey(claims, "nbf")
         nbf = claims["nbf"]
-        if nbf isa Number && now_ts < nbf - clock_skew
+        nbf isa Number || return AuthResult("Token has malformed nbf", :invalid_token)
+        if now_ts < nbf - clock_skew
             return AuthResult("Token not yet valid", :not_yet_valid)
         end
     end
@@ -230,9 +233,14 @@ function validate_token(validator::JWTValidator, token::AbstractString, config::
     return validate_jwt_claims(claims, config, validator.clock_skew_seconds)
 end
 
+# Upper bound on a JWKS document we will read into memory. Real JWKS documents are
+# a few KB; 1 MB is generous headroom while bounding a compromised/misrouted endpoint.
+const MAX_JWKS_BYTES = 1_000_000
+
 """
     JWKSValidator(jwks_uri::String; allowed_algs=["RS256", "RS384", "RS512"],
-                  clock_skew_seconds=60, refresh_interval_seconds=300)
+                  clock_skew_seconds=60, refresh_interval_seconds=300,
+                  allow_insecure_http=false)
     JWKSValidator(keyset::JWTs.JWKSet; ...)
 
 JWT validator with cryptographic signature verification against a JSON Web Key Set
@@ -244,11 +252,14 @@ Keys are fetched lazily: construction never touches the network, so a server can
 start while its authorization server is down (requests fail closed until keys load).
 An unknown `kid` triggers a JWKS re-fetch (key rotation) at most once per
 `refresh_interval_seconds` — rate-limited so attacker-supplied `kid` values cannot
-hammer the JWKS endpoint. Fetches use bounded HTTP timeouts and never hold the
-validator lock during network I/O.
+hammer the JWKS endpoint. Fetches use bounded HTTP timeouts and a response size cap
+(`MAX_JWKS_BYTES`), and never hold the validator lock during network I/O.
 
-`file://` URIs are supported for local key sets. The second constructor accepts a
-pre-built `JWTs.JWKSet` (e.g. static keys) directly; with no URL it never refreshes.
+`file://` URIs are supported for local key sets. An `http://` URL is rejected at
+construction unless `allow_insecure_http=true` (a plaintext JWKS lets an on-path
+attacker swap in their own signing key — use only for localhost/testing). The second
+constructor accepts a pre-built `JWTs.JWKSet` (e.g. static keys) directly; with no URL
+it never refreshes.
 
 !!! note "Algorithm allowlist"
     Tokens whose header `alg` is not in `allowed_algs` are rejected before any
@@ -260,7 +271,7 @@ pre-built `JWTs.JWKSet` (e.g. static keys) directly; with no URL it never refres
 - `keyset::JWTs.JWKSet`: Key set (url-backed or static) holding keys by `kid`
 - `allowed_algs::Vector{String}`: Permitted JWT signature algorithms
 - `clock_skew_seconds::Int`: Allowed clock skew for exp/nbf validation
-- `refresh_interval_seconds::Float64`: Minimum seconds between JWKS fetch attempts
+- `refresh_interval_seconds::Float64`: Minimum seconds between JWKS fetch attempts (>= 0)
 """
 mutable struct JWKSValidator <: TokenValidator
     keyset::JWTs.JWKSet
@@ -274,9 +285,17 @@ end
 function JWKSValidator(keyset::JWTs.JWKSet;
                        allowed_algs::Vector{String}=["RS256", "RS384", "RS512"],
                        clock_skew_seconds::Int=60,
-                       refresh_interval_seconds::Real=300)
+                       refresh_interval_seconds::Real=300,
+                       allow_insecure_http::Bool=false)
+    if startswith(keyset.url, "http://") && !allow_insecure_http
+        throw(ArgumentError(
+            "Refusing plaintext http:// JWKS URL '$(keyset.url)': an on-path attacker " *
+            "could substitute signing keys. Use https://, or pass allow_insecure_http=true " *
+            "for localhost/testing."))
+    end
+    # A negative interval is a configuration error; clamp to 0 (no throttle).
     JWKSValidator(keyset, allowed_algs, clock_skew_seconds,
-                  Float64(refresh_interval_seconds), -Inf, ReentrantLock())
+                  max(0.0, Float64(refresh_interval_seconds)), -Inf, ReentrantLock())
 end
 
 JWKSValidator(jwks_uri::String; kwargs...) = JWKSValidator(JWTs.JWKSet(jwks_uri); kwargs...)
@@ -291,17 +310,21 @@ end
     fetch_jwks_keys(url::String) -> Union{Vector{Dict{String,Any}},Nothing}
 
 Fetch and parse the `keys` array of a JWKS document from an `http(s)://` or `file://`
-URL. Network fetches use bounded connect/read timeouts. Returns `nothing` on any
-failure (fetch, parse, or missing `keys` field) — callers fail closed.
+URL. Network fetches use bounded connect/read timeouts and reject responses larger than
+`MAX_JWKS_BYTES` (read is aborted once the cap is exceeded, so an oversized or unbounded
+body cannot exhaust memory). Returns `nothing` on any failure (fetch, oversize, parse,
+or missing `keys` field) — callers fail closed.
 """
 function fetch_jwks_keys(url::String)
     try
         body = if startswith(url, "file://")
-            read(url[8:end], String)
+            path = url[8:end]
+            (isfile(path) && filesize(path) <= MAX_JWKS_BYTES) || return nothing
+            read(path, String)
         else
-            response = HTTP.get(url; connect_timeout=10, readtimeout=10, retry=false)
-            response.status == 200 || return nothing
-            String(response.body)
+            captured = fetch_jwks_http_body(url)
+            captured === nothing && return nothing
+            captured
         end
         parsed = JSON3.read(body)
         haskey(parsed, "keys") || return nothing
@@ -311,6 +334,35 @@ function fetch_jwks_keys(url::String)
         @debug "JWKS fetch failed" url=url error=e
         return nothing
     end
+end
+
+"""
+    fetch_jwks_http_body(url::String) -> Union{String,Nothing}
+
+GET a JWKS over HTTP(S) with bounded connect/read timeouts, streaming the body and
+aborting once `MAX_JWKS_BYTES` is exceeded. Returns the body string on a 200, or
+`nothing` on non-200, oversize, or transport error.
+"""
+function fetch_jwks_http_body(url::String)
+    # HTTP.open returns the Response, not the closure's value, so capture the body
+    # into a closed-over variable. It stays `nothing` on non-200 or oversize, both of
+    # which leave callers failing closed.
+    body = nothing
+    HTTP.open("GET", url; connect_timeout=10, readtimeout=10, retry=false) do io
+        HTTP.startread(io)
+        HTTP.status(io.message) == 200 || return
+        buf = IOBuffer()
+        over = false
+        while !eof(io)
+            write(buf, readavailable(io))
+            if buf.size > MAX_JWKS_BYTES  # over cap: abort the read, fail closed
+                over = true
+                break
+            end
+        end
+        over || (body = String(take!(buf)))
+    end
+    return body
 end
 
 """
@@ -334,12 +386,23 @@ function lookup_jwks_key!(validator::JWKSValidator, kid::String)
     needs_refresh === :refresh || return needs_refresh
 
     fresh = fetch_jwks_keys(validator.keyset.url)
-    lock(validator.lock) do
-        if fresh !== nothing
+    rebuilt = if fresh === nothing
+        nothing
+    else
+        # JWTs.refresh! can throw on a malformed JWK entry (it reads kid/kty before its
+        # own per-key try). Contain that so a bad upstream document fails auth closed
+        # rather than 500-ing, and keep the previously cached keys on failure.
+        try
             keys = Dict{String,JWTs.JWK}()
             JWTs.refresh!(fresh, keys)  # builds verification keys; skips unsupported entries
-            validator.keyset.keys = keys
+            keys
+        catch e
+            @debug "JWKS key build failed; retaining cached keys" error=e
+            nothing
         end
+    end
+    lock(validator.lock) do
+        rebuilt !== nothing && (validator.keyset.keys = rebuilt)
         get(validator.keyset.keys, kid, nothing)
     end
 end
