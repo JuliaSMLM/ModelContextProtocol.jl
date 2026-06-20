@@ -166,3 +166,11 @@ function content2dict(content::Content)
     throw(ArgumentError("Unsupported content type: $(typeof(content))"))
 end
 
+# Let `Content` objects be placed directly into fields/collections typed
+# `Dict{String,Any}` — notably `CallToolResult.content::Vector{Dict{String,Any}}`. Tool
+# handlers (and the docs) construct
+# `CallToolResult(content = [TextContent(...)], is_error = true)`; without this method the
+# per-element field conversion throws `MethodError(convert, Dict{String,Any}, TextContent)`.
+# Routing through `content2dict` makes the wire shape identical to the auto-wrap path.
+Base.convert(::Type{Dict{String,Any}}, content::Content) = Dict{String,Any}(content2dict(content))
+
