@@ -58,7 +58,17 @@ function MCPLogger(stream::IO=stderr, level::LogLevel=Info)
     MCPLogger(stream, level, Dict{Any,Int}())
 end
 
-Logging.shouldlog(logger::MCPLogger, level, _module, group, id) = level >= logger.min_level
+function Logging.shouldlog(logger::MCPLogger, level, _module, group, id)
+    level >= logger.min_level || return false
+    # Do not relay HTTP.jl's internal connection-loop logging into the MCP notification
+    # stream. On every client disconnect HTTP.jl logs the `closeread` EOF at error level
+    # ("handle_connection handler error") — transport-internal teardown noise, not an MCP
+    # application log. The package's own transport errors (logged from this module) pass.
+    if _module !== nothing && nameof(Base.moduleroot(_module)) === :HTTP
+        return false
+    end
+    return true
+end
 
 Logging.min_enabled_level(logger::MCPLogger) = logger.min_level
 
