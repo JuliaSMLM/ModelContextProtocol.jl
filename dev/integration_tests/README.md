@@ -1,47 +1,46 @@
 # External Integration Tests
 
-This directory contains integration tests that use external dependencies not included in the main project.
+Cross-language integration tests for ModelContextProtocol.jl: a real external Python
+process (the official [`mcp`](https://pypi.org/project/mcp/) SDK) drives a local Julia
+MCP server over stdio, exercising the protocol end to end — initialize, `tools/list`,
+`tools/call` (string and numeric arguments), `resources/list`, `resources/read`, and an
+error path.
+
+These are **not** part of `Pkg.test()` (they need an external Python interpreter) and
+they do **not** use PythonCall/CondaPkg. The Python client runs as a plain subprocess,
+so the only requirement is a `python3` on `PATH` with `mcp` importable.
 
 ## Setup
 
-1. Activate the test environment:
-   ```julia
-   using Pkg
-   Pkg.activate("test/external")
-   Pkg.instantiate()
-   ```
+```bash
+cd dev/integration_tests
 
-2. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# 1. Julia deps (develops the in-repo ModelContextProtocol into this env)
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.instantiate()'
 
-## Running Tests
-
-To run the Python client integration tests:
-
-```julia
-using Pkg
-Pkg.activate("test/external")
-Pkg.test()
+# 2. Python MCP SDK, into whatever python3 is on PATH
+pip install -r requirements.txt
 ```
 
-Or directly:
+## Running
 
 ```bash
-julia --project=test/external test/external/test_integration.jl
+julia --project=. runtests.jl
 ```
 
-## Test Structure
+`test_basic_stdio.jl` always runs (Julia-only). `test_python_client.jl` auto-detects a
+`python3` with `mcp`; if none is found it skips with a clear message rather than
+silently passing.
 
-- `test_python_client.jl` - Basic tests for Python MCP client compatibility
-- `test_integration.jl` - Full integration test that spawns a Julia MCP server and tests it with a Python client
+## Files
 
-## CI Integration
+- `runtests.jl` — entry point; includes the two suites below
+- `test_basic_stdio.jl` — Julia-only stdio smoke test (no Python)
+- `test_python_client.jl` — spawns the Python client against the Julia server, asserts a clean exit
+- `mcp_client_check.py` — standalone Python `mcp`-SDK client (initialize → tools → resources → error path)
+- `integration_server.jl` — the Julia MCP server under test (echo + add tools, one resource)
 
-These tests can be run in CI by:
-1. Setting up both Julia and Python environments
-2. Installing dependencies from both `Project.toml` and `requirements.txt`
-3. Running the test files
+## CI
 
-The tests use subprocess communication to test the stdio transport between Python clients and Julia servers, validating the MCP protocol implementation.
+Install Julia and a `python3`, `pip install -r requirements.txt`, then
+`julia --project=. runtests.jl`. No CondaPkg/pixi step is required.

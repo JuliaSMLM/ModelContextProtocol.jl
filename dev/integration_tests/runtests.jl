@@ -1,26 +1,10 @@
 using Test
 
-# Run all external integration tests
+# External cross-language integration tests. These spawn real subprocesses (a Julia MCP
+# server and, for the Python suite, an external `python3` running the official `mcp`
+# SDK), so they live outside the package's unit suite (`Pkg.test()`). Each included file
+# gates itself and skips cleanly when its prerequisites are absent.
 @testset "External Integration Tests" begin
-    @testset "Basic Stdio Tests" begin
-        include("test_basic_stdio.jl")
-    end
-    
-    # These tests require the Python MCP SDK which may not be available
-    # or may have API changes
-    if get(ENV, "RUN_PYTHON_INTEGRATION_TESTS", "false") == "true"
-        @testset "Stdio Protocol Tests" begin
-            include("test_stdio_protocol.jl")
-        end
-        
-        @testset "Python Client Tests" begin
-            include("test_python_client.jl")
-        end
-        
-        @testset "Full Integration Tests" begin
-            include("test_integration.jl") 
-        end
-    else
-        @info "Skipping Python integration tests. Set RUN_PYTHON_INTEGRATION_TESTS=true to run them."
-    end
+    include("test_basic_stdio.jl")     # Julia-only stdio smoke test
+    include("test_python_client.jl")   # Python `mcp` SDK <-> Julia server (auto-skips without python3+mcp)
 end

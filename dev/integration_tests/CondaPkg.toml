@@ -1,5 +1,0 @@
-[deps]
-python = ">=3.8,<4"
-
-[pip.deps]
-mcp = ">=1.0.0"
