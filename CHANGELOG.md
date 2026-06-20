@@ -24,6 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JWKS document fails authentication closed (retaining cached keys) rather than
   erroring the request. New dependency: JWTs.jl.
 
+## [0.5.5] - 2026-06-20
+
+### Fixed
+
+- **`CallToolResult` constructed with `Content` objects**: `CallToolResult.content` is
+  typed `Vector{Dict{String,Any}}`, so the documented pattern
+  `CallToolResult(content = [TextContent(...)], is_error = true)` threw
+  `MethodError(convert, Dict{String,Any}, …)` — the per-element field conversion had no
+  matching method. A new `convert(::Type{Dict{String,Any}}, ::Content)` (routing through
+  `content2dict`) lets tool handlers pass `Content` objects directly; the serialized wire
+  shape is unchanged.
+- **Quieter HTTP transport logs**: benign client disconnects no longer spam the log. The
+  `MCPLogger` no longer relays HTTP.jl's internal connection-loop logging (the `closeread`
+  EOF emitted at `error` level on every connection close) into the MCP notification
+  stream; the request handler treats a client-disconnect `EOFError`/`IOError` as `debug`
+  rather than `error` (and no longer attempts to write a `500` to an already-closed
+  stream); and the GitHub validator's network-failure warnings drop their full backtrace.
+  The package's own transport errors are still logged.
+
 ## [0.5.4] - 2026-06-10
 
 ### Added

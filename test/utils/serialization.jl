@@ -153,6 +153,31 @@ end
     @test !haskey(j_without, "_meta")
 end
 
+@testset "CallToolResult accepts Content objects" begin
+    # CallToolResult.content is Vector{Dict{String,Any}}. Content objects — what tool
+    # handlers naturally build — must convert in place via content2dict, so that
+    # `CallToolResult(content = [TextContent(...)], is_error = true)`, a documented
+    # handler pattern, constructs instead of throwing MethodError(convert, Dict, ...).
+    r = CallToolResult(content = [TextContent(text = "denied")], is_error = true)
+    @test r.content isa Vector{Dict{String,Any}}
+    @test r.content == [Dict{String,Any}("type" => "text", "text" => "denied")]
+    @test r.is_error
+
+    # mixed Content types convert element-wise
+    r2 = CallToolResult(content = [TextContent(text = "a"),
+                                   AudioContent(data = [0x52], mime_type = "audio/wav")])
+    @test length(r2.content) == 2
+    @test r2.content[1]["type"] == "text"
+    @test r2.content[2]["type"] == "audio"
+    @test !r2.is_error
+
+    # same wire shape as pre-built Dicts
+    j = JSON3.read(JSON3.write(r), Dict{String,Any})
+    @test j["content"][1]["type"] == "text"
+    @test j["content"][1]["text"] == "denied"
+    @test j["isError"] == true
+end
+
 @testset "AudioContent conversion" begin
     audio = AudioContent(data = [0x52, 0x49, 0x46, 0x46], mime_type = "audio/wav")
     dict = content2dict(audio)

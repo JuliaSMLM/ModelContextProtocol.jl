@@ -596,19 +596,26 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         end
         
     catch e
-        @error "Error handling request" error=e
-        if !HTTP.iswritestarted(stream)
-            HTTP.setstatus(stream, 500)
-            HTTP.setheader(stream, "Content-Type" => "application/json")
-            error_response = JSON3.write(Dict(
-                "jsonrpc" => "2.0",
-                "error" => Dict(
-                    "code" => -32603,
-                    "message" => "Internal error: $(e)"
-                ),
-                "id" => nothing
-            ))
-            write(stream, error_response)
+        # A client that disconnects mid-request surfaces as EOFError (read) or IOError
+        # (broken pipe on write) — benign connection teardown, not a server fault. Log it
+        # at debug and do not attempt to write a 500 to an already-closed stream.
+        if e isa EOFError || e isa Base.IOError
+            @debug "Client disconnected while handling request" error=e
+        else
+            @error "Error handling request" error=e
+            if !HTTP.iswritestarted(stream)
+                HTTP.setstatus(stream, 500)
+                HTTP.setheader(stream, "Content-Type" => "application/json")
+                error_response = JSON3.write(Dict(
+                    "jsonrpc" => "2.0",
+                    "error" => Dict(
+                        "code" => -32603,
+                        "message" => "Internal error: $(e)"
+                    ),
+                    "id" => nothing
+                ))
+                write(stream, error_response)
+            end
         end
     end
     

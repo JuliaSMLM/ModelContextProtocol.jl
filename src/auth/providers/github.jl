@@ -68,7 +68,7 @@ function fetch_github_user(token::String)
             # 401 = invalid token, other status codes are also failures
             return nothing
         elseif e isa HTTP.RequestError
-            @warn "GitHub API request failed" exception=(e, catch_backtrace())
+            @warn "GitHub API request failed" error=e
             return nothing
         else
             rethrow(e)
@@ -104,7 +104,7 @@ function check_github_org_membership(token::String, org::String)
             # 404 = not a member, 403 = org not found or no permission
             return false
         elseif e isa HTTP.RequestError
-            @warn "GitHub org membership check failed" exception=(e, catch_backtrace())
+            @warn "GitHub org membership check failed" error=e
             return false
         else
             rethrow(e)
