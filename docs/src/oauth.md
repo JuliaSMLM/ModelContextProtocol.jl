@@ -128,7 +128,7 @@ field empty (`""`) only if you deliberately want to skip that check.
 `scope`/`scp`). The `SimpleTokenValidator` and `GitHubOAuthValidator` do **not** consult
 `OAuthConfig.required_scopes`; with those, enforce authorization through the allowlist or
 in your handlers. For *per-tool* scopes (a write tool that needs `mcp:write` while reads
-need only `mcp:read`), check `ctx.authenticated_user.scopes` inside the handler — see
+need only `mcp:read`), declare `MCPTool(required_scopes = [...])` — see
 [Per-tool authorization](@ref) below.
 
 ## The validator ladder
@@ -261,24 +261,49 @@ This is the simplest authorization model: "valid token *and* on the list."
 ## Per-tool authorization
 
 `OAuthConfig.required_scopes` gates the *whole server*. To require a scope for a
-*specific* tool, use a context-aware handler and inspect the authenticated principal's
-scopes:
+*specific* tool, declare `required_scopes` on the tool:
 
 ```julia
 MCPTool(
     name = "delete_record",
-    description = "Delete a record (requires the 'mcp:write' scope).",
+    description = "Delete a record.",
     parameters = [ToolParameter(name = "id", description = "record id", type = "string", required = true)],
+    required_scopes = ["mcp:write"],
+    handler = (args) -> TextContent(text = "deleted $(args["id"])"),
+)
+```
+
+At `tools/call` dispatch — before the handler runs, and before the task/sync split so
+both execution paths are gated — every scope in `required_scopes` must be present on the
+authenticated principal's `scopes`. On a miss the call is refused with a JSON-RPC `-32004`
+(`INSUFFICIENT_SCOPE`) error naming the missing scope(s), and the handler never runs.
+`required_scopes` is server-side policy and is **not** emitted in `tools/list`.
+
+This applies only when the request carries an authenticated principal (HTTP auth active).
+When the transport has no `auth` configured, `ctx.authenticated_user` is `nothing` and the
+check is **skipped** — the server performs no authorization at all, matching how
+`OAuthConfig.required_scopes` is only enforced when a validator runs. So `required_scopes`
+is meaningful only alongside an `auth` middleware whose validator populates scopes (the
+claims-based validators — JWT/JWKS/introspection — parse them from the token's
+`scope`/`scp`).
+
+For authorization that depends on the *arguments* rather than a static scope set, inspect
+the principal inside a context-aware handler and return a tool-level error instead:
+
+```julia
+MCPTool(
+    name = "transfer",
+    description = "Move funds; large transfers also need 'mcp:admin'.",
+    parameters = [ToolParameter(name = "amount", description = "amount", type = "number", required = true)],
+    required_scopes = ["mcp:write"],   # baseline gate, enforced at dispatch
     handler = (args, ctx) -> begin
-        scopes = ctx.authenticated_user === nothing ? String[] :
-                 ctx.authenticated_user.scopes
-        if !("mcp:write" in scopes)
+        scopes = ctx.authenticated_user === nothing ? String[] : ctx.authenticated_user.scopes
+        if args["amount"] > 10_000 && !("mcp:admin" in scopes)
             return CallToolResult(
-                content = [content2dict(TextContent(text = "insufficient_scope: 'delete_record' requires 'mcp:write'"))],
+                content = [TextContent(text = "insufficient_scope: transfers over 10000 require 'mcp:admin'")],
                 is_error = true)
         end
-        # ... perform the write ...
-        TextContent(text = "deleted $(args["id"])")
+        TextContent(text = "transferred $(args["amount"])")
     end,
 )
 ```
@@ -286,9 +311,11 @@ MCPTool(
 The principal is available as `ctx.authenticated_user` (an [`AuthenticatedUser`](@ref),
 or `nothing` when the transport has no `auth` configured; `disable_auth()` instead yields
 an anonymous `AuthenticatedUser`) with `.username`, `.subject`, `.scopes`, `.provider`,
-and the raw `.claims`. Returning a `CallToolResult` with `is_error = true` reports a
-*tool-level* failure to the model (distinct from the transport-level `403`, which the
-model never sees).
+and the raw `.claims`. A declarative `required_scopes` miss surfaces as a JSON-RPC error
+(the call was refused before running); a handler returning `CallToolResult(is_error =
+true)` reports a *tool-level* failure to the model — both are distinct from the
+transport-level `403` a client gets for a server-wide scope/allowlist failure, which the
+model never sees.
 
 ## Protected Resource Metadata (RFC 9728)
 

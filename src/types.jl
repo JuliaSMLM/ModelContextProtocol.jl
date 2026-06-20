@@ -369,6 +369,13 @@ Implement a tool that can be invoked by clients in the MCP protocol.
   `:forbidden` (default — calls run synchronously), `:optional` (client may run the call
   as a task), or `:required` (client must run the call as a task). Emitted as
   `execution.taskSupport` in `tools/list` for clients that negotiated 2025-11-25.
+- `required_scopes::Vector{String}`: OAuth scopes the caller must hold to invoke this
+  tool. Enforced at `tools/call` dispatch when the request carries an authenticated
+  principal (HTTP auth active): every listed scope must be present on
+  `ctx.authenticated_user.scopes` or the call is refused with an insufficient-scope
+  error. Empty (default) means no per-tool requirement. When auth is not configured
+  (no authenticated user) the check is skipped — the server performs no authorization.
+  Not emitted in `tools/list` (it is server-side policy, not part of the tool's schema).
 
 # Parameter Definition
 Tools can define parameters in two ways:
@@ -405,6 +412,7 @@ Base.@kwdef struct MCPTool <: Tool
     output_schema::Union{Nothing,AbstractDict} = nothing
     _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in tools/list when set
     task_support::Symbol = :forbidden  # :forbidden | :optional | :required (MCP Tasks, experimental)
+    required_scopes::Vector{String} = String[]  # OAuth scopes required to call this tool (enforced when HTTP auth is active)
 end
 
 #==============================================================================

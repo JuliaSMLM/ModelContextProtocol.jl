@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key sets plus pre-built `JWTs.JWKSet` injection are supported. A malformed upstream
   JWKS document fails authentication closed (retaining cached keys) rather than
   erroring the request. New dependency: JWTs.jl.
+- **Per-tool scope enforcement**: `MCPTool(required_scopes = [...])` gates an individual
+  tool on OAuth scopes. At `tools/call` dispatch, when the request carries an
+  authenticated principal (HTTP auth active), every listed scope must be present on
+  `ctx.authenticated_user.scopes` or the call is refused with a JSON-RPC `-32004`
+  (`INSUFFICIENT_SCOPE`) error naming the missing scope(s) — checked before the task/sync
+  split so both execution paths are gated. Empty (default) means no per-tool requirement;
+  with no authenticated user (auth not configured) the check is skipped. `required_scopes`
+  is server-side policy and is not emitted in `tools/list`.
 
 ## [0.5.5] - 2026-06-20
 

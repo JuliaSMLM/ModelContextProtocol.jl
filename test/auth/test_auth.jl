@@ -389,6 +389,42 @@ end
     @test whoami(nothing) == "anon"
 end
 
+@testset "Per-tool scope enforcement" begin
+    server = mcp_server(name = "scope-test", description = "", tools = [
+        MCPTool(name = "open", description = "no scope required",
+                handler = (args) -> TextContent(text = "open-ok"),
+                parameters = ToolParameter[]),
+        MCPTool(name = "admin", description = "requires mcp:admin",
+                handler = (args) -> TextContent(text = "admin-ok"),
+                parameters = ToolParameter[],
+                required_scopes = ["mcp:admin"]),
+    ])
+    state = ServerState()
+    invoke_tool(tool, user) = JSON3.read(process_message(server, state,
+        """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"$tool","arguments":{}},"id":1}""";
+        authenticated_user = user))
+
+    admin_user = AuthenticatedUser(subject = "1", provider = "test", username = "root",
+                                   scopes = ["mcp:admin", "mcp:read"])
+    plain_user = AuthenticatedUser(subject = "2", provider = "test", username = "joe",
+                                   scopes = ["mcp:read"])
+
+    # Principal WITH the scope can call the gated tool
+    @test invoke_tool("admin", admin_user).result.content[1].text == "admin-ok"
+
+    # Principal WITHOUT the scope is refused with INSUFFICIENT_SCOPE (-32004)
+    denied = invoke_tool("admin", plain_user)
+    @test haskey(denied, :error)
+    @test denied.error.code == -32004
+    @test occursin("mcp:admin", denied.error.message)
+
+    # A tool with no required_scopes is unaffected by an under-scoped principal
+    @test invoke_tool("open", plain_user).result.content[1].text == "open-ok"
+
+    # With no authenticated principal (auth not configured) the per-tool check is skipped
+    @test invoke_tool("admin", nothing).result.content[1].text == "admin-ok"
+end
+
 @testset "JWKSValidator - signature verification (RFC 7517)" begin
     JWTs = ModelContextProtocol.JWTs
     _MbedTLS = JWTs.MbedTLS
