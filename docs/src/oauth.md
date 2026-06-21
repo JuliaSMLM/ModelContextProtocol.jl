@@ -188,15 +188,16 @@ standard practice for cross-host clock drift; lower it if your RS and AS share a
 ### `JWTValidator` — claims only (no signatures)
 
 ```julia
-JWTValidator(; clock_skew_seconds = 60)
+JWTValidator(; insecure_skip_signature_verification = true, clock_skew_seconds = 60)
 ```
 
-!!! warning "No signature verification"
+!!! danger "No signature verification — explicit opt-in required"
     `JWTValidator` decodes and validates JWT claims but does **not** verify the
-    cryptographic signature. A token from an untrusted issuer can be forged. It rejects
-    `alg=none`, but that is not a substitute for verification. Because the signature is
-    unchecked, *any* caller can forge a token carrying the expected `iss`/`aud`/scopes — so
-    "trusting the issuer" is not, by itself, enough. Use it only in development/testing, or
+    cryptographic signature. Because the signature is unchecked, *any* caller can forge a
+    token carrying the expected `iss`/`aud`/scopes — "trusting the issuer" is not, by
+    itself, enough (it rejects `alg=none`, but that is no substitute for verification). To
+    prevent accidental insecure deployment it **refuses to construct** unless you pass
+    `insecure_skip_signature_verification = true`. Use it only in development/testing, or
     when a trusted component in front of the server (e.g. a gateway) has *already* verified
     the signature. For tokens that arrive directly from a client, use [`JWKSValidator`](@ref).
 

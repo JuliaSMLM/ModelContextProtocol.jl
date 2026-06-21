@@ -341,9 +341,14 @@ end
     _b64url(s) = replace(base64encode(s), "+" => "-", "/" => "_", "=" => "")
     _mkjwt(header, payload) = "$(_b64url(JSON3.write(header))).$(_b64url(JSON3.write(payload))).sig"
     cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
-    v = JWTValidator()
+    v = JWTValidator(insecure_skip_signature_verification = true)
     future = round(Int, datetime2unix(now(UTC))) + 3600
     past = round(Int, datetime2unix(now(UTC))) - 3600
+
+    @testset "JWTValidator refuses to construct without acknowledging no signature check" begin
+        @test_throws ArgumentError JWTValidator()
+        @test JWTValidator(insecure_skip_signature_verification = true) isa JWTValidator
+    end
 
     @testset "create_auth_middleware requires an explicit validator" begin
         @test_throws UndefKeywordError create_auth_middleware(cfg)

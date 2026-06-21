@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logins). The opaque OAuth `subject` is still matched exactly. Pass
   `case_insensitive_allowlist = false` to restore exact username matching; servers whose
   allowlists relied on case-sensitive username distinctions must opt out.
+- **Breaking — `JWTValidator` requires explicit opt-in to its unsigned mode**: because it
+  validates claims but does **not** verify token signatures (any caller can forge
+  `iss`/`aud`/scopes), it now refuses to construct unless you pass
+  `insecure_skip_signature_verification = true`. Use `JWKSValidator` for tokens from an
+  authorization server (the recommended verifying path) or `IntrospectionValidator`;
+  reserve `JWTValidator` for a server behind a gateway that already verifies signatures.
 
 ## [0.5.5] - 2026-06-20
 

@@ -46,19 +46,24 @@ function validate_token(validator::SimpleTokenValidator, token::AbstractString, 
 end
 
 """
-    JWTValidator(; clock_skew_seconds::Int=60)
+    JWTValidator(; insecure_skip_signature_verification::Bool, clock_skew_seconds::Int=60)
 
-JWT token validator that validates claims (iss, aud, exp, nbf, scope).
+JWT validator that checks claims (iss, aud, exp, nbf, scope) but does **not** verify the
+token's cryptographic signature.
 
-!!! warning "No Signature Verification"
-    This validator decodes and validates JWT claims but does **not** verify
-    cryptographic signatures (JWKS/JWK). Tokens from untrusted issuers can
-    be forged. Use `IntrospectionValidator` (RFC 7662) when accepting tokens
-    from external issuers. Signature verification via JWKS may be added in a
-    future release.
+!!! danger "No signature verification — explicit opt-in required"
+    This validator decodes and validates JWT claims but does **not** verify the token's
+    cryptographic signature, so any caller can forge the issuer, audience, and scopes. It
+    therefore refuses to construct unless you pass
+    `insecure_skip_signature_verification = true`.
+
+    For tokens from an authorization server, use [`JWKSValidator`](@ref) (signature
+    verification via JWKS — the recommended path) or [`IntrospectionValidator`](@ref)
+    (RFC 7662). Choose `JWTValidator` only when this server sits behind a gateway that has
+    already verified the signature.
 
 # Fields
-- `jwks_cache::Dict{String,Any}`: Reserved for future JWKS support
+- `jwks_cache::Dict{String,Any}`: Unused (retained for struct-layout compatibility)
 - `clock_skew_seconds::Int`: Allowed clock skew for exp/nbf validation
 """
 struct JWTValidator <: TokenValidator
@@ -66,7 +71,18 @@ struct JWTValidator <: TokenValidator
     clock_skew_seconds::Int
 end
 
-JWTValidator(; clock_skew_seconds::Int=60) = JWTValidator(Dict{String,Any}(), clock_skew_seconds)
+function JWTValidator(; insecure_skip_signature_verification::Bool=false,
+                       clock_skew_seconds::Int=60)
+    if !insecure_skip_signature_verification
+        throw(ArgumentError(
+            "JWTValidator does NOT verify token signatures — an attacker can forge any " *
+            "issuer/audience/scopes. Use `JWKSValidator(jwks_uri)` for tokens from an " *
+            "authorization server (recommended), or `IntrospectionValidator` (RFC 7662). " *
+            "Only if this server sits behind a gateway that already verifies signatures, " *
+            "construct it explicitly: `JWTValidator(insecure_skip_signature_verification = true)`."))
+    end
+    return JWTValidator(Dict{String,Any}(), clock_skew_seconds)
+end
 
 function Base.show(io::IO, v::JWTValidator)
     print(io, "JWTValidator(skew=", v.clock_skew_seconds, "s)")
