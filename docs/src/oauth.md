@@ -40,10 +40,12 @@ metadata endpoint, below) goes through `authenticate_request`:
 4. On success, the [`AuthenticatedUser`](@ref) is carried to the tool handler as
    `ctx.authenticated_user`.
 
-Failures never reveal *why* a token was rejected (expired vs. wrong issuer vs. bad
-signature vs. which scope is missing). The client receives a fixed, generic OAuth error
-so the endpoint cannot be used as a token/policy oracle; the specific reason is retained
-only for server-side logging.
+Transport-level authentication failures never reveal *why* a token was rejected (expired
+vs. wrong issuer vs. bad signature vs. a missing server-wide scope). The client receives a
+fixed, generic OAuth error so the endpoint cannot be used as a token/policy oracle; the
+specific reason is retained only for server-side logging. (Per-tool `required_scopes` are
+different: they are checked *after* authentication, and the `-32004` error does name the
+missing scope — see [Per-tool authorization](@ref).)
 
 | Outcome | HTTP status | `WWW-Authenticate` |
 |---|---|---|
@@ -124,8 +126,10 @@ OAuthConfig(;
 field empty (`""`) only if you deliberately want to skip that check.
 
 `required_scopes` is checked on every request by the claims-based validators —
-`JWTValidator`, `JWKSValidator`, and `IntrospectionValidator` (they read the token's
-`scope`/`scp`). The `SimpleTokenValidator` and `GitHubOAuthValidator` do **not** consult
+`JWTValidator`, `JWKSValidator`, and `IntrospectionValidator`. `JWTValidator`/`JWKSValidator`
+read the JWT's `scope` (space-delimited string) or `scp` (array) claim; `IntrospectionValidator`
+reads the `scope` field of the RFC 7662 introspection response. The `SimpleTokenValidator`
+and `GitHubOAuthValidator` do **not** consult
 `OAuthConfig.required_scopes`; with those, enforce authorization through the allowlist or
 in your handlers. For *per-tool* scopes (a write tool that needs `mcp:write` while reads
 need only `mcp:read`), declare `MCPTool(required_scopes = [...])` — see
@@ -188,7 +192,9 @@ standard practice for cross-host clock drift; lower it if your RS and AS share a
 ### `JWTValidator` — claims only (no signatures)
 
 ```julia
-JWTValidator(; insecure_skip_signature_verification = true, clock_skew_seconds = 60)
+# `insecure_skip_signature_verification` defaults to `false`, and the constructor THROWS
+# unless you pass `true` — an explicit acknowledgement that signatures are not verified:
+JWTValidator(insecure_skip_signature_verification = true, clock_skew_seconds = 60)
 ```
 
 !!! danger "No signature verification — explicit opt-in required"
@@ -221,7 +227,8 @@ network round-trip to the AS.
 auth = create_github_auth(;
     allowed_users = ["alice", "bob"],   # GitHub logins; empty = any authenticated user
     required_org  = "JuliaSMLM",         # optional: require *active* org membership
-    cache_ttl_seconds = 300)
+    cache_ttl_seconds = 300,
+    case_insensitive_allowlist = true)   # fold username case (default)
 ```
 
 Validates a GitHub access token by calling GitHub's `/user` API, with a short-lived
@@ -238,6 +245,7 @@ different model from brokering GitHub through an Authorization Server (which is 
 create_auth_middleware(config::OAuthConfig;
                        validator::TokenValidator,                 # REQUIRED — no default
                        allowlist::Union{Set{String},Nothing} = nothing,
+                       case_insensitive_allowlist::Bool = true,   # fold username case (see Allowlists)
                        enabled::Bool = true) -> AuthMiddleware
 ```
 
@@ -282,13 +290,15 @@ authenticated principal's `scopes`. On a miss the call is refused with a JSON-RP
 (`INSUFFICIENT_SCOPE`) error naming the missing scope(s), and the handler never runs.
 `required_scopes` is server-side policy and is **not** emitted in `tools/list`.
 
-This applies only when the request carries an authenticated principal (HTTP auth active).
-When the transport has no `auth` configured, `ctx.authenticated_user` is `nothing` and the
-check is **skipped** — the server performs no authorization at all, matching how
-`OAuthConfig.required_scopes` is only enforced when a validator runs. So `required_scopes`
-is meaningful only alongside an `auth` middleware whose validator populates scopes (the
-claims-based validators — JWT/JWKS/introspection — parse them from the token's
-`scope`/`scp`).
+The exact predicate is `ctx.authenticated_user !== nothing`: the check runs whenever the
+request carries an authenticated principal. With `auth = nothing` (no middleware)
+`authenticated_user` is `nothing` and the check is **skipped** — the server performs no
+authorization at all. [`disable_auth`](@ref) is *not* the same: it yields an **anonymous**
+`AuthenticatedUser` with no scopes, so a tool with non-empty `required_scopes` is
+**denied** under it, not skipped — don't rely on `disable_auth()` to bypass per-tool
+scopes. `required_scopes` is therefore meaningful only alongside an `auth` middleware whose
+validator populates scopes: `JWTValidator`/`JWKSValidator` read the JWT's `scope`/`scp`
+claim, and `IntrospectionValidator` reads the introspection response's `scope`.
 
 For authorization that depends on the *arguments* rather than a static scope set, inspect
 the principal inside a context-aware handler and return a tool-level error instead:

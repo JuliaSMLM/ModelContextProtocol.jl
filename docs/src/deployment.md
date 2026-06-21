@@ -268,6 +268,13 @@ connect(server.transport)
 start!(server)
 ```
 
+!!! note "Per-tool scopes must be issued and advertised"
+    `required_scopes = ["mcp:read"]` above is the server-wide baseline. If you gate
+    individual tools with `MCPTool(required_scopes = ["mcp:write"])` (0.6), the AS must
+    actually issue `mcp:write` in the token, and you should list it in
+    `ProtectedResourceMetadata(scopes_supported = [...])` so clients can discover it —
+    per-tool scopes are **not** advertised through `tools/list`.
+
 The three URLs that must agree:
 
 | Value | Set in | Must equal |
