@@ -236,9 +236,11 @@ an *identity provider* in Keycloak — the MCP server still just sees ordinary s
     error, which is a **GitHub** error, not a Keycloak one.
 
 !!! note "Brokered usernames are normalized"
-    Keycloak lowercases federated usernames, so GitHub login `Alice` arrives as `alice`.
-    Put the lowercase form in your [`allowlist`](@ref AuthMiddleware), or inspect a real
-    token's `preferred_username`.
+    Keycloak lowercases federated usernames, so GitHub login `Alice` arrives as `alice` in
+    the token. Allowlist username matching is **case-insensitive by default**
+    ([`AuthMiddleware`](@ref)'s `case_insensitive_allowlist`), so either case in your
+    allowlist works; set it `false` for exact matching and then use the lowercase form (or
+    inspect a real token's `preferred_username`).
 
 ## Wiring the MCP server
 
@@ -254,7 +256,7 @@ resource = "https://mcp.example.org/mcp"
 auth = create_auth_middleware(
     OAuthConfig(issuer = issuer, audience = resource, required_scopes = ["mcp:read"]),
     validator = JWKSValidator("$issuer/protocol/openid-connect/certs"),
-    allowlist = Set(["alice"]),   # token usernames; lowercase for brokered GitHub logins
+    allowlist = Set(["alice"]),   # GitHub usernames (matched case-insensitively by default)
 )
 meta = ProtectedResourceMetadata(
     resource = resource, authorization_servers = [issuer], scopes_supported = ["mcp:read"])
