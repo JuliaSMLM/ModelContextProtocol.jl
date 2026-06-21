@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no authenticated user (auth not configured) the check is skipped. `required_scopes`
   is server-side policy and is not emitted in `tools/list`.
 
+### Changed
+
+- **Breaking — allowlist username matching is now case-insensitive by default**:
+  `check_allowlist` (and the `allowlist` on `AuthMiddleware`, `create_auth_middleware`,
+  `create_simple_auth`, and `create_github_auth`) compares **usernames** case-insensitively,
+  because identity providers vary or normalize case (e.g. Keycloak lowercases GitHub
+  logins). The opaque OAuth `subject` is still matched exactly. Pass
+  `case_insensitive_allowlist = false` to restore exact username matching; servers whose
+  allowlists relied on case-sensitive username distinctions must opt out.
+
 ## [0.5.5] - 2026-06-20
 
 ### Fixed

@@ -101,6 +101,7 @@ end
     AuthMiddleware(; config::OAuthConfig,
                     validator::TokenValidator,
                     allowlist::Union{Set{String},Nothing}=nothing,
+                    case_insensitive_allowlist::Bool=true,
                     enabled::Bool=true)
 
 Middleware for authenticating HTTP requests to an MCP server.
@@ -109,12 +110,17 @@ Middleware for authenticating HTTP requests to an MCP server.
 - `config::OAuthConfig`: OAuth configuration
 - `validator::TokenValidator`: Token validation strategy
 - `allowlist::Union{Set{String},Nothing}`: Optional set of allowed usernames/subjects
+- `case_insensitive_allowlist::Bool`: When `true` (default), allowlist **username**
+  matching is case-insensitive (identity providers vary/normalize case — e.g. Keycloak
+  lowercases GitHub logins); the opaque OAuth `subject` is always matched exactly. Set
+  `false` for exact username matching.
 - `enabled::Bool`: Whether authentication is enabled (for development/testing)
 """
 Base.@kwdef mutable struct AuthMiddleware
     config::OAuthConfig
     validator::TokenValidator
     allowlist::Union{Set{String},Nothing} = nothing
+    case_insensitive_allowlist::Bool = true
     enabled::Bool = true
 end
 
@@ -184,22 +190,35 @@ Validate an OAuth token using the specified validator.
 function validate_token end  # To be implemented by concrete validators
 
 """
-    check_allowlist(user::AuthenticatedUser, allowlist::Set{String}) -> Bool
+    check_allowlist(user::AuthenticatedUser, allowlist::Set{String};
+                    case_insensitive::Bool=true) -> Bool
 
-Check if user is in the allowlist.
+Check whether `user` is in the allowlist, by username then by subject.
+
+Username matching honors `case_insensitive` (default `true`) because identity providers
+vary or normalize username case (e.g. Keycloak lowercases GitHub logins). The opaque
+OAuth `subject` is ALWAYS matched exactly — case-folding a stable identifier could
+collide two distinct principals.
 
 # Arguments
 - `user::AuthenticatedUser`: The authenticated user
 - `allowlist::Set{String}`: Set of allowed usernames or subjects
+- `case_insensitive::Bool=true`: Match usernames case-insensitively
 
 # Returns
 `true` if user is allowed.
 """
-function check_allowlist(user::AuthenticatedUser, allowlist::Set{String})
-    # Check both username and subject
-    if !isnothing(user.username) && user.username in allowlist
-        return true
+function check_allowlist(user::AuthenticatedUser, allowlist::Set{String};
+                         case_insensitive::Bool=true)
+    if !isnothing(user.username)
+        if case_insensitive
+            uname = lowercase(user.username)
+            any(entry -> lowercase(entry) == uname, allowlist) && return true
+        elseif user.username in allowlist
+            return true
+        end
     end
+    # The opaque subject is always matched exactly.
     return user.subject in allowlist
 end
 
@@ -247,7 +266,8 @@ function authenticate_request(
 
     # Check allowlist if configured
     if !isnothing(middleware.allowlist)
-        if !check_allowlist(result.user, middleware.allowlist)
+        if !check_allowlist(result.user, middleware.allowlist;
+                            case_insensitive = middleware.case_insensitive_allowlist)
             return AuthResult("User not in allowlist", :forbidden)
         end
     end

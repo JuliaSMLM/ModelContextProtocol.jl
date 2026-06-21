@@ -251,12 +251,14 @@ When an `allowlist::Set{String}` is configured, a successfully authenticated pri
 must additionally have its **username or subject** in the set, or the request is `403`.
 This is the simplest authorization model: "valid token *and* on the list."
 
-!!! note "Allowlist matching is exact and case-sensitive"
-    Membership is an exact string match against `username` first, then `subject`. This
-    matters with brokered identity: Keycloak, for example, lowercases federated
-    usernames, so a GitHub login `Alice` becomes `alice` in the token — your allowlist
-    must contain the value *as it appears in the token*. Inspect a real token's
-    `preferred_username` claim rather than assuming.
+!!! note "Username matching is case-insensitive; subjects are exact"
+    By default the `username` comparison is **case-insensitive**
+    (`case_insensitive_allowlist = true`), because brokered identity normalizes case —
+    Keycloak, for example, lowercases federated usernames, so a GitHub login `Alice`
+    arrives as `alice` in the token. The opaque OAuth `subject` is **always** matched
+    exactly (case-folding a stable identifier could collide two principals). Pass
+    `case_insensitive_allowlist = false` (on `AuthMiddleware` or any `create_*_auth`
+    constructor) for exact username matching.
 
 ## Per-tool authorization
 

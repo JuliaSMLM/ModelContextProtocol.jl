@@ -121,6 +121,22 @@
         # User not in allowlist
         user3 = AuthenticatedUser(subject = "sub3", provider = "test", username = "user3")
         @test ModelContextProtocol.check_allowlist(user3, allowlist) == false
+
+        # Case-insensitive username matching is the default
+        upper = AuthenticatedUser(subject = "subU", provider = "test", username = "USER1")
+        @test ModelContextProtocol.check_allowlist(upper, allowlist) == true
+        # an allowlist entry in a different case also matches
+        @test ModelContextProtocol.check_allowlist(
+            AuthenticatedUser(subject = "s", provider = "test", username = "alice"),
+            Set(["Alice"])) == true
+
+        # Opt out with case_insensitive=false: exact username match required
+        @test ModelContextProtocol.check_allowlist(upper, allowlist; case_insensitive = false) == false
+        @test ModelContextProtocol.check_allowlist(user1, allowlist; case_insensitive = false) == true
+
+        # The opaque subject is ALWAYS matched exactly (never case-folded)
+        subj_variant = AuthenticatedUser(subject = "SUB2", provider = "test", username = nothing)
+        @test ModelContextProtocol.check_allowlist(subj_variant, allowlist) == false
     end
 
     @testset "AuthMiddleware with allowlist" begin
