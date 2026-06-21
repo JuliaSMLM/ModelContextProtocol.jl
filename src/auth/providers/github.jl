@@ -211,7 +211,8 @@ auth = create_github_auth(
 function create_github_auth(;
     allowed_users::Union{Vector{String},Set{String}} = String[],
     required_org::Union{String,Nothing} = nothing,
-    cache_ttl_seconds::Int = 300
+    cache_ttl_seconds::Int = 300,
+    case_insensitive_allowlist::Bool = true
 )
     # Convert to Set if needed
     allowlist = if allowed_users isa Set
@@ -236,6 +237,7 @@ function create_github_auth(;
         config = config,
         validator = validator,
         allowlist = allowlist,
+        case_insensitive_allowlist = case_insensitive_allowlist,
         enabled = true
     )
 end

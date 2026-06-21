@@ -130,7 +130,7 @@ export
     # Authentication — OAuth Resource Server (MCP 2025-11-25 authorization)
     AuthProvider, TokenValidator, AuthenticatedUser,
     OAuthConfig, AuthResult, AuthMiddleware, ProtectedResourceMetadata,
-    SimpleTokenValidator, JWTValidator, IntrospectionValidator,
+    SimpleTokenValidator, JWTValidator, JWKSValidator, IntrospectionValidator,
     create_auth_middleware, create_simple_auth, disable_auth,
     create_protected_resource_metadata, create_github_resource_metadata,
     authenticate_request, validate_token, extract_bearer_token,

@@ -114,12 +114,14 @@ function create_auth_middleware(
     config::OAuthConfig;
     validator::TokenValidator,
     allowlist::Union{Set{String},Nothing} = nothing,
+    case_insensitive_allowlist::Bool = true,
     enabled::Bool = true
 )
     return AuthMiddleware(
         config = config,
         validator = validator,
         allowlist = allowlist,
+        case_insensitive_allowlist = case_insensitive_allowlist,
         enabled = enabled
     )
 end
@@ -144,7 +146,8 @@ auth = create_simple_auth(Dict(
 """
 function create_simple_auth(
     tokens::Dict{String,String};
-    allowlist::Union{Set{String},Nothing} = nothing
+    allowlist::Union{Set{String},Nothing} = nothing,
+    case_insensitive_allowlist::Bool = true
 )
     validator = SimpleTokenValidator()
 
@@ -165,6 +168,7 @@ function create_simple_auth(
         config = config,
         validator = validator,
         allowlist = allowlist,
+        case_insensitive_allowlist = case_insensitive_allowlist,
         enabled = true
     )
 end

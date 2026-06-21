@@ -3,6 +3,7 @@
 
 using Base64
 using Dates: datetime2unix
+import JWTs
 
 """
     SimpleTokenValidator(; tokens::Dict{String,AuthenticatedUser})
@@ -45,19 +46,24 @@ function validate_token(validator::SimpleTokenValidator, token::AbstractString, 
 end
 
 """
-    JWTValidator(; clock_skew_seconds::Int=60)
+    JWTValidator(; insecure_skip_signature_verification::Bool, clock_skew_seconds::Int=60)
 
-JWT token validator that validates claims (iss, aud, exp, nbf, scope).
+JWT validator that checks claims (iss, aud, exp, nbf, scope) but does **not** verify the
+token's cryptographic signature.
 
-!!! warning "No Signature Verification"
-    This validator decodes and validates JWT claims but does **not** verify
-    cryptographic signatures (JWKS/JWK). Tokens from untrusted issuers can
-    be forged. Use `IntrospectionValidator` (RFC 7662) when accepting tokens
-    from external issuers. Signature verification via JWKS may be added in a
-    future release.
+!!! danger "No signature verification — explicit opt-in required"
+    This validator decodes and validates JWT claims but does **not** verify the token's
+    cryptographic signature, so any caller can forge the issuer, audience, and scopes. It
+    therefore refuses to construct unless you pass
+    `insecure_skip_signature_verification = true`.
+
+    For tokens from an authorization server, use [`JWKSValidator`](@ref) (signature
+    verification via JWKS — the recommended path) or [`IntrospectionValidator`](@ref)
+    (RFC 7662). Choose `JWTValidator` only when this server sits behind a gateway that has
+    already verified the signature.
 
 # Fields
-- `jwks_cache::Dict{String,Any}`: Reserved for future JWKS support
+- `jwks_cache::Dict{String,Any}`: Unused (retained for struct-layout compatibility)
 - `clock_skew_seconds::Int`: Allowed clock skew for exp/nbf validation
 """
 struct JWTValidator <: TokenValidator
@@ -65,7 +71,18 @@ struct JWTValidator <: TokenValidator
     clock_skew_seconds::Int
 end
 
-JWTValidator(; clock_skew_seconds::Int=60) = JWTValidator(Dict{String,Any}(), clock_skew_seconds)
+function JWTValidator(; insecure_skip_signature_verification::Bool=false,
+                       clock_skew_seconds::Int=60)
+    if !insecure_skip_signature_verification
+        throw(ArgumentError(
+            "JWTValidator does NOT verify token signatures — an attacker can forge any " *
+            "issuer/audience/scopes. Use `JWKSValidator(jwks_uri)` for tokens from an " *
+            "authorization server (recommended), or `IntrospectionValidator` (RFC 7662). " *
+            "Only if this server sits behind a gateway that already verifies signatures, " *
+            "construct it explicitly: `JWTValidator(insecure_skip_signature_verification = true)`."))
+    end
+    return JWTValidator(Dict{String,Any}(), clock_skew_seconds)
+end
 
 function Base.show(io::IO, v::JWTValidator)
     print(io, "JWTValidator(skew=", v.clock_skew_seconds, "s)")
@@ -140,10 +157,13 @@ function validate_jwt_claims(claims::Dict{String,Any}, config::OAuthConfig, cloc
         return AuthResult("Token expired", :expired)
     end
 
-    # Check not-before
+    # Check not-before. A present `nbf` MUST be numeric (RFC 7519 NumericDate); a
+    # non-numeric value is malformed and rejected rather than silently ignored (which
+    # would let a string nbf bypass the not-before gate).
     if haskey(claims, "nbf")
         nbf = claims["nbf"]
-        if nbf isa Number && now_ts < nbf - clock_skew
+        nbf isa Number || return AuthResult("Token has malformed nbf", :invalid_token)
+        if now_ts < nbf - clock_skew
             return AuthResult("Token not yet valid", :not_yet_valid)
         end
     end
@@ -226,6 +246,224 @@ function validate_token(validator::JWTValidator, token::AbstractString, config::
     end
 
     # Validate claims
+    return validate_jwt_claims(claims, config, validator.clock_skew_seconds)
+end
+
+# Upper bound on a JWKS document we will read into memory. Real JWKS documents are
+# a few KB; 1 MB is generous headroom while bounding a compromised/misrouted endpoint.
+const MAX_JWKS_BYTES = 1_000_000
+
+"""
+    JWKSValidator(jwks_uri::String; allowed_algs=["RS256", "RS384", "RS512"],
+                  clock_skew_seconds=60, refresh_interval_seconds=300,
+                  allow_insecure_http=false)
+    JWKSValidator(keyset::JWTs.JWKSet; ...)
+
+JWT validator with cryptographic signature verification against a JSON Web Key Set
+(RFC 7517), plus the same claims validation as `JWTValidator` (iss, aud, exp, nbf,
+scopes — all fail-closed). This is the recommended validator for JWTs from external
+authorization servers (Keycloak, Auth0, GitHub Apps, etc.).
+
+Keys are fetched lazily: construction never touches the network, so a server can
+start while its authorization server is down (requests fail closed until keys load).
+An unknown `kid` triggers a JWKS re-fetch (key rotation) at most once per
+`refresh_interval_seconds` — rate-limited so attacker-supplied `kid` values cannot
+hammer the JWKS endpoint. Fetches use bounded HTTP timeouts and a response size cap
+(`MAX_JWKS_BYTES`), and never hold the validator lock during network I/O.
+
+`file://` URIs are supported for local key sets. An `http://` URL is rejected at
+construction unless `allow_insecure_http=true` (a plaintext JWKS lets an on-path
+attacker swap in their own signing key — use only for localhost/testing). The second
+constructor accepts a pre-built `JWTs.JWKSet` (e.g. static keys) directly; with no URL
+it never refreshes.
+
+!!! note "Algorithm allowlist"
+    Tokens whose header `alg` is not in `allowed_algs` are rejected before any
+    cryptography runs (this also rejects `alg=none`). The default allows the RSA
+    family only; do not add HMAC algorithms (`HS*`) for keys published in a public
+    JWKS document.
+
+# Fields
+- `keyset::JWTs.JWKSet`: Key set (url-backed or static) holding keys by `kid`
+- `allowed_algs::Vector{String}`: Permitted JWT signature algorithms
+- `clock_skew_seconds::Int`: Allowed clock skew for exp/nbf validation
+- `refresh_interval_seconds::Float64`: Minimum seconds between JWKS fetch attempts (>= 0)
+"""
+mutable struct JWKSValidator <: TokenValidator
+    keyset::JWTs.JWKSet
+    allowed_algs::Vector{String}
+    clock_skew_seconds::Int
+    refresh_interval_seconds::Float64
+    last_refresh_attempt::Float64  # time() of the last fetch attempt; -Inf = never
+    lock::ReentrantLock
+end
+
+function JWKSValidator(keyset::JWTs.JWKSet;
+                       allowed_algs::Vector{String}=["RS256", "RS384", "RS512"],
+                       clock_skew_seconds::Int=60,
+                       refresh_interval_seconds::Real=300,
+                       allow_insecure_http::Bool=false)
+    if startswith(keyset.url, "http://") && !allow_insecure_http
+        throw(ArgumentError(
+            "Refusing plaintext http:// JWKS URL '$(keyset.url)': an on-path attacker " *
+            "could substitute signing keys. Use https://, or pass allow_insecure_http=true " *
+            "for localhost/testing."))
+    end
+    # A negative interval is a configuration error; clamp to 0 (no throttle).
+    JWKSValidator(keyset, allowed_algs, clock_skew_seconds,
+                  max(0.0, Float64(refresh_interval_seconds)), -Inf, ReentrantLock())
+end
+
+JWKSValidator(jwks_uri::String; kwargs...) = JWKSValidator(JWTs.JWKSet(jwks_uri); kwargs...)
+
+function Base.show(io::IO, v::JWKSValidator)
+    nkeys = length(v.keyset.keys)
+    src = isempty(v.keyset.url) ? "static" : v.keyset.url
+    print(io, "JWKSValidator(", src, ", ", nkeys, " keys)")
+end
+
+"""
+    fetch_jwks_keys(url::String) -> Union{Vector{Dict{String,Any}},Nothing}
+
+Fetch and parse the `keys` array of a JWKS document from an `http(s)://` or `file://`
+URL. Network fetches use bounded connect/read timeouts and reject responses larger than
+`MAX_JWKS_BYTES` (read is aborted once the cap is exceeded, so an oversized or unbounded
+body cannot exhaust memory). Returns `nothing` on any failure (fetch, oversize, parse,
+or missing `keys` field) — callers fail closed.
+"""
+function fetch_jwks_keys(url::String)
+    try
+        body = if startswith(url, "file://")
+            path = url[8:end]
+            (isfile(path) && filesize(path) <= MAX_JWKS_BYTES) || return nothing
+            read(path, String)
+        else
+            captured = fetch_jwks_http_body(url)
+            captured === nothing && return nothing
+            captured
+        end
+        parsed = JSON3.read(body)
+        haskey(parsed, "keys") || return nothing
+        # Keep signature keys only: real-world JWKS documents (e.g. Keycloak) also
+        # publish encryption keys (use="enc", alg=RSA-OAEP) that can never verify a
+        # token and make JWTs.refresh! warn on every fetch.
+        # JWTs.refresh! expects plain Dicts (JSON.parse shape); JWK fields are flat strings
+        return [Dict{String,Any}(String(k) => v for (k, v) in pairs(key))
+                for key in parsed["keys"] if get(key, "use", "sig") == "sig"]
+    catch e
+        @debug "JWKS fetch failed" url=url error=e
+        return nothing
+    end
+end
+
+"""
+    fetch_jwks_http_body(url::String) -> Union{String,Nothing}
+
+GET a JWKS over HTTP(S) with bounded connect/read timeouts, streaming the body and
+aborting once `MAX_JWKS_BYTES` is exceeded. Returns the body string on a 200, or
+`nothing` on non-200, oversize, or transport error.
+"""
+function fetch_jwks_http_body(url::String)
+    # HTTP.open returns the Response, not the closure's value, so capture the body
+    # into a closed-over variable. It stays `nothing` on non-200 or oversize, both of
+    # which leave callers failing closed.
+    #
+    # Accept-Encoding identity: this raw stream read bypasses HTTP.jl's transparent
+    # decompression, so a gzip-encoded body (e.g. any CDN/proxy in front of the AS)
+    # would arrive compressed and fail JSON parsing. Ask for the bytes uncompressed.
+    body = nothing
+    HTTP.open("GET", url, ["Accept-Encoding" => "identity", "Accept" => "application/json"];
+              connect_timeout=10, readtimeout=10, retry=false) do io
+        HTTP.startread(io)
+        HTTP.status(io.message) == 200 || return
+        buf = IOBuffer()
+        over = false
+        while !eof(io)
+            write(buf, readavailable(io))
+            if buf.size > MAX_JWKS_BYTES  # over cap: abort the read, fail closed
+                over = true
+                break
+            end
+        end
+        over || (body = String(take!(buf)))
+    end
+    return body
+end
+
+"""
+    lookup_jwks_key!(validator::JWKSValidator, kid::String) -> Union{JWTs.JWK,Nothing}
+
+Look up a verification key by `kid`, re-fetching the JWKS on a miss (key rotation)
+subject to the refresh rate limit. The network fetch happens outside the validator
+lock; the key-set swap and re-lookup happen under it.
+"""
+function lookup_jwks_key!(validator::JWKSValidator, kid::String)
+    needs_refresh = lock(validator.lock) do
+        key = get(validator.keyset.keys, kid, nothing)
+        key !== nothing && return key
+        isempty(validator.keyset.url) && return nothing
+        if time() - validator.last_refresh_attempt >= validator.refresh_interval_seconds
+            validator.last_refresh_attempt = time()
+            return :refresh
+        end
+        nothing
+    end
+    needs_refresh === :refresh || return needs_refresh
+
+    fresh = fetch_jwks_keys(validator.keyset.url)
+    rebuilt = if fresh === nothing
+        nothing
+    else
+        # JWTs.refresh! can throw on a malformed JWK entry (it reads kid/kty before its
+        # own per-key try). Contain that so a bad upstream document fails auth closed
+        # rather than 500-ing, and keep the previously cached keys on failure.
+        try
+            keys = Dict{String,JWTs.JWK}()
+            JWTs.refresh!(fresh, keys)  # builds verification keys; skips unsupported entries
+            keys
+        catch e
+            @debug "JWKS key build failed; retaining cached keys" error=e
+            nothing
+        end
+    end
+    lock(validator.lock) do
+        rebuilt !== nothing && (validator.keyset.keys = rebuilt)
+        get(validator.keyset.keys, kid, nothing)
+    end
+end
+
+function validate_token(validator::JWKSValidator, token::AbstractString, config::OAuthConfig)
+    tok = String(token)
+
+    # Header gate before any cryptography: well-formed, allowlisted alg, kid present.
+    header = decode_jwt_header(tok)
+    isnothing(header) && return AuthResult("Invalid JWT format", :invalid_format)
+    alg = get(header, "alg", nothing)
+    if !(alg isa AbstractString) || !(String(alg) in validator.allowed_algs)
+        return AuthResult("Unsupported or missing JWT algorithm", :invalid_token)
+    end
+    kid = get(header, "kid", nothing)
+    if !(kid isa AbstractString) || isempty(kid)
+        return AuthResult("JWT missing key id (kid)", :invalid_token)
+    end
+
+    key = lookup_jwks_key!(validator, String(kid))
+    key === nothing && return AuthResult("Unknown signing key", :invalid_token)
+
+    # Cryptographic signature verification. JWTs also cross-checks the token's alg
+    # against the resolved key's algorithm, so a kid pointing at a key of a different
+    # type cannot validate.
+    jwt = JWTs.JWT(; jwt=tok)
+    JWTs.issigned(jwt) || return AuthResult("Invalid JWT format", :invalid_format)
+    verified = try
+        JWTs.validate!(jwt, key; algorithms=validator.allowed_algs)
+    catch
+        false
+    end
+    verified === true || return AuthResult("Invalid token signature", :invalid_token)
+
+    claims = decode_jwt_payload(tok)
+    isnothing(claims) && return AuthResult("Invalid JWT format", :invalid_format)
     return validate_jwt_claims(claims, config, validator.clock_skew_seconds)
 end
 

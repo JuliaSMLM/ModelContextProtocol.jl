@@ -780,6 +780,25 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
 
     tool = ctx.server.tools[tool_idx]
 
+    # Per-tool scope enforcement. When a tool declares `required_scopes` and the request
+    # carries an authenticated principal (HTTP auth active), every required scope must be
+    # present on that principal or the call is refused. With no authenticated user
+    # (`authenticated_user === nothing`, i.e. auth not configured) the check is skipped —
+    # the server performs no authorization, matching how the global
+    # `OAuthConfig.required_scopes` is only enforced when a validator runs. Checked before
+    # the task/sync split so both execution paths are gated.
+    if !isempty(tool.required_scopes) && ctx.authenticated_user !== nothing
+        missing_scopes = setdiff(tool.required_scopes, ctx.authenticated_user.scopes)
+        if !isempty(missing_scopes)
+            return HandlerResult(
+                error=ErrorInfo(
+                    code=ErrorCodes.INSUFFICIENT_SCOPE,
+                    message="Insufficient scope for tool '$(tool.name)': missing $(join(missing_scopes, ", "))"
+                )
+            )
+        end
+    end
+
     # Apply default values to arguments if not provided
     args = isnothing(params.arguments) ? LittleDict{String,Any}() : copy(params.arguments)
 

@@ -18,4 +18,5 @@ module ErrorCodes
     const TOOL_NOT_FOUND = -32001
     const INVALID_URI = -32002
     const PROMPT_NOT_FOUND = -32003
+    const INSUFFICIENT_SCOPE = -32004  # authenticated principal lacks a tool's required_scopes
 end

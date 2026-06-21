@@ -31,6 +31,10 @@ makedocs(;
         "Integration" => [
             "Claude Desktop" => "claude.md",
         ],
+        "Security" => [
+            "Authentication" => "oauth.md",
+            "Deployment" => "deployment.md",
+        ],
         "API Reference" => "api.md",
     ],
     doctest = true,
