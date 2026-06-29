@@ -23,7 +23,7 @@ jobs:
     env:
       MCP_TEST_E2E: "true"   # force the E2E suite even though CI=true on Actions
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
