@@ -8,3 +8,5 @@
 *.vscode
 examples/Manifest.toml
 tmp/
+# CI-only Node toolchain for the MCP Inspector smoke tests; package-lock.json IS committed
+.github/inspector/node_modules/
