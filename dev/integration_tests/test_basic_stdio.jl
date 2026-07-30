@@ -36,12 +36,15 @@ using JSON3
         # Test message
         test_msg = Dict("test" => "hello", "value" => 42)
         
-        # Run the server and communicate
+        # Run the server and communicate. The subprocess must inherit this harness's
+        # project environment: the server code does `using JSON3`, and without
+        # --project it would resolve against the machine's global environment —
+        # working or failing depending on what happens to be installed there.
         julia_exe = Base.julia_cmd().exec[1]
-        
+
         output = read(pipeline(
             `echo $(JSON3.write(test_msg))`,
-            `$julia_exe $server_file`
+            `$julia_exe --project=$(Base.active_project()) $server_file`
         ), String)
         
         # Parse response
