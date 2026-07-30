@@ -127,16 +127,26 @@ end
                             stdin = IOBuffer(join(reqs, "\n") * "\n"),
                             stderr = errbuf), String)
         resp = Dict{Int,Any}()
+        notifications = Any[]
         for line in split(out, '\n')
             startswith(line, "{") || continue
             msg = JSON3.read(line)
-            haskey(msg, :id) && (resp[msg.id] = msg)
+            if haskey(msg, :id)
+                resp[msg.id] = msg
+            elseif haskey(msg, :method)
+                push!(notifications, msg)
+            end
         end
         @test haskey(resp[2], :result)                       # setLevel accepted
         @test resp[4].error.code == -32602                   # invalid level rejected
-        stderr_text = String(take!(errbuf))
-        @test occursin("request completed", stderr_text)     # lifecycle lines now flowing
-        @test occursin("notifications/message", stderr_text) # in MCP log format
+        # Once the client has initialized, log records are DELIVERED TO THE CLIENT as
+        # notifications/message on stdout (interleaved with responses per stdio spec) —
+        # not printed to stderr. The lifecycle @debug lines enabled by setLevel must
+        # therefore show up as real wire notifications.
+        lifecycle = filter(n -> n.method == "notifications/message" &&
+                                occursin("request completed", JSON3.write(n)), notifications)
+        @test !isempty(lifecycle)
+        @test !occursin("request completed", String(take!(errbuf)))  # no longer on stderr
     end
 
     @testset "Streamable HTTP" begin

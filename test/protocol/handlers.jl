@@ -466,4 +466,44 @@ end
         @test notif["params"]["progress"] == 2.0
         @test notif["params"]["total"] == 5.0
     end
+
+    @testset "resources/subscribe and resources/unsubscribe" begin
+        server = mcp_server(name = "test", version = "1.0.0")
+        state = ServerState()
+        ctx = RequestContext(server = server, state = state, request_id = 1)
+
+        result = ModelContextProtocol.handle_subscribe_resource(
+            ctx, ModelContextProtocol.SubscribeParams(uri = "test://watched"))
+        @test isnothing(result.error)
+        @test isempty(result.response.result)
+        @test "test://watched" in state.wire_subscriptions
+
+        # Repeat subscription is idempotent
+        ModelContextProtocol.handle_subscribe_resource(
+            ctx, ModelContextProtocol.SubscribeParams(uri = "test://watched"))
+        @test length(state.wire_subscriptions) == 1
+
+        result = ModelContextProtocol.handle_unsubscribe_resource(
+            ctx, ModelContextProtocol.UnsubscribeParams(uri = "test://watched"))
+        @test isnothing(result.error)
+        @test isempty(result.response.result)
+        @test isempty(state.wire_subscriptions)
+
+        # Unsubscribing a never-subscribed URI is accepted
+        result = ModelContextProtocol.handle_unsubscribe_resource(
+            ctx, ModelContextProtocol.UnsubscribeParams(uri = "test://never"))
+        @test isnothing(result.error)
+
+        # Full wire path: parse -> typed params -> dispatch (this was "Unknown method"
+        # before the handlers existed, despite the advertised subscribe capability)
+        req = ModelContextProtocol.parse_message(JSON3.write(Dict(
+            "jsonrpc" => "2.0",
+            "id" => 7,
+            "method" => "resources/subscribe",
+            "params" => Dict("uri" => "test://via-wire")
+        )))
+        resp = ModelContextProtocol.handle_request(server, state, req)
+        @test resp isa JSONRPCResponse
+        @test "test://via-wire" in state.wire_subscriptions
+    end
 end

@@ -293,6 +293,12 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
         instructions=ctx.server.config.instructions
     )
 
+    # The client is initializing: from here on, log records may be delivered to it
+    # as notifications/message over the transport (never before initialization)
+    let lg = Logging.global_logger()
+        lg isa MCPLogger && (lg.transport_active[] = true)
+    end
+
     HandlerResult(
         response=JSONRPCResponse(
             id=ctx.request_id,
@@ -748,6 +754,54 @@ function handle_list_resource_templates(ctx::RequestContext,
         response = JSONRPCResponse(
             id = ctx.request_id,
             result = LittleDict{String,Any}("resourceTemplates" => templates)
+        )
+    )
+end
+
+"""
+    handle_subscribe_resource(ctx::RequestContext, params::SubscribeParams) -> HandlerResult
+
+Handle `resources/subscribe` requests by recording the URI in the session's
+wire-subscription set. Returns an empty result per spec. Idempotent: repeat
+subscriptions to the same URI are accepted.
+
+# Arguments
+- `ctx::RequestContext`: The current request context
+- `params::SubscribeParams`: Parameters containing the resource URI
+
+# Returns
+- `HandlerResult`: An empty result acknowledging the subscription
+"""
+function handle_subscribe_resource(ctx::RequestContext, params::SubscribeParams)::HandlerResult
+    push!(ctx.state.wire_subscriptions, params.uri)
+    HandlerResult(
+        response = JSONRPCResponse(
+            id = ctx.request_id,
+            result = LittleDict{String,Any}()
+        )
+    )
+end
+
+"""
+    handle_unsubscribe_resource(ctx::RequestContext, params::UnsubscribeParams) -> HandlerResult
+
+Handle `resources/unsubscribe` requests by removing the URI from the session's
+wire-subscription set. Returns an empty result per spec. Idempotent: unsubscribing
+a URI that was never subscribed is accepted.
+
+# Arguments
+- `ctx::RequestContext`: The current request context
+- `params::UnsubscribeParams`: Parameters containing the resource URI
+
+# Returns
+- `HandlerResult`: An empty result acknowledging the unsubscription
+"""
+function handle_unsubscribe_resource(ctx::RequestContext, params::UnsubscribeParams)::HandlerResult
+    delete!(ctx.state.wire_subscriptions, params.uri)
+    HandlerResult(
+        response = JSONRPCResponse(
+            id = ctx.request_id,
+            result = LittleDict{String,Any}()
         )
     )
 end
@@ -1403,6 +1457,10 @@ function handle_request(server::Server, state::ServerState, request::Request;
                 # Handle null params (cursor is optional)
                 params = isnothing(request.params) ? ListResourceTemplatesParams() : request.params::ListResourceTemplatesParams
                 handle_list_resource_templates(ctx, params)
+            elseif request.method == "resources/subscribe"
+                handle_subscribe_resource(ctx, request.params::SubscribeParams)
+            elseif request.method == "resources/unsubscribe"
+                handle_unsubscribe_resource(ctx, request.params::UnsubscribeParams)
             elseif request.method == "tools/call"
                 handle_call_tool(ctx, request.params::CallToolParams)
             elseif request.method == "tools/list"

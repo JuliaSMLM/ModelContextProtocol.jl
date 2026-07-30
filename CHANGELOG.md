@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`resources/subscribe` and `resources/unsubscribe` wire handlers.** The server
+  advertised `resources: { subscribe: true }` but answered both methods with
+  "Unknown method" (found by the official MCP conformance suite). They are now
+  handled per spec: the URI is tracked in the session's subscription set and an
+  empty result is returned; both are idempotent.
+- **DNS-rebinding protection** (GHSA-w48q-cv73-mx4w class): a loopback-bound
+  `HttpTransport` without bearer auth now rejects requests whose `Host` or `Origin`
+  header is neither local (`localhost`, `127.0.0.1`, `[::1]`) nor allowlisted with
+  `403 Forbidden`. New `allowed_hosts` kwarg admits extra hostnames (e.g. a reverse
+  proxy's public domain — though such deployments typically enable auth, which
+  disables the guard entirely since a browser cannot attach the bearer token).
+
+### Changed
+
+- **Request-scoped notifications now ride the originating POST's SSE response
+  stream** on Streamable HTTP, as the spec (and standard clients: TypeScript SDK,
+  Inspector, conformance suite) expect. Previously `notifications/progress` emitted
+  by a ctx-aware tool was queued to the standalone GET stream — which mainstream
+  clients never open — and was effectively lost. A request that emits notifications
+  during handling now receives a `text/event-stream` response carrying the
+  notifications followed by the final response; a quiet request still gets a plain
+  `application/json` response. Out-of-band notifications (background MCP Tasks
+  status updates) keep flowing on the GET stream. Clients whose `Accept` lacks
+  `text/event-stream` receive the plain JSON response with request-scoped
+  notifications dropped.
+- **MCP log notifications are now actually delivered to the client.** `MCPLogger`
+  wrote `notifications/message` as JSON lines to stderr, so no client ever received
+  them regardless of `logging/setLevel`. Once the client has initialized, log
+  records now go over the transport: stdout on stdio (interleaved with responses
+  per spec), the originating request's SSE response stream on HTTP. Before
+  initialization — and whenever transport delivery is unavailable — records still
+  fall back to stderr. Records below `Info` now map to the MCP `"debug"` level
+  (previously `"info"`).
+
 ## [0.6.1] - 2026-07-30
 
 ### Changed

@@ -971,13 +971,19 @@ HttpTransport(;
     host::String = "127.0.0.1",          # Bind address
     port::Int = 8080,                    # Port number
     endpoint::String = "/",              # Endpoint path
-    allowed_origins::Vector{String} = String[],  # CORS origins
+    allowed_origins::Vector{String} = String[],  # Extra Origins accepted by the DNS-rebinding guard
+    allowed_hosts::Vector{String} = String[],    # Extra Host hostnames accepted by the guard (e.g. reverse-proxy domain)
     protocol_version::String = LATEST_PROTOCOL_VERSION,  # "2025-11-25"; response headers echo the per-session negotiated version
     session_required::Bool = false,      # Require session validation
     auth::Union{AuthMiddleware,Nothing} = nothing,  # OAuth Resource Server token validation (nothing = disabled)
     resource_metadata::Union{ProtectedResourceMetadata,Nothing} = nothing  # RFC 9728 Protected Resource Metadata
 )
 ```
+
+Loopback-bound transports without auth reject non-local `Host`/`Origin` headers with
+403 (DNS-rebinding protection); requests that emit notifications during handling
+(progress, log messages) receive them on the POST's SSE response stream, ahead of the
+final response — quiet requests get plain JSON.
 
 **Critical HTTP Transport Notes:**
 1. Always call `connect(transport)` before `start!(server)`

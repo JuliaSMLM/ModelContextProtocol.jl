@@ -331,6 +331,32 @@ Base.@kwdef struct GetPromptResult <: ResponseResult
     messages::Vector{PromptMessage}
 end
 
+#= Subscription Messages =#
+
+"""
+    SubscribeParams(; uri::String) <: RequestParams
+
+Parameters for `resources/subscribe` requests.
+
+# Fields
+- `uri::String`: URI of the resource the client wants update notifications for
+"""
+Base.@kwdef struct SubscribeParams <: RequestParams
+    uri::String
+end
+
+"""
+    UnsubscribeParams(; uri::String) <: RequestParams
+
+Parameters for `resources/unsubscribe` requests.
+
+# Fields
+- `uri::String`: URI of the resource to stop receiving update notifications for
+"""
+Base.@kwdef struct UnsubscribeParams <: RequestParams
+    uri::String
+end
+
 #= Logging Messages =#
 
 """

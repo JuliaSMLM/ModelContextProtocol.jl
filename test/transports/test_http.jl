@@ -478,4 +478,75 @@
         end
         Base.close(timer)
     end
+
+    @testset "DNS rebinding guard" begin
+        sp = ModelContextProtocol.strip_port
+        @test sp("localhost:8080") == "localhost"
+        @test sp("127.0.0.1") == "127.0.0.1"
+        @test sp("[::1]:8080") == "[::1]"
+        @test sp("Evil.COM:80") == "evil.com"
+
+        rv = ModelContextProtocol.rebinding_violation
+        # Local Host/Origin values pass
+        @test rv("localhost:9000", "", String[], String[]) === nothing
+        @test rv("127.0.0.1:9000", "http://localhost:5173", String[], String[]) === nothing
+        @test rv("[::1]:9000", "http://[::1]:5173", String[], String[]) === nothing
+        @test rv("", "", String[], String[]) === nothing  # absent headers are fine
+        # Rebinding attempts are flagged
+        @test rv("evil.com", "", String[], String[]) !== nothing
+        @test rv("evil.com:80", "http://evil.com", String[], String[]) !== nothing
+        @test rv("localhost:9000", "http://evil.com", String[], String[]) !== nothing
+        # Allowlists open specific holes
+        @test rv("mcp.example.org", "", ["mcp.example.org"], String[]) === nothing
+        @test rv("localhost", "http://app.example", String[], ["http://app.example"]) === nothing
+    end
+
+    @testset "DNS rebinding guard rejects live requests" begin
+        port = 18090 + rand(1:1000)
+        transport = HttpTransport(port = port)
+        server = mcp_server(name = "rebinding-test", version = "1.0.0")
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        init_body = JSON3.write(Dict(
+            "jsonrpc" => "2.0",
+            "method" => "initialize",
+            "params" => Dict(
+                "protocolVersion" => "2025-11-25",
+                "capabilities" => Dict(),
+                "clientInfo" => Dict("name" => "test", "version" => "1.0")
+            ),
+            "id" => 1
+        ))
+        base_headers = ["Content-Type" => "application/json",
+                        "MCP-Protocol-Version" => "2025-11-25",
+                        "Accept" => "application/json, text/event-stream"]
+
+        # Normal local request passes
+        response = HTTP.post("http://127.0.0.1:$port/", base_headers, init_body)
+        @test response.status == 200
+
+        # A rebinding attempt (attacker's hostname in Host) is rejected with 403
+        evil_host = HTTP.post("http://127.0.0.1:$port/",
+            vcat(base_headers, ["Host" => "evil.example.com"]), init_body;
+            status_exception = false)
+        @test evil_host.status == 403
+
+        # Same for a foreign Origin (browser-driven attack)
+        evil_origin = HTTP.post("http://127.0.0.1:$port/",
+            vcat(base_headers, ["Origin" => "http://evil.example.com"]), init_body;
+            status_exception = false)
+        @test evil_origin.status == 403
+
+        # Clean up
+        server.active = false
+        ModelContextProtocol.close(transport)
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
 end

@@ -100,17 +100,22 @@ curl -X POST http://localhost:3000/ \
 
 ### Server-Sent Events (SSE)
 
-The HTTP transport streams server-to-client notifications via Server-Sent Events. Clients
-open the stream with a `GET` request:
+Notifications related to an in-flight request — `notifications/progress` from a
+ctx-aware tool, `notifications/message` log events emitted during handling — are
+delivered on that request's own response: when they occur, the `POST` response is a
+`text/event-stream` carrying the notifications followed by the final JSON-RPC
+response. A request that emits nothing gets a plain `application/json` response.
+Clients must accept both content types (send `Accept: application/json,
+text/event-stream`); if a client accepts only JSON, request-scoped notifications are
+dropped and it receives the plain response.
+
+Out-of-band notifications — background MCP Tasks status updates
+(`notifications/tasks/status`) and anything emitted outside request handling — flow on
+a standalone stream that clients open with a `GET` request:
 
 ```bash
 curl -N -H 'Accept: text/event-stream' http://127.0.0.1:3000/
 ```
-
-SSE streams carry:
-- Server notifications (`notifications/message` log events)
-- Progress updates for long-running tool calls (`notifications/progress`)
-- Responses, when the client requested SSE delivery
 
 ### Security Features
 
@@ -161,15 +166,25 @@ identity by accepting the request context: `handler = (args, ctx) -> ...` and us
 verification); prefer `JWKSValidator` for tokens from external issuers, or the GitHub /
 introspection validators when tokens must be verified against an authority.
 
-#### Origin Validation
+#### DNS-Rebinding Protection (Host/Origin Validation)
 
-Control which origins can access your server:
+A loopback-bound server without bearer auth automatically rejects requests whose
+`Host` or `Origin` header is neither local (`localhost`, `127.0.0.1`, `[::1]`) nor
+allowlisted, with `403 Forbidden`. This blocks DNS-rebinding attacks, where a
+malicious website resolves its own domain to `127.0.0.1` and drives your local server
+from the victim's browser. Legitimate local clients are unaffected — they send a
+loopback `Host` — and enabling auth disables the guard (a browser cannot attach the
+bearer token, and authenticated deployments commonly sit behind a reverse proxy that
+forwards a public `Host`).
+
+Open specific holes with the allowlists:
 
 ```julia
 transport = HttpTransport(
+    allowed_hosts = ["mcp.example.org"],       # extra Host hostnames (reverse proxy)
     allowed_origins = [
         "http://localhost:3000",
-        "https://my-app.com"
+        "https://my-app.com"                    # extra Origins (browser clients)
     ]
 )
 ```

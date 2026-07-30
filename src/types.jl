@@ -720,6 +720,7 @@ Track the internal state of an MCP server during operation.
 - `last_request_id::Int`: Last used request ID for server-initiated requests
 - `pending_requests::Dict{RequestId,String}`: Map of request IDs to method names
 - `protocol_version::Union{String,Nothing}`: MCP protocol version negotiated during initialization (see `negotiate_version`), or `nothing` before the client initializes. Server-global, not data-raced: all handler execution is serialized through `run_server_loop`. As with `session_id`, the transport is single-session, so a repeat `initialize` overwrites this ("last initialize wins")
+- `wire_subscriptions::Set{String}`: Resource URIs the client subscribed to via `resources/subscribe`
 """
 mutable struct ServerState
     initialized::Bool
@@ -727,8 +728,9 @@ mutable struct ServerState
     last_request_id::Int
     pending_requests::Dict{RequestId, String}  # method name for each pending request
     protocol_version::Union{String,Nothing}    # negotiated MCP protocol version (set on initialize)
+    wire_subscriptions::Set{String}            # URIs subscribed via resources/subscribe
 
-    ServerState() = new(false, false, 0, Dict(), nothing)
+    ServerState() = new(false, false, 0, Dict(), nothing, Set{String}())
 end
 
 # Server type moved to server_types.jl to resolve Transport dependency

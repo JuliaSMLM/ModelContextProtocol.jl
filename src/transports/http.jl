@@ -19,10 +19,18 @@ struct QueuedHttpRequest
 end
 
 """
-    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
+    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/",
+                  allowed_origins::Vector{String}=String[], allowed_hosts::Vector{String}=String[])
 
 Transport implementation following the MCP Streamable HTTP specification (2025-06-18).
-Supports Server-Sent Events (SSE) for streaming and session management.
+Supports Server-Sent Events (SSE) for streaming and session management. A request's
+response is a single JSON object, or — when request-scoped notifications (progress,
+log messages) are emitted during handling — an SSE stream scoped to that request.
+
+When bound to a loopback host without bearer auth, requests whose Host or Origin
+header is neither local nor allowlisted are rejected with 403 (DNS-rebinding
+protection); a deployment behind a reverse proxy adds its public hostname to
+`allowed_hosts` (or enables auth, which disables the guard).
 
 # Fields
 - `host::String`: Host address to bind to (default: "127.0.0.1")
@@ -33,7 +41,10 @@ Supports Server-Sent Events (SSE) for streaming and session management.
 - `server_task::Union{Task,Nothing}`: Server task handle
 - `active_streams::Dict{String,HTTP.Stream}`: Active streaming connections
 - `request_queue::Channel{QueuedHttpRequest}`: Queue for incoming requests (id, body, auth user)
-- `response_channels::Dict{String,Channel{String}}`: Response channels per request
+- `response_channels::Dict{String,Channel{Tuple{Symbol,String}}}`: Per-request response
+  routes carrying `(:notification, json)` entries followed by one `(:response, json)`
+- `allowed_origins::Vector{String}`: Origins accepted by the DNS-rebinding guard (exact match)
+- `allowed_hosts::Vector{String}`: Extra Host-header hostnames accepted by the DNS-rebinding guard
 """
 mutable struct HttpTransport <: Transport
     host::String
@@ -45,7 +56,7 @@ mutable struct HttpTransport <: Transport
     active_streams::Dict{String,HTTP.Stream}
     sse_streams::Dict{String,HTTP.Stream}  # SSE connections
     request_queue::Channel{QueuedHttpRequest}
-    response_channels::Dict{String,Channel{String}}
+    response_channels::Dict{String,Channel{Tuple{Symbol,String}}}  # (:notification|:response, payload) per request
     notification_queue::Channel{String}  # For SSE notifications
     current_request_id::Union{String,Nothing}
     current_request_auth::Union{AuthenticatedUser,Nothing}  # Auth user of the message just read; set in the single server loop, never across connections
@@ -54,6 +65,7 @@ mutable struct HttpTransport <: Transport
     protocol_version::String  # MCP protocol version
     event_counter::Int64  # SSE event IDs
     allowed_origins::Vector{String}  # CORS security
+    allowed_hosts::Vector{String}  # Extra Host-header hostnames accepted by the DNS-rebinding guard
     auth::Union{AuthMiddleware,Nothing}  # OAuth Resource Server token validation (nothing = disabled)
     resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 Protected Resource Metadata
     channels_lock::ReentrantLock  # guards response_channels/active_streams (HTTP connection tasks + server loop + deferred-response waiters)
@@ -63,6 +75,7 @@ mutable struct HttpTransport <: Transport
         port::Int=8080,
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
+        allowed_hosts::Vector{String}=String[],
         protocol_version::String=LATEST_PROTOCOL_VERSION,
         session_required::Bool=false,
         auth::Union{AuthMiddleware,Nothing}=nothing,
@@ -78,7 +91,7 @@ mutable struct HttpTransport <: Transport
             Dict{String,HTTP.Stream}(),
             Dict{String,HTTP.Stream}(),  # SSE streams
             Channel{QueuedHttpRequest}(32),  # Buffer up to 32 requests
-            Dict{String,Channel{String}}(),
+            Dict{String,Channel{Tuple{Symbol,String}}}(),
             Channel{String}(100),  # Notification queue
             nothing,  # current_request_id
             nothing,  # current_request_auth
@@ -87,6 +100,7 @@ mutable struct HttpTransport <: Transport
             protocol_version,
             0,  # Event counter starts at 0
             allowed_origins,
+            allowed_hosts,
             auth,
             resource_metadata,
             ReentrantLock()
@@ -132,6 +146,75 @@ Must contain only visible ASCII characters (0x21 to 0x7E).
 function generate_session_id()::String
     # Use UUID which contains only alphanumeric and hyphens (all valid ASCII)
     return string(uuid4())
+end
+
+# Hostnames that always count as local for the DNS-rebinding guard
+const LOOPBACK_HOSTNAMES = ("localhost", "127.0.0.1", "::1", "[::1]")
+
+"""
+    strip_port(hostport::AbstractString) -> String
+
+Extract the hostname from a `host[:port]` string, handling bracketed IPv6
+literals (`[::1]:8080` -> `[::1]`).
+
+# Arguments
+- `hostport::AbstractString`: A Host-header style value
+
+# Returns
+- `String`: The hostname portion, lowercased
+"""
+function strip_port(hostport::AbstractString)::String
+    h = lowercase(strip(hostport))
+    if startswith(h, "[")
+        idx = findfirst(']', h)
+        return isnothing(idx) ? h : h[1:idx]
+    end
+    idx = findfirst(':', h)
+    return isnothing(idx) ? h : h[1:prevind(h, idx)]
+end
+
+"""
+    rebinding_violation(host_header, origin_header, allowed_hosts, allowed_origins) -> Union{String,Nothing}
+
+Check Host and Origin headers against DNS-rebinding attacks on a loopback-bound
+server (GHSA-w48q-cv73-mx4w class): a malicious website resolves its own domain to
+127.0.0.1 and drives the local server from the victim's browser. A legitimate local
+client sends a loopback Host; the attack necessarily carries the attacker's hostname.
+
+# Arguments
+- `host_header`: The request's Host header value ("" when absent)
+- `origin_header`: The request's Origin header value ("" when absent)
+- `allowed_hosts`: Extra hostnames accepted in Host (e.g. a reverse-proxy domain)
+- `allowed_origins`: Full origins accepted in Origin (exact match, existing semantics)
+
+# Returns
+- `Union{String,Nothing}`: A human-readable violation description, or `nothing` if the
+  request is acceptable
+"""
+function rebinding_violation(host_header::AbstractString, origin_header::AbstractString,
+                             allowed_hosts::Vector{String},
+                             allowed_origins::Vector{String})::Union{String,Nothing}
+    if !isempty(host_header)
+        hostname = strip_port(host_header)
+        if !(hostname in LOOPBACK_HOSTNAMES) &&
+           !(hostname in (lowercase(h) for h in allowed_hosts))
+            return "Host header '$host_header' is not a permitted hostname"
+        end
+    end
+    if !isempty(origin_header)
+        # HTTP.URI separates host and port already, so no strip_port here (stripping
+        # would mangle an unbracketed IPv6 host like "::1")
+        origin_host = try
+            lowercase(String(HTTP.URI(origin_header).host))
+        catch
+            ""
+        end
+        if !(origin_header in allowed_origins) && !(origin_host in LOOPBACK_HOSTNAMES) &&
+           !(origin_host in (lowercase(h) for h in allowed_hosts))
+            return "Origin header '$origin_header' is not a permitted origin"
+        end
+    end
+    return nothing
 end
 
 """
@@ -297,6 +380,31 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         write(stream, "Not Found")
         return nothing
+    end
+
+    # DNS-rebinding guard: a loopback-bound server without bearer auth is exactly the
+    # target of browser-driven rebinding attacks, so Host/Origin must look local (or be
+    # explicitly allowlisted via allowed_hosts/allowed_origins). Auth-enabled servers are
+    # already protected — a browser cannot attach the bearer token — and commonly sit
+    # behind a reverse proxy that forwards a public Host, so the guard stays out of
+    # their way.
+    if isnothing(transport.auth) && lowercase(transport.host) in LOOPBACK_HOSTNAMES
+        violation = rebinding_violation(
+            HTTP.header(request, "Host", ""),
+            HTTP.header(request, "Origin", ""),
+            transport.allowed_hosts,
+            transport.allowed_origins
+        )
+        if !isnothing(violation)
+            @debug "Rejected potential DNS-rebinding request" violation=violation
+            HTTP.setstatus(stream, 403)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            error_msg = "Forbidden: $violation"
+            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+            HTTP.startwrite(stream)
+            write(stream, error_msg)
+            return nothing
+        end
     end
 
     # OAuth Resource Server: require a valid bearer token when auth is configured.
@@ -496,51 +604,38 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # Generate unique request ID
         request_id = string(uuid4())
         
-        # Create response channel for this request (buffer size 1 for single response)
-        response_channel = Channel{String}(1)
+        # Create the response route for this request. The channel carries any
+        # request-scoped notifications (progress, log messages) followed by exactly
+        # one final (:response, ...) entry.
+        response_channel = Channel{Tuple{Symbol,String}}(64)
         lock(transport.channels_lock) do
             transport.response_channels[request_id] = response_channel
             transport.active_streams[request_id] = stream
         end
-        
+
         # Queue the request for processing
         put!(transport.request_queue, QueuedHttpRequest(request_id, body, authenticated_user))
-        
-        # Wait for the single response
+
+        # Deliver the response. Per Streamable HTTP, a request's response is either a
+        # single JSON object or an SSE stream scoped to this request carrying
+        # request-related notifications followed by the final response. The first item
+        # on the channel decides which shape we use: a quiet request stays plain JSON,
+        # a notification arriving first upgrades the response to SSE.
         try
-            response = take!(response_channel)
-            
-            # Check if we should send via SSE or direct response
-            accept_header = HTTP.header(request, "Accept", "")
-            use_sse = contains(accept_header, "text/event-stream") && !isempty(transport.sse_streams)
-            
-            if use_sse && length(transport.sse_streams) > 0
-                # Send response via SSE stream
-                for (_, sse_stream) in transport.sse_streams
-                    try
-                        transport.event_counter += 1
-                        event = format_sse_event(
-                            response,
-                            event="response",
-                            id=transport.event_counter
-                        )
-                        write(sse_stream, event)
-                        Base.flush(sse_stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
-                    catch e
-                        @debug "Failed to write to SSE stream" error=e
-                    end
+            kind, payload = take!(response_channel)
+            client_accepts_sse = contains(HTTP.header(request, "Accept", ""), "text/event-stream")
+
+            if kind === :notification && !client_accepts_sse
+                # Client can't consume an SSE response; drop request-scoped
+                # notifications and answer with the bare JSON response.
+                while kind !== :response
+                    @debug "Dropping request-scoped notification (client Accept lacks text/event-stream)"
+                    kind, payload = take!(response_channel)
                 end
-                
-                # Still send 200 OK for the POST request
-                HTTP.setstatus(stream, 200)
-                HTTP.setheader(stream, "Content-Type" => "application/json")
-                HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
-                if !isnothing(transport.session_id)
-                    HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
-                end
-                write(stream, response)
-            else
-                # Write the response directly
+            end
+
+            if kind === :response
+                # Plain JSON response
                 HTTP.setstatus(stream, 200)
                 HTTP.setheader(stream, "Content-Type" => "application/json")
                 HTTP.setheader(stream, "Cache-Control" => "no-cache")
@@ -548,9 +643,27 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 if !isnothing(transport.session_id)
                     HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
                 end
-                write(stream, response)
+                write(stream, payload)
+            else
+                # SSE response stream scoped to this request
+                HTTP.setstatus(stream, 200)
+                HTTP.setheader(stream, "Content-Type" => "text/event-stream")
+                HTTP.setheader(stream, "Cache-Control" => "no-cache")
+                HTTP.setheader(stream, "X-Accel-Buffering" => "no")
+                HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
+                if !isnothing(transport.session_id)
+                    HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
+                end
+                HTTP.startwrite(stream)
+                while true
+                    transport.event_counter += 1
+                    write(stream, format_sse_event(payload, event="message", id=transport.event_counter))
+                    Base.flush(stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
+                    kind === :response && break
+                    kind, payload = take!(response_channel)
+                end
             end
-            
+
         catch e
             if !(e isa InvalidStateException)
                 @debug "Error waiting for response" error=e
@@ -776,7 +889,7 @@ function write_message(transport::HttpTransport, message::String)::Nothing
         end
         if channel !== nothing
             try
-                put!(channel, message)
+                put!(channel, (:response, message))
                 # Clear current request ID after sending response
                 transport.current_request_id = nothing
             catch e
@@ -789,6 +902,15 @@ function write_message(transport::HttpTransport, message::String)::Nothing
 
     nothing
 end
+
+"""
+    notification_route(transport::HttpTransport) -> Union{String,Nothing}
+
+Return the HTTP request ID of the message just read from the queue, used by the
+server loop as the request-scoped notification route (see the base
+`notification_route` docstring).
+"""
+notification_route(transport::HttpTransport) = transport.current_request_id
 
 """
     capture_response_route(transport::HttpTransport) -> Union{String,Nothing}
@@ -820,7 +942,7 @@ function deliver_response(transport::HttpTransport, route::Union{String,Nothing}
     end
     channel === nothing && return nothing
     try
-        put!(channel, message)
+        put!(channel, (:response, message))
     catch e
         @debug "Failed to deliver deferred response (client likely disconnected)" error=e
     end
@@ -842,7 +964,16 @@ end
 """
     send_notification(transport::HttpTransport, notification::String) -> Nothing
 
-Send a notification to all connected SSE streams.
+Send a notification. A notification emitted while the server loop is synchronously
+handling a request (progress, log messages) is request-scoped: it is routed onto that
+request's response channel and delivered on the POST's SSE response stream, per
+Streamable HTTP. Anything else — notifications from background tasks (MCP Tasks
+status updates) or emitted outside request handling — goes to the standalone GET SSE
+notification stream.
+
+The request route is read from the server loop's task-local storage (set in
+`run_server_loop`), so background tasks — which never inherit it — can't misroute
+their notifications into whatever request the loop happens to be processing.
 
 # Arguments
 - `transport::HttpTransport`: The transport instance
@@ -855,14 +986,30 @@ function send_notification(transport::HttpTransport, notification::String)::Noth
     if !transport.connected
         return nothing
     end
-    
-    # Queue notification for SSE streams
+
+    # Request-scoped delivery: onto the active request's response channel
+    route = get(task_local_storage(), :mcp_notification_route, nothing)
+    if route !== nothing
+        channel = lock(transport.channels_lock) do
+            get(transport.response_channels, route, nothing)
+        end
+        if channel !== nothing
+            try
+                put!(channel, (:notification, notification))
+                return nothing
+            catch e
+                @debug "Request route closed; falling back to GET stream" error=e
+            end
+        end
+    end
+
+    # Out-of-band delivery: the standalone GET SSE notification stream
     try
         put!(transport.notification_queue, notification)
     catch e
         @debug "Failed to queue notification" error=e
     end
-    
+
     nothing
 end
 

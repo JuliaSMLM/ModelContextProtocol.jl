@@ -164,9 +164,17 @@ function run_server_loop(server::Server, state::ServerState)
                 continue
             end
             
-            # Process the message
+            # Process the message. The task-local notification route lets
+            # send_notification deliver request-scoped notifications (progress, log
+            # messages) onto this request's response stream; background tasks never
+            # inherit it, so their notifications stay on the out-of-band channel.
             @debug "Processing message" raw=message
-            response = process_message(server, state, message; authenticated_user=pending_auth_context(transport))
+            task_local_storage(:mcp_notification_route, notification_route(transport))
+            response = try
+                process_message(server, state, message; authenticated_user=pending_auth_context(transport))
+            finally
+                task_local_storage(:mcp_notification_route, nothing)
+            end
 
             # Keep the transport's advertised version in sync with the negotiated one
             # (set by handle_initialize) so e.g. HTTP response headers echo it
@@ -241,13 +249,16 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
     # else: use server's existing transport
     
     state = ServerState()
-    
-    # Set up MCP-compliant logging
+
+    # Set up MCP-compliant logging. The logger delivers notifications/message to the
+    # client over the transport once the session initializes (handle_initialize flips
+    # transport_active); until then — and after shutdown — records fall back to stderr.
     logger = MCPLogger(stderr, Logging.Info)
+    logger.transport = server.transport
     global_logger(logger)
-    
+
     @info "Starting MCP server: $(server.config.name)"
-    
+
     try
         server.active = true
         run_server_loop(server, state)
@@ -257,10 +268,11 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
         rethrow(e)
     finally
         server.active = false
+        logger.transport_active[] = false
         close(server.transport)
         @info "Server stopped"
     end
-    
+
     nothing
 end
 

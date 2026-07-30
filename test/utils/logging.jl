@@ -89,3 +89,47 @@ end
         end
     end
 end
+
+@testset "log notifications route through the transport" begin
+    # Once the client initializes (transport_active), log records must reach it as
+    # notifications/message via send_notification — for stdio that means stdout, the
+    # stream responses share — rather than being printed to the fallback stream.
+    out = IOBuffer()
+    fallback = IOBuffer()
+    transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = out)
+    logger = MCPLogger(fallback, Logging.Info)
+    logger.transport = transport
+
+    # Before initialization: fallback stream only, nothing on the transport
+    with_logger(logger) do
+        @info "pre-init probe"
+    end
+    @test occursin("pre-init probe", String(take!(fallback)))
+    @test isempty(String(take!(out)))
+
+    # After initialization: the notification goes over the transport, not the fallback
+    logger.transport_active[] = true
+    with_logger(logger) do
+        @info "routed probe"
+    end
+    routed = String(take!(out))
+    @test occursin("notifications/message", routed)
+    @test occursin("routed probe", routed)
+    @test isempty(String(take!(fallback)))
+
+    # Below-Info records map to the MCP "debug" level on the wire
+    logger.min_level = Logging.Debug
+    with_logger(logger) do
+        @debug "debug probe"
+    end
+    debug_out = String(take!(out))
+    @test occursin("\"level\":\"debug\"", debug_out)
+
+    # Disconnected transport falls back to the stream
+    transport.connected = false
+    with_logger(logger) do
+        @info "fallback probe"
+    end
+    @test occursin("fallback probe", String(take!(fallback)))
+    @test isempty(String(take!(out)))
+end
