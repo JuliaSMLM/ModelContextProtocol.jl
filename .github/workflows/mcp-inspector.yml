@@ -72,24 +72,24 @@ jobs:
       # nests the payload under `.result`, hence the `.result.` prefixes below.
       - name: Test tools with Inspector CLI
         run: |
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
             --method tools/list > tools_output.json
           "$ASSERT" tools_output.json 'any(.result.tools[]; .name == "current_time")' 'tools/list has current_time'
 
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
             --method tools/call --tool-name current_time > tool_call.json
           "$ASSERT" tool_call.json '.result.content[0].text | test("Current time")' 'tools/call current_time'
           "$ASSERT" tool_call.json '.result.isError == false' 'tools/call not an error'
 
       - name: Test resources with Inspector CLI
         run: |
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
             --method resources/list > resources.json
           "$ASSERT" resources.json \
             'any(.result.resources[]; .uri == "character-info://harry-potter/birthday")' \
             'resources/list has the birthday resource'
 
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
             --method resources/read --uri "character-info://harry-potter/birthday" > resource_read.json
           "$ASSERT" resource_read.json \
             '.result.contents[0].uri == "character-info://harry-potter/birthday" and (.result.contents[0].text | test("July 31"))' \
@@ -97,20 +97,20 @@ jobs:
 
       - name: Test prompts with Inspector CLI
         run: |
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
             --method prompts/list > prompts.json
           "$ASSERT" prompts.json \
             'any(.result.prompts[]; .name == "greeting") and any(.result.prompts[]; .name == "movie_analysis")' \
             'prompts/list has greeting and movie_analysis'
 
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
             --method prompts/get --prompt-name greeting > greeting_prompt.json
           "$ASSERT" greeting_prompt.json '.result.messages[0].content.text | length > 0' 'prompts/get greeting'
 
           # Prompt arguments DO work through the Inspector CLI (flag is --prompt-args,
           # plural). The previous claim that they were broken is why this was only ever
           # covered by the raw JSON-RPC step below.
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server time --format json \
             --method prompts/get --prompt-name movie_analysis \
             --prompt-args genre="science fiction" year=1980 > prompt_args.json
           "$ASSERT" prompt_args.json \
@@ -175,44 +175,39 @@ jobs:
           julia --project -e 'using Pkg; Pkg.instantiate()'
           julia --project -e 'using Pkg; Pkg.precompile()'
 
-      # Primary HTTP coverage: the Inspector speaks Streamable HTTP natively, so this
-      # exercises our transport directly with no bridge process in between.
-      - name: Test HTTP server natively
+      # All HTTP coverage runs against ONE server instance, on purpose. Three steps each
+      # starting their own server on the hardcoded port 3000 raced each other: a step
+      # ends as soon as its `kill` is issued, so the next step's server hit
+      # `EADDRINUSE: address already in use` and died at startup. One server, one
+      # teardown, no cross-step port contention — and one Julia startup instead of three.
+      #
+      # Teardown is `kill` AND `wait`: `wait` reaps the child and blocks until it is
+      # really gone, so the port is released before the shell exits.
+      - name: Test HTTP server (native, mcp-remote bridge, direct API)
         run: |
           julia --project=. examples/simple_http_server.jl &
           SERVER_PID=$!
-          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          trap 'kill $SERVER_PID 2>/dev/null || true; wait $SERVER_PID 2>/dev/null || true' EXIT
           .github/inspector/wait-http.sh http://127.0.0.1:3000/ "$SERVER_PID"
 
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server http --format json \
+          # Primary: the Inspector speaks Streamable HTTP natively, so this exercises our
+          # transport directly with no bridge process in between.
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server http --format json \
             --method tools/list > http_tools.json
           "$ASSERT" http_tools.json 'any(.result.tools[]; .name == "echo")' 'HTTP tools/list has echo'
 
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server http --format json \
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server http --format json \
             --method tools/call --tool-name echo --tool-arg message=hello > http_call.json
           "$ASSERT" http_call.json '.result.content[0].text | test("hello")' 'HTTP tools/call echo'
 
-      # Secondary coverage: the same server through the mcp-remote bridge, because that
-      # is the path this repo's docs tell users to configure for Claude Desktop. Pinned
-      # in the same lockfile, and it must pass — it used to be `|| true`.
-      - name: Test HTTP server via mcp-remote bridge (Claude Desktop path)
-        run: |
-          julia --project=. examples/simple_http_server.jl &
-          SERVER_PID=$!
-          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
-          .github/inspector/wait-http.sh http://127.0.0.1:3000/ "$SERVER_PID"
-
-          "$INSPECTOR" --cli --config "$MCP_CONFIG" --server http-bridge --format json \
+          # Secondary: the same server through the mcp-remote bridge, the path this
+          # repo's docs tell users to configure for Claude Desktop. Pinned in the same
+          # lockfile, and it must pass — this used to be `|| true`.
+          timeout 180 "$INSPECTOR" --cli --config "$MCP_CONFIG" --server http-bridge --format json \
             --method tools/list > bridge_tools.json
           "$ASSERT" bridge_tools.json 'any(.result.tools[]; .name == "echo")' 'bridge tools/list has echo'
 
-      - name: Direct HTTP API test
-        run: |
-          julia --project=. examples/simple_http_server.jl &
-          SERVER_PID=$!
-          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
-          .github/inspector/wait-http.sh http://127.0.0.1:3000/ "$SERVER_PID"
-
+          # Direct wire-level check, no client library involved.
           curl -X POST http://127.0.0.1:3000/ \
             -H 'Content-Type: application/json' \
             -H 'MCP-Protocol-Version: 2025-11-25' \
