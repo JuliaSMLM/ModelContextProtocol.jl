@@ -87,36 +87,35 @@
         @test response.status == 200
         session_id = HTTP.header(response, "Mcp-Session-Id", "")
         
-        # Test SSE connection
+        # Test SSE connection. Collect lines continuously and poll for the connection
+        # event with a deadline — do NOT read until eof or a fixed line count: a
+        # healthy SSE stream stays open indefinitely, so an eof-terminated reader
+        # only returns when the connection dies. (This test used to pass that way —
+        # the notification loop crashed ~100ms in and dropped the stream, handing
+        # the reader its eof. See the issue #71 regression testset below.)
+        sse_lines = String[]
         sse_task = @async begin
-            events = String[]
             try
                 HTTP.open("GET", "http://127.0.0.1:$port/",
                          ["Accept" => "text/event-stream"]) do io
-                    # Read up to 10 lines or timeout
-                    for i in 1:10
-                        if eof(io)
-                            break
-                        end
+                    while !eof(io)
                         line = readline(io)
-                        if !isempty(line)
-                            push!(events, line)
-                        end
+                        isempty(line) || push!(sse_lines, line)
                     end
                 end
             catch e
-                # Expected timeout or connection close
+                # Connection torn down at cleanup
             end
-            events
         end
-        
-        # Give SSE time to connect
-        sleep(0.5)
-        
+
+        deadline = time() + 10
+        while time() < deadline && isempty(sse_lines)
+            sleep(0.05)
+        end
+
         # SSE should have received connection event
-        events = fetch(sse_task)
-        @test length(events) > 0
-        event_text = join(events, "\n")
+        @test length(sse_lines) > 0
+        event_text = join(sse_lines, "\n")
         @test contains(event_text, "event: connection") || contains(event_text, "connected")
         
         # Clean up
@@ -129,7 +128,127 @@
         end
         Base.close(timer)
     end
-    
+
+    @testset "SSE notification delivery (issue #71 regression)" begin
+        # The initial "connection" event is written BEFORE the notification loop, so a
+        # test asserting only that stays green even when the loop itself is broken.
+        # This test asserts a real notification traverses queue -> SSE stream:
+        # a ctx-aware tool emits notifications/progress, and the GET-SSE client must
+        # actually receive it. Two historical failure modes this guards against:
+        #   - `close(timer)` / `flush(sse_stream)` resolving to the package's own
+        #     Transport-only methods (Base shadowing) -> MethodError on the first loop
+        #     iteration, swallowed by the catch, stream dropped ~100ms after connect;
+        #   - the loop leaking one blocked `take!` waiter task per iteration, so
+        #     arriving notifications woke an orphaned waiter (Channel waiters are
+        #     FIFO) and were silently lost.
+        port = 15090 + rand(1:1000)
+
+        transport = HttpTransport(port=port)
+        progress_tool = MCPTool(
+            name = "progress_test",
+            description = "Emit a progress notification",
+            parameters = [],
+            handler = (args, ctx) -> begin
+                send_progress(ctx, 1; total = 1, message = "sse-regression-tick")
+                TextContent(text = "done")
+            end
+        )
+        server = mcp_server(
+            name = "sse-notify-server",
+            version = "1.0.0",
+            tools = [progress_tool]
+        )
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        init_response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "MCP-Protocol-Version" => "2025-11-25",
+             "Accept" => "application/json, text/event-stream"],
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "initialize",
+                "params" => Dict(
+                    "protocolVersion" => "2025-11-25",
+                    "capabilities" => Dict(),
+                    "clientInfo" => Dict("name" => "test", "version" => "1.0")
+                ),
+                "id" => 1
+            ))
+        )
+        @test init_response.status == 200
+        session_id = HTTP.header(init_response, "Mcp-Session-Id", "")
+
+        # Collect SSE lines continuously; the main task polls this vector.
+        sse_lines = String[]
+        sse_task = @async begin
+            try
+                HTTP.open("GET", "http://127.0.0.1:$port/",
+                          ["Accept" => "text/event-stream",
+                           "Mcp-Session-Id" => session_id]) do io
+                    while !eof(io)
+                        push!(sse_lines, readline(io))
+                    end
+                end
+            catch
+                # Connection torn down at cleanup
+            end
+        end
+
+        # Wait until the stream is established (connection event seen)...
+        deadline = time() + 10
+        while time() < deadline && !any(contains("connection"), sse_lines)
+            sleep(0.05)
+        end
+        @test any(contains("connection"), sse_lines)
+
+        # ...then linger PAST several 100ms notification-loop iterations. Under the
+        # historical bugs this idle window is what killed the stream / accumulated
+        # the orphaned waiters, so it must precede the notification for the test to
+        # discriminate.
+        sleep(1.0)
+
+        call_response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "Mcp-Session-Id" => session_id,
+             "Accept" => "application/json, text/event-stream"],
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "tools/call",
+                "params" => Dict(
+                    "name" => "progress_test",
+                    "arguments" => Dict(),
+                    "_meta" => Dict("progressToken" => "tok-71")
+                ),
+                "id" => 2
+            ))
+        )
+        @test call_response.status == 200
+
+        # The progress notification must arrive on the SSE stream.
+        deadline = time() + 10
+        while time() < deadline && !any(contains("notifications/progress"), sse_lines)
+            sleep(0.05)
+        end
+        received = join(sse_lines, "\n")
+        @test contains(received, "notifications/progress")
+        @test contains(received, "tok-71")
+        @test contains(received, "sse-regression-tick")
+
+        # Clean up
+        server.active = false
+        ModelContextProtocol.close(transport)
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
+
     @testset "Origin Validation" begin
         port = 14090 + rand(1:1000)
         

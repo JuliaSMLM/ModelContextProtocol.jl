@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes on both JWTs 0.3.2 and 1.0.0, including the RFC 7517 signature-verification
   tests (under 1.0, OpenSSL verifies what MbedTLS signed).
 
+### Fixed
+
+- **HTTP SSE notification delivery** (fixes #71): server-to-client notifications over
+  the Streamable HTTP GET stream (progress, `notifications/tasks/status`, logging)
+  were not delivered. Two defects compounded: bare `close(timer)` / `flush(sse_stream)`
+  calls resolved to this package's own `Transport`-only methods instead of `Base`,
+  throwing a swallowed `MethodError` that dropped the SSE stream ~100ms after connect;
+  and the notification loop spawned a fresh `@async take!` waiter every iteration and
+  abandoned the old one, so arriving notifications woke an orphaned waiter (Channel
+  waiters are FIFO) and were silently lost. The loop now polls `isready` directly —
+  no waiter tasks, no `Timer` — and qualifies `Base.flush`. A regression test asserts
+  a `notifications/progress` emitted by a ctx-aware tool actually arrives at a
+  connected SSE client after an idle window; the pre-existing SSE test read its
+  stream to EOF, which only ever terminated *because* the broken loop killed the
+  connection, and was rewritten to a deadline-based reader.
+
 ## [0.6.0] - 2026-06-21
 
 ### Added
