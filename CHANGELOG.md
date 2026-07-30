@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Widened `OrderedCollections` compat to `"1, 2"`. This was previously untestable —
+  DataStructures capped `OrderedCollections` at 1.x, so the widened bound could not
+  resolve — and became possible once DataStructures 0.19.6 widened its own bound to
+  `"1.1, 2"`. Purely additive for downstream resolution; the suite passes on
+  OrderedCollections 2.0.1 (which supplies `LittleDict`, used in the protocol layer).
+
 ## [0.6.0] - 2026-06-21
 
 ### Added
