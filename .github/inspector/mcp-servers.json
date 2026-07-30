@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Server definitions for the MCP Inspector CI smoke tests, passed via `--config`.",
+    "Inspector 2.0 cannot accept a stdio command whose arguments start with '-' on the",
+    "CLI (its target collection stops at the first dashed token), so the launch command",
+    "lives here instead. See docs/mcp-server-configuration.md upstream.",
+    "PATHS ARE RELATIVE TO THE REPOSITORY ROOT: the Inspector resolves --config against",
+    "the process cwd and spawns the server with that same cwd, and GitHub Actions runs",
+    "`run:` steps from $GITHUB_WORKSPACE. Invoke from the repo root, or add a per-server",
+    "\"cwd\" field if that ever changes."
+  ],
+  "mcpServers": {
+    "time": {
+      "command": "julia",
+      "args": ["--project=.", "examples/time_server.jl"]
+    },
+    "http": {
+      "type": "http",
+      "url": "http://127.0.0.1:3000"
+    },
+    "http-bridge": {
+      "command": ".github/inspector/node_modules/.bin/mcp-remote",
+      "args": ["http://127.0.0.1:3000", "--allow-http"]
+    }
+  }
+}

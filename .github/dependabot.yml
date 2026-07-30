@@ -5,3 +5,13 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+
+  # The MCP Inspector CI toolchain. Without this entry the pin in
+  # .github/inspector/package-lock.json would never be revisited: the breakage that
+  # motivated pinning (Inspector 2.0.0 landing via an unpinned `npx`) would simply
+  # become a silently stale pin instead. A Dependabot PR runs this very workflow,
+  # so a breaking major shows up as a red PR rather than a red main.
+  - package-ecosystem: "npm"
+    directory: "/.github/inspector"
+    schedule:
+      interval: "weekly"

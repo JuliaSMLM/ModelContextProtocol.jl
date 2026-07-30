@@ -1,0 +1,10 @@
+{
+  "name": "mcp-inspector-ci",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned MCP Inspector toolchain for the CI smoke tests. Not part of the Julia package; lives under .github/ so a registry tarball is not mistaken for an npm project.",
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "2.0.0",
+    "mcp-remote": "0.1.38"
+  }
+}
