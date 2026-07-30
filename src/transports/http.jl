@@ -214,51 +214,33 @@ function handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream
     transport.sse_streams[stream_id] = stream
     
     try
-        # Keep connection alive and send notifications
+        # Keep connection alive and send notifications.
+        #
+        # This loop deliberately polls `isready` instead of blocking in `take!`. The
+        # previous implementation spawned a fresh `@async take!` waiter every 100ms
+        # iteration and abandoned the old one; Channel waiters wake FIFO, so each
+        # arriving notification was handed to an orphaned waiter and silently lost.
+        # (It also called bare `close(timer)`, which resolves to this package's
+        # `close(::Transport)` rather than `Base.close` — a MethodError on the first
+        # iteration that the catch below swallowed, dropping the stream. Regression
+        # test: "SSE notification delivery (issue #71 regression)".)
         while transport.connected && isopen(stream)
-            # Check for notifications to send with timeout
-            notification = nothing
             ch = transport.notification_queue
-            
-            # Use a non-blocking check with timeout
-            t = @async begin
-                try
-                    take!(ch)
-                catch e
-                    if e isa InvalidStateException
-                        nothing  # Queue closed
-                    else
-                        rethrow(e)
-                    end
-                end
-            end
-            
-            # Wait for notification with timeout
-            timer = Timer(0.1)  # 100ms timeout
-            notification = nothing
-            while !istaskdone(t) && isopen(timer)
+            if !isready(ch)
+                isopen(ch) || break  # queue closed and drained: shutting down
                 sleep(0.01)
+                continue
             end
-            close(timer)
-            
-            if istaskdone(t)
-                result = fetch(t)
-                if isnothing(result)
-                    break  # Queue closed, shutting down
-                end
-                notification = result
-            end
-            
-            if !isnothing(notification)
-                transport.event_counter += 1
-                event = format_sse_event(
-                    notification,
-                    event="message",
-                    id=transport.event_counter
-                )
-                write(stream, event)
-                Base.flush(stream)
-            end
+            notification = take!(ch)
+
+            transport.event_counter += 1
+            event = format_sse_event(
+                notification,
+                event="message",
+                id=transport.event_counter
+            )
+            write(stream, event)
+            Base.flush(stream)
         end
     catch e
         @debug "SSE stream closed" stream_id=stream_id error=e
@@ -543,7 +525,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                             id=transport.event_counter
                         )
                         write(sse_stream, event)
-                        flush(sse_stream)
+                        Base.flush(sse_stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
                     catch e
                         @debug "Failed to write to SSE stream" error=e
                     end
