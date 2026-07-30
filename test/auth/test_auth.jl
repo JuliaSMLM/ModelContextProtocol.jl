@@ -1,3 +1,30 @@
+# RS256 test-signing helper for the JWKS fixture tests.
+#
+# These used to sign through `JWTs.JWKRSA(JWTs.MbedTLS.MD_SHA256, ...)` — borrowing
+# JWTs.jl's internal crypto backend. JWTs 1.0 swapped that backend from MbedTLS to
+# OpenSSL_jll, so `JWTs.MbedTLS` no longer exists and `JWKRSA`'s key type moved with
+# it. Sign fixture tokens with MbedTLS directly instead (already a test-only
+# dependency): the signer stops depending on whichever backend JWTs uses internally,
+# which is what lets the package's compat span `JWTs = "0.3, 1"`. It is also a
+# slightly stronger test — the signature is produced by a different crypto stack
+# than the one JWTs verifies it with (under JWTs >= 1, OpenSSL verifies what MbedTLS
+# signed).
+#
+# RS256 per RFC 7518 §3.3: RSASSA-PKCS1-v1_5 over SHA-256 of
+# "base64url(header) . base64url(payload)".
+function sign_rs256_fixture(payload::AbstractDict; key_pem::AbstractString, kid::AbstractString)
+    b64url(x) = replace(base64encode(x), "+" => "-", "/" => "_", "=" => "")
+    key_path = isabspath(key_pem) ? key_pem : joinpath(@__DIR__, "fixtures", key_pem)
+    header = Dict("alg" => "RS256", "typ" => "JWT", "kid" => kid)
+    signing_input = b64url(JSON3.write(header)) * "." * b64url(JSON3.write(payload))
+    ctx = MbedTLS.parse_keyfile(key_path)
+    rng = MbedTLS.CtrDrbg()
+    MbedTLS.seed!(rng, MbedTLS.Entropy())
+    sig = MbedTLS.sign(ctx, MbedTLS.MD_SHA256,
+                       MbedTLS.digest(MbedTLS.MD_SHA256, signing_input), rng)
+    return signing_input * "." * b64url(sig)
+end
+
 @testset "Authentication Framework" begin
     @testset "AuthenticatedUser" begin
         user = AuthenticatedUser(
@@ -447,18 +474,11 @@ end
 end
 
 @testset "JWKSValidator - signature verification (RFC 7517)" begin
-    JWTs = ModelContextProtocol.JWTs
-    _MbedTLS = JWTs.MbedTLS
     fixture_dir = joinpath(@__DIR__, "fixtures")
     fixture_url(name) = "file://" * abspath(joinpath(fixture_dir, name))
 
-    # Signing helpers backed by the committed fixture keypairs (test-only keys)
-    _sign(payload; key_pem, kid) = begin
-        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, key_pem)))
-        jwt = JWTs.JWT(payload = payload)
-        JWTs.sign!(jwt, signing_key, kid)
-        string(jwt)
-    end
+    # Signing helper backed by the committed fixture keypairs (test-only keys)
+    _sign(payload; key_pem, kid) = sign_rs256_fixture(payload; key_pem, kid)
     future = round(Int, datetime2unix(now(UTC))) + 3600
     past = round(Int, datetime2unix(now(UTC))) - 3600
     base_claims(; overrides...) = merge(Dict{String,Any}(
@@ -586,18 +606,11 @@ end
 end
 
 @testset "JWKSValidator - hardening (Codex review)" begin
-    JWTs = ModelContextProtocol.JWTs
-    _MbedTLS = JWTs.MbedTLS
     fixture_dir = joinpath(@__DIR__, "fixtures")
     fixture_url(name) = "file://" * abspath(joinpath(fixture_dir, name))
     cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
     future = round(Int, datetime2unix(now(UTC))) + 3600
-    _sign(payload; key_pem, kid) = begin
-        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, key_pem)))
-        jwt = JWTs.JWT(payload = payload)
-        JWTs.sign!(jwt, signing_key, kid)
-        string(jwt)
-    end
+    _sign(payload; key_pem, kid) = sign_rs256_fixture(payload; key_pem, kid)
     base_claims(; overrides...) = merge(Dict{String,Any}(
         "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "u",
         "exp" => future,
@@ -693,16 +706,13 @@ end
         @test length(keys) == 1  # enc entry filtered
         @test keys[1]["kid"] == "test-key-1"
         # And the validator still verifies a real signed token from the mixed document
-        JWTs = ModelContextProtocol.JWTs
-        _MbedTLS = JWTs.MbedTLS
-        signing_key = JWTs.JWKRSA(_MbedTLS.MD_SHA256, _MbedTLS.parse_keyfile(joinpath(fixture_dir, "jwks_test_key.pem")))
-        jwt = JWTs.JWT(payload = Dict{String,Any}(
-            "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "u",
-            "exp" => round(Int, datetime2unix(now(UTC))) + 3600))
-        JWTs.sign!(jwt, signing_key, "test-key-1")
+        token = sign_rs256_fixture(Dict{String,Any}(
+                "iss" => "https://issuer.example", "aud" => "my-mcp", "sub" => "u",
+                "exp" => round(Int, datetime2unix(now(UTC))) + 3600);
+            key_pem = "jwks_test_key.pem", kid = "test-key-1")
         v = JWKSValidator("file://" * mixed)
         cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
-        @test validate_token(v, string(jwt), cfg).success
+        @test validate_token(v, token, cfg).success
     end
 end
 

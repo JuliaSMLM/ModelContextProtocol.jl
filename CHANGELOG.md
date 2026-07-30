@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolve — and became possible once DataStructures 0.19.6 widened its own bound to
   `"1.1, 2"`. Purely additive for downstream resolution; the suite passes on
   OrderedCollections 2.0.1 (which supplies `LittleDict`, used in the protocol layer).
+- Widened `JWTs` compat to `"0.3, 1"`. JWTs 1.0 replaced its MbedTLS crypto backend
+  with OpenSSL_jll; the package's own use of JWTs (`JWKSValidator`) is entirely
+  public API (`JWKSet`, `refresh!`, `JWT`, `issigned`, `validate!(; algorithms)`)
+  and needed no changes. The JWKS test fixtures are now signed with MbedTLS
+  directly (a test-only dependency) instead of borrowing `JWTs.MbedTLS`, which no
+  longer exists — decoupling the test signer from JWTs' backend. The full suite
+  passes on both JWTs 0.3.2 and 1.0.0, including the RFC 7517 signature-verification
+  tests (under 1.0, OpenSSL verifies what MbedTLS signed).
 
 ## [0.6.0] - 2026-06-21
 
