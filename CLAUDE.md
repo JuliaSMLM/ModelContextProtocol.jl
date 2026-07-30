@@ -496,7 +496,7 @@ CHANGELOG.md for what shipped in each release; this section states capabilities 
 
 ### 🧪 Verification
 
-- 659-test suite incl. two e2e layers that spawn real server subprocesses; the
+- 941-test suite incl. two e2e layers that spawn real server subprocesses; the
   wire-conformance e2e (`test/e2e/test_wire_conformance.jl`) asserts serialized bodies
   AND HTTP headers over both transports, and runs on every PR via `.github/workflows/e2e.yml`
 - MCP Inspector (external Node client) drives stdio + HTTP example servers on every PR
