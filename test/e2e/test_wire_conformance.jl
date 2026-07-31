@@ -235,6 +235,66 @@ end
                     @test all(==("2025-06-18"), versions)
                     @test length(resp) == 10
                     length(resp) == 10 && _wire_assert(resp)
+
+                    # Modern era (2026-07-28) on the SAME live server, interleaved
+                    # after the legacy session above: stateless requests carry the
+                    # SEP-2243 standard headers, responses echo the request's own
+                    # version, never a session header, and protocol errors map to
+                    # HTTP statuses.
+                    mmeta = """{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"""
+                    mhdrs(method) = ["Content-Type" => "application/json",
+                                     "Accept" => "application/json, text/event-stream",
+                                     "MCP-Protocol-Version" => "2026-07-28",
+                                     "Mcp-Method" => method]
+
+                    r = HTTP.post(url, mhdrs("tools/list"),
+                        """{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":$mmeta},"id":101}""";
+                        status_exception = false)
+                    @test r.status == 200
+                    @test HTTP.header(r, "MCP-Protocol-Version", "") == "2026-07-28"
+                    @test HTTP.header(r, "Mcp-Session-Id", "") == ""  # no session on modern
+                    m = JSON3.read(String(r.body))
+                    @test m.result.resultType == "complete"
+                    @test m.result.ttlMs >= 0
+
+                    # Mcp-Name mirrors params.name on tools/call (with matching value)
+                    r = HTTP.post(url, vcat(mhdrs("tools/call"), ["Mcp-Name" => "get_stats"]),
+                        """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_stats","arguments":{},"_meta":$mmeta},"id":102}""";
+                        status_exception = false)
+                    @test r.status == 200
+                    @test JSON3.read(String(r.body)).result.resultType == "complete"
+
+                    # Header/body mismatch -> 400 + -32020 HeaderMismatch
+                    r = HTTP.post(url, mhdrs("tools/call"),
+                        """{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":$mmeta},"id":103}""";
+                        status_exception = false)
+                    @test r.status == 400
+                    @test JSON3.read(String(r.body)).error.code == -32020
+
+                    # Removed method -> 404 + -32601
+                    r = HTTP.post(url, mhdrs("ping"),
+                        """{"jsonrpc":"2.0","method":"ping","params":{"_meta":$mmeta},"id":104}""";
+                        status_exception = false)
+                    @test r.status == 404
+                    @test JSON3.read(String(r.body)).error.code == -32601
+
+                    # Unsupported version (header matches body) -> 400 + -32022
+                    bad_meta = """{"io.modelcontextprotocol/protocolVersion":"1999-01-01","io.modelcontextprotocol/clientCapabilities":{}}"""
+                    r = HTTP.post(url, ["Content-Type" => "application/json",
+                                        "Accept" => "application/json, text/event-stream",
+                                        "MCP-Protocol-Version" => "1999-01-01",
+                                        "Mcp-Method" => "tools/list"],
+                        """{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":$bad_meta},"id":105}""";
+                        status_exception = false)
+                    @test r.status == 400
+                    @test JSON3.read(String(r.body)).error.code == -32022
+
+                    # Legacy still works after the modern interleaving (dual-era)
+                    r = HTTP.post(url, vcat(hdrs, ["Mcp-Session-Id" => session]),
+                        """{"jsonrpc":"2.0","method":"tools/list","params":{},"id":106}""";
+                        status_exception = false)
+                    @test r.status == 200
+                    @test !haskey(JSON3.read(String(r.body)).result, :resultType)
                 end
             finally
                 kill(proc)

@@ -396,6 +396,230 @@
         Logging.global_logger(prior_logger)
     end
 
+    @testset "Modern era over HTTP (headers, statuses, session isolation)" begin
+        port = 19090 + rand(1:1000)
+        # session_required=true is the hard case: modern requests must be exempt
+        transport = HttpTransport(port = port, session_required = true)
+        echo_tool = MCPTool(name = "echo", description = "Echo", parameters = [
+                ToolParameter(name = "message", type = "string", description = "m", required = true)],
+            handler = args -> TextContent(text = args["message"]))
+        server = mcp_server(name = "modern-http", version = "1.0.0", tools = [echo_tool])
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        url = "http://127.0.0.1:$port/"
+        mmeta = Dict(
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities" => Dict())
+        base = ["Content-Type" => "application/json",
+                "Accept" => "application/json, text/event-stream"]
+        mhdrs(method; version = "2026-07-28") = vcat(base,
+            ["MCP-Protocol-Version" => version, "Mcp-Method" => method])
+        post(hdrs, msg) = HTTP.post(url, hdrs, JSON3.write(msg); status_exception = false)
+
+        # Legacy initialize first: mints a session and negotiates a legacy version
+        init = post(vcat(base, ["MCP-Protocol-Version" => "2025-11-25"]), Dict(
+            "jsonrpc" => "2.0", "id" => 1, "method" => "initialize",
+            "params" => Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict(),
+                             "clientInfo" => Dict("name" => "l", "version" => "1"))))
+        @test init.status == 200
+        session = HTTP.header(init, "Mcp-Session-Id", "")
+        @test !isempty(session)
+
+        # Legacy request without a session is rejected (session_required)
+        r = post(base, Dict("jsonrpc" => "2.0", "id" => 2, "method" => "tools/list",
+                            "params" => Dict()))
+        @test r.status == 400
+
+        # Modern request without a session sails through: sessions don't exist for
+        # it, the response echoes ITS version (not the legacy-negotiated one) and
+        # carries no session header
+        r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 3,
+            "method" => "tools/list", "params" => Dict("_meta" => mmeta)))
+        @test r.status == 200
+        @test HTTP.header(r, "MCP-Protocol-Version", "") == "2026-07-28"
+        @test HTTP.header(r, "Mcp-Session-Id", "") == ""
+        @test JSON3.read(String(r.body))["result"]["resultType"] == "complete"
+
+        # Missing Mcp-Method -> 400 + -32020
+        r = post(vcat(base, ["MCP-Protocol-Version" => "2026-07-28"]),
+            Dict("jsonrpc" => "2.0", "id" => 4, "method" => "tools/list",
+                 "params" => Dict("_meta" => mmeta)))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+
+        # Mcp-Method mismatch -> 400 + -32020
+        r = post(mhdrs("tools/call"), Dict("jsonrpc" => "2.0", "id" => 5,
+            "method" => "tools/list", "params" => Dict("_meta" => mmeta)))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+
+        # Missing MCP-Protocol-Version header -> 400 + -32020
+        r = post(vcat(base, ["Mcp-Method" => "tools/list"]),
+            Dict("jsonrpc" => "2.0", "id" => 6, "method" => "tools/list",
+                 "params" => Dict("_meta" => mmeta)))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+
+        # tools/call requires Mcp-Name mirroring params.name
+        call_msg(id) = Dict("jsonrpc" => "2.0", "id" => id, "method" => "tools/call",
+            "params" => Dict("name" => "echo", "arguments" => Dict("message" => "hi"),
+                             "_meta" => mmeta))
+        r = post(mhdrs("tools/call"), call_msg(7))                     # missing Mcp-Name
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => "wrong"]), call_msg(8))
+        @test r.status == 400
+        r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => "echo"]), call_msg(9))
+        @test r.status == 200
+        @test JSON3.read(String(r.body))["result"]["content"][1]["text"] == "hi"
+
+        # Base64 sentinel value decodes before comparison; malformed sentinel rejects
+        sentinel = "=?base64?" * Base64.base64encode("echo") * "?="
+        r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => sentinel]), call_msg(10))
+        @test r.status == 200
+        r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => "=?base64?!!notb64!!?="]), call_msg(11))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+
+        # Unsupported version (header matches body) -> 400 + -32022 with data
+        bad_meta = Dict("io.modelcontextprotocol/protocolVersion" => "1999-01-01",
+                        "io.modelcontextprotocol/clientCapabilities" => Dict())
+        r = post(mhdrs("tools/list"; version = "1999-01-01"),
+            Dict("jsonrpc" => "2.0", "id" => 12, "method" => "tools/list",
+                 "params" => Dict("_meta" => bad_meta)))
+        @test r.status == 400
+        err = JSON3.read(String(r.body))["error"]
+        @test err["code"] == -32022
+        @test err["data"]["requested"] == "1999-01-01"
+
+        # Removed method -> 404 + -32601
+        r = post(mhdrs("ping"), Dict("jsonrpc" => "2.0", "id" => 13, "method" => "ping",
+                                     "params" => Dict("_meta" => mmeta)))
+        @test r.status == 404
+        @test JSON3.read(String(r.body))["error"]["code"] == -32601
+
+        # Missing clientCapabilities -> 400 + -32602
+        r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 14,
+            "method" => "tools/list", "params" => Dict("_meta" => Dict(
+                "io.modelcontextprotocol/protocolVersion" => "2026-07-28"))))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32602
+
+        # server/discover without _meta -> 400 + -32602 (modern-only method)
+        r = post(vcat(base, ["Mcp-Method" => "server/discover"]),
+            Dict("jsonrpc" => "2.0", "id" => 15, "method" => "server/discover",
+                 "params" => Dict()))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32602
+
+        # A modern HEADER with a legacy body must NOT slip past validation: a
+        # gateway routing on the header and a backend executing the body would
+        # otherwise see two different requests. The header makes the request
+        # modern-era, so its missing required _meta field is -32602 (with -32020
+        # reserved for values that disagree); either way it is 400-rejected before
+        # any legacy handling.
+        r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 17,
+            "method" => "tools/list", "params" => Dict()))  # no modern _meta
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32602
+
+        # Duplicate standard headers are a smuggling vector -> 400 + -32020
+        r = post(vcat(mhdrs("tools/list"), ["Mcp-Method" => "tools/list"]),
+            Dict("jsonrpc" => "2.0", "id" => 18, "method" => "tools/list",
+                 "params" => Dict("_meta" => mmeta)))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+
+        # Permissive Base64 must be rejected: missing padding and invalid chars
+        # both decode "successfully" under Julia's lenient decoder
+        for bad in ("=?base64?" * "SGVsbG8" * "?=",          # no padding (len % 4 != 0)
+                    "=?base64?" * "SGVs!!!bG8=" * "?=")      # invalid characters
+            r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => bad]), call_msg(19))
+            @test r.status == 400
+            @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        end
+
+        # Header injection via the body version string: the response must never
+        # echo an unvalidated body value into a header
+        inj_meta = Dict(
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28\r\nSet-Cookie: injected=1",
+            "io.modelcontextprotocol/clientCapabilities" => Dict())
+        r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 20,
+            "method" => "tools/list", "params" => Dict("_meta" => inj_meta)))
+        @test r.status == 400
+        @test HTTP.header(r, "Set-Cookie", "") == ""
+        @test !contains(HTTP.header(r, "MCP-Protocol-Version", ""), "injected")
+
+        # Modern-marked notification: 202 without legacy session/version headers
+        r = post(mhdrs("notifications/initialized"), Dict(
+            "jsonrpc" => "2.0", "method" => "notifications/initialized",
+            "params" => Dict("_meta" => mmeta)))
+        @test r.status == 202
+        @test HTTP.header(r, "Mcp-Session-Id", "") == ""
+
+        # A JSON array body (batch) must produce a JSON-RPC rejection, not a 500
+        r = HTTP.post(url, base, "[]"; status_exception = false)
+        @test r.status != 500
+        @test contains(String(r.body), "error")
+
+        # GET declaring a modern version -> 405 (the modern era removed GET)
+        r = HTTP.get(url, ["MCP-Protocol-Version" => "2026-07-28"]; status_exception = false)
+        @test r.status == 405
+
+        # The health GET must not leak the legacy session ID
+        r = HTTP.get(url, ["Accept" => "application/json"]; status_exception = false)
+        @test r.status == 200
+        @test !haskey(JSON3.read(String(r.body)), "session_id")
+
+        # Legacy session still intact after all the modern traffic
+        r = post(vcat(base, ["Mcp-Session-Id" => session]),
+            Dict("jsonrpc" => "2.0", "id" => 16, "method" => "tools/list", "params" => Dict()))
+        @test r.status == 200
+        @test !haskey(JSON3.read(String(r.body))["result"], "resultType")
+
+        # Clean up
+        server.active = false
+        ModelContextProtocol.close(transport)
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
+
+    @testset "SEP-2243 header value decoding (strict)" begin
+        dec = ModelContextProtocol.decode_mcp_header_value
+        @test dec("plain-value") == "plain-value"
+        @test dec("=?base64?" * Base64.base64encode("Hello, 世界") * "?=") == "Hello, 世界"
+        # Strictness: Julia's decoder would accept all of these
+        @test dec("=?base64?SGVsbG8?=") === nothing        # missing padding
+        @test dec("=?base64?SGVs!!!bG8=?=") === nothing    # invalid characters
+        @test dec("=?base64??=") === nothing               # empty payload
+        @test dec("=?base64?é?=") === nothing              # non-ASCII payload (no throw)
+        @test dec("=?base64?/w==?=") === nothing           # decodes to invalid UTF-8
+        # Sentinel-shaped literal that is valid base64 of a sentinel: decodes once
+        @test dec("=?base64?" * Base64.base64encode("=?base64?x?=") * "?=") == "=?base64?x?="
+
+        hs = ModelContextProtocol.mcp_standard_header
+        req = HTTP.Request("POST", "/", ["Mcp-Method" => "tools/list"])
+        @test hs(req, "Mcp-Method") == "tools/list"
+        @test hs(req, "mcp-method") == "tools/list"        # case-insensitive name
+        @test hs(req, "Mcp-Name") === nothing
+        req2 = HTTP.Request("POST", "/", ["Mcp-Method" => "a", "MCP-METHOD" => "b"])
+        @test hs(req2, "Mcp-Method") === :invalid          # duplicates rejected
+        req3 = HTTP.Request("POST", "/", ["Mcp-Name" => "foo\tbar"])
+        @test hs(req3, "Mcp-Name") == "foo\tbar"           # tab is legal in values
+        # HTTP.jl's client-side Request constructor rejects NUL, but the SERVER
+        # parser admits it (verified against HTTP.Messages.readheaders) — push the
+        # raw pair to model what a hostile client can actually deliver
+        req4 = HTTP.Request("POST", "/")
+        push!(req4.headers, "Mcp-Name" => "foo\0bar")
+        @test hs(req4, "Mcp-Name") === :invalid            # NUL rejected
+    end
+
     @testset "Origin Validation" begin
         port = 14090 + rand(1:1000)
         
