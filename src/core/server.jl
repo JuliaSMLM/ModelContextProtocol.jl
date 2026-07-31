@@ -72,7 +72,15 @@ function process_message(server::Server, state::ServerState, message::String;
     if parsed isa JSONRPCError
         return serialize_message(parsed)
     end
-    
+
+    # Era resolved: everything except a modern-era request (notifications, legacy
+    # requests) may deliver log records to the client again. Modern requests keep
+    # the suppression the loop armed; handle_modern_request re-asserts it for
+    # callers that don't go through the loop.
+    if !(parsed isa JSONRPCRequest && parsed.meta.protocol_version !== nothing)
+        task_local_storage(:mcp_suppress_log_notifications, false)
+    end
+
     try
         if parsed isa JSONRPCRequest
             # Handle request. A nothing response means the handler deferred it
@@ -172,6 +180,15 @@ function run_server_loop(server::Server, state::ServerState)
             # "debug" they become notifications, and routed to a per-request channel
             # they can never block the loop, whereas the out-of-band queue has no
             # guaranteed consumer.
+            # Log-notification suppression is re-armed per message and defaults ON:
+            # the era of a message is unknown until it is parsed, and a modern
+            # request must never receive notifications/message (its client set no
+            # logLevel). process_message flips the flag OFF once the message
+            # resolves as legacy; a modern request keeps it on through the whole
+            # iteration, covering pre-parse and post-dispatch @debug lines alike.
+            # (Cost: the pre-parse "Processing message" debug line is stderr-only
+            # even for legacy debug sessions — era is genuinely unknown there.)
+            task_local_storage(:mcp_suppress_log_notifications, true)
             task_local_storage(:mcp_notification_route, notification_route(transport))
             try
                 @debug "Processing message" raw=message

@@ -3,41 +3,79 @@
 #
 # A request carrying `io.modelcontextprotocol/protocolVersion` in its params `_meta`
 # is modern-era: it is served statelessly — no `initialize` handshake, version and
-# client capabilities validated per request — while `initialize` continues to select
-# legacy semantics (dual-era server, per the 2026-07-28 backward-compatibility model).
-# Feature handlers are shared between the eras; this file owns era validation, the
-# modern method surface, `server/discover`, and the modern result envelope
-# (`resultType` + `serverInfo` in result `_meta`).
+# client capabilities validated per request — while `initialize` selects legacy
+# semantics (dual-era server, per the 2026-07-28 spec's backward-compatibility
+# model). Feature handlers are shared between the eras; this file owns era
+# validation, the modern method surface, `server/discover`, and the modern result
+# envelope (`resultType` + `serverInfo` in result `_meta` + CacheableResult fields).
 
 """
-Methods served in the modern era. Methods REMOVED from the modern era — `ping`,
+Methods served in the modern era, each gated on the capability that provides it
+(`nothing` = always available). Methods REMOVED from the modern era — `ping`,
 `logging/setLevel`, `resources/subscribe`/`unsubscribe` (replaced by
 `subscriptions/listen`), and the core `tasks/*` family (moved to the
 `io.modelcontextprotocol/tasks` extension) — return METHOD_NOT_FOUND on modern
-requests even though the legacy era serves them.
+requests even though the legacy era serves them. A method whose capability the
+server does not declare is equally METHOD_NOT_FOUND: the advertised capability set
+and the callable surface must agree.
 """
-const MODERN_METHODS = Set([
+const MODERN_METHODS = Dict{String,Union{DataType,Nothing}}(
+    "server/discover" => nothing,
+    "tools/list" => ToolCapability,
+    "tools/call" => ToolCapability,
+    "resources/list" => ResourceCapability,
+    "resources/read" => ResourceCapability,
+    "resources/templates/list" => ResourceCapability,
+    "prompts/list" => PromptCapability,
+    "prompts/get" => PromptCapability,
+)
+
+"""
+Modern methods whose complete results are CacheableResults: the spec REQUIRES
+`ttlMs` and `cacheScope` on them.
+"""
+const MODERN_CACHEABLE_METHODS = Set([
     "server/discover",
     "tools/list",
-    "tools/call",
-    "resources/list",
-    "resources/read",
-    "resources/templates/list",
     "prompts/list",
-    "prompts/get",
+    "resources/list",
+    "resources/templates/list",
+    "resources/read",
 ])
 
-# Caching hints for server/discover (a CacheableResult): the advertised versions and
-# capabilities are static for a server process, so a long shared-cache TTL fits
+# Caching hints. server/discover advertises a static shape for a server process, so a
+# long TTL fits; list/read results default to ttlMs=0 (immediately stale — the spec
+# requires the fields' presence, not a caching promise, and 0 preserves today's
+# always-fresh behavior).
 const DISCOVER_TTL_MS = 3_600_000
-const DISCOVER_CACHE_SCOPE = "public"
+const DEFAULT_CACHE_TTL_MS = 0
+
+"""
+    modern_cache_scope(server::Server) -> String
+
+The `cacheScope` for this server's cacheable results: `"private"` when bearer auth is
+enabled (responses are served inside an authorization context and MUST NOT be shared
+across contexts by intermediaries), `"public"` otherwise.
+
+# Arguments
+- `server::Server`: The server instance
+
+# Returns
+- `String`: `"public"` or `"private"`
+"""
+function modern_cache_scope(server::Server)::String
+    t = server.transport
+    (t isa HttpTransport && is_auth_enabled(t)) ? "private" : "public"
+end
 
 """
     modernize_error_code(code::Int) -> Int
 
-Map error codes forbidden on modern-era responses to their replacements: the spec
-reserves `-32002` (resource not found in ≤2025-11-25) and replaces it with `-32602`
-(Invalid params); implementations of 2026-07-28 MUST NOT emit it.
+Map legacy-range error codes to their modern-era replacements. The 2026-07-28
+allocation policy grandfathers `-32000`..`-32019` for legacy responses but modern
+responses must use spec codes: not-found conditions for resources (`-32000`), tools
+(`-32001`), URIs (`-32002`, reserved — MUST NOT be emitted), and prompts (`-32003`)
+are all `-32602` Invalid params in the modern era.
 
 # Arguments
 - `code::Int`: A legacy-era error code
@@ -45,16 +83,21 @@ reserves `-32002` (resource not found in ≤2025-11-25) and replaces it with `-3
 # Returns
 - `Int`: The code to emit on a modern-era response
 """
-modernize_error_code(code::Int)::Int = code == -32002 ? ErrorCodes.INVALID_PARAMS : code
+modernize_error_code(code::Int)::Int =
+    code in (-32000, -32001, -32002, -32003) ? ErrorCodes.INVALID_PARAMS : code
 
 """
     modern_result_envelope(response::JSONRPCResponse, server::Server) -> JSONRPCResponse
 
 Apply the modern-era result envelope: every result MUST carry `resultType`
 (`"complete"` unless the handler set one) and SHOULD identify the server via
-`io.modelcontextprotocol/serverInfo` in the result's `_meta`. The handler result is
-normalized to its wire shape (plain dicts) so the fields can be attached regardless
-of the concrete result type the handler returned.
+`io.modelcontextprotocol/serverInfo` in the result's `_meta` (merged into any
+handler-provided `_meta`).
+
+The known handler result types are re-shaped WITHOUT a JSON round-trip, so values
+travel by reference — no numeric precision loss (Int64 above 2^53 survives) and no
+extra copies of base64 payloads. Only unknown result types fall back to an untyped
+JSON3 round-trip (which preserves Int64, unlike a `Dict{String,Any}`-typed read).
 
 # Arguments
 - `response::JSONRPCResponse`: The handler's response
@@ -64,29 +107,72 @@ of the concrete result type the handler returned.
 - `JSONRPCResponse`: A response whose result carries the modern envelope fields
 """
 function modern_result_envelope(response::JSONRPCResponse, server::Server)::JSONRPCResponse
-    raw = JSON3.read(JSON3.write(response.result), Dict{String,Any})
-    haskey(raw, "resultType") || (raw["resultType"] = "complete")
-    meta = get(raw, "_meta", nothing)
-    if !(meta isa AbstractDict)
-        meta = Dict{String,Any}()
-        raw["_meta"] = meta
+    result = response.result
+
+    envelope = if result isa AbstractDict
+        # Shallow copy; values by reference
+        d = LittleDict{String,Any}()
+        for (k, v) in result
+            d[String(k)] = v
+        end
+        d
+    elseif result isa CallToolResult
+        # Mirror the StructTypes wire contract (names + omitempties) by hand
+        d = LittleDict{String,Any}("content" => result.content, "isError" => result.is_error)
+        result.structured_content !== nothing && (d["structuredContent"] = result.structured_content)
+        result._meta !== nothing && (d["_meta"] = result._meta)
+        d
+    elseif result isa ReadResourceResult
+        LittleDict{String,Any}("contents" => result.contents)
+    else
+        # Unknown result type: one untyped round-trip (JSON3.Object keeps Int64;
+        # a Dict{String,Any}-typed read would coerce numbers to Float64)
+        obj = JSON3.read(JSON3.write(result))
+        d = LittleDict{String,Any}()
+        for (k, v) in pairs(obj)
+            d[String(k)] = v
+        end
+        d
     end
-    server_info = Dict{String,Any}(
+
+    # resultType MUST be a string; a handler-set value is honored, anything else
+    # (absent or non-string) becomes "complete"
+    rt = get(envelope, "resultType", nothing)
+    rt isa AbstractString || (envelope["resultType"] = "complete")
+
+    # Merge serverInfo into any handler-provided _meta (a non-dict _meta is dropped)
+    merged = LittleDict{String,Any}()
+    meta = get(envelope, "_meta", nothing)
+    if meta isa AbstractDict
+        for (k, v) in meta
+            merged[String(k)] = v
+        end
+    elseif meta !== nothing
+        @debug "Dropping non-object result _meta on modern response" typeof(meta)
+    end
+    merged[META_SERVER_INFO] = Dict{String,Any}(
         "name" => server.config.name,
         "version" => server.config.version,
     )
-    meta[META_SERVER_INFO] = server_info
-    JSONRPCResponse(id = response.id, result = raw)
+    envelope["_meta"] = merged
+
+    JSONRPCResponse(id = response.id, result = envelope)
 end
 
 """
     handle_discover(ctx::RequestContext) -> HandlerResult
 
 Handle `server/discover` (a server MUST in the modern era): advertise the protocol
-versions this server supports across both eras, its capabilities, and optional
-instructions, with the CacheableResult fields (`ttlMs`, `cacheScope`) the spec
-requires on discovery results. `resultType` and `serverInfo` are attached by the
-modern envelope.
+versions this server supports across both eras, its modern capability surface, and
+optional instructions, with the CacheableResult fields (`ttlMs`, `cacheScope`) the
+spec requires on discovery results. `resultType` and `serverInfo` are attached by
+the modern envelope.
+
+Capabilities are presence-only objects for the features the modern era actually
+serves — no `listChanged`/`subscribe` claims (those notifications require
+`subscriptions/listen`, not yet implemented), no legacy-only `tasks`/`logging`, and
+no embedded resource listings (which would leak resource metadata into shared
+caches and do not match the modern ServerCapabilities shape).
 
 # Arguments
 - `ctx::RequestContext`: The current request context
@@ -95,18 +181,22 @@ modern envelope.
 - `HandlerResult`: The discovery result
 """
 function handle_discover(ctx::RequestContext)::HandlerResult
-    caps = capabilities_to_protocol(ctx.server.config.capabilities, ctx.server)
-    # Legacy-only capabilities don't exist in the modern era: core tasks moved to the
-    # io.modelcontextprotocol/tasks extension (not yet advertised) and logging/setLevel
-    # was removed (per-request logLevel delivery is not yet advertised either)
-    delete!(caps, "tasks")
-    delete!(caps, "logging")
+    caps = LittleDict{String,Any}()
+    for c in ctx.server.config.capabilities
+        if c isa ToolCapability
+            caps["tools"] = LittleDict{String,Any}()
+        elseif c isa ResourceCapability
+            caps["resources"] = LittleDict{String,Any}()
+        elseif c isa PromptCapability
+            caps["prompts"] = LittleDict{String,Any}()
+        end
+    end
 
     result = LittleDict{String,Any}(
         "supportedVersions" => vcat(MODERN_PROTOCOL_VERSIONS, SUPPORTED_PROTOCOL_VERSIONS),
         "capabilities" => caps,
         "ttlMs" => DISCOVER_TTL_MS,
-        "cacheScope" => DISCOVER_CACHE_SCOPE,
+        "cacheScope" => modern_cache_scope(ctx.server),
     )
     isempty(ctx.server.config.instructions) || (result["instructions"] = ctx.server.config.instructions)
 
@@ -119,11 +209,25 @@ function handle_discover(ctx::RequestContext)::HandlerResult
 end
 
 """
+    modern_invalid_params(ctx::RequestContext, method::String) -> HandlerResult
+
+Build the -32602 Invalid params result for a modern request whose typed parameters
+are missing or malformed.
+"""
+modern_invalid_params(ctx::RequestContext, method::String) = HandlerResult(
+    error = ErrorInfo(
+        code = ErrorCodes.INVALID_PARAMS,
+        message = "Invalid params for $(method)"
+    )
+)
+
+"""
     dispatch_modern(ctx::RequestContext, request::Request) -> HandlerResult
 
 Route a validated modern-era request to its handler. Shared feature handlers
 (tools, resources, prompts) are reused from the legacy era; `server/discover` is
-modern-only.
+modern-only. Requests whose typed params failed to parse get -32602 rather than an
+internal error.
 
 # Arguments
 - `ctx::RequestContext`: The request context (carries the per-request protocol version)
@@ -136,23 +240,26 @@ function dispatch_modern(ctx::RequestContext, request::Request)::HandlerResult
     if request.method == "server/discover"
         handle_discover(ctx)
     elseif request.method == "tools/list"
-        params = isnothing(request.params) ? ListToolsParams() : request.params::ListToolsParams
+        params = request.params isa ListToolsParams ? request.params : ListToolsParams()
         handle_list_tools(ctx, params)
     elseif request.method == "tools/call"
-        handle_call_tool(ctx, request.params::CallToolParams)
+        request.params isa CallToolParams || return modern_invalid_params(ctx, request.method)
+        handle_call_tool(ctx, request.params)
     elseif request.method == "resources/list"
-        params = isnothing(request.params) ? ListResourcesParams() : request.params::ListResourcesParams
+        params = request.params isa ListResourcesParams ? request.params : ListResourcesParams()
         handle_list_resources(ctx, params)
     elseif request.method == "resources/read"
-        handle_read_resource(ctx, request.params::ReadResourceParams)
+        request.params isa ReadResourceParams || return modern_invalid_params(ctx, request.method)
+        handle_read_resource(ctx, request.params)
     elseif request.method == "resources/templates/list"
-        params = isnothing(request.params) ? ListResourceTemplatesParams() : request.params::ListResourceTemplatesParams
+        params = request.params isa ListResourceTemplatesParams ? request.params : ListResourceTemplatesParams()
         handle_list_resource_templates(ctx, params)
     elseif request.method == "prompts/list"
-        params = isnothing(request.params) ? ListPromptsParams() : request.params::ListPromptsParams
+        params = request.params isa ListPromptsParams ? request.params : ListPromptsParams()
         handle_list_prompts(ctx, params)
     elseif request.method == "prompts/get"
-        handle_get_prompt(ctx, request.params::GetPromptParams)
+        request.params isa GetPromptParams || return modern_invalid_params(ctx, request.method)
+        handle_get_prompt(ctx, request.params)
     else
         HandlerResult(
             error = ErrorInfo(
@@ -164,28 +271,53 @@ function dispatch_modern(ctx::RequestContext, request::Request)::HandlerResult
 end
 
 """
+    modern_method_available(server::Server, method::String) -> Bool
+
+Whether `method` exists on this server's modern surface: it must be a modern-era
+method AND its providing capability must be declared — the advertised capability set
+and the callable surface must agree.
+
+# Arguments
+- `server::Server`: The server instance
+- `method::String`: The request method
+
+# Returns
+- `Bool`: true when the method is callable in the modern era
+"""
+function modern_method_available(server::Server, method::String)::Bool
+    haskey(MODERN_METHODS, method) || return false
+    cap = MODERN_METHODS[method]
+    cap === nothing && return true
+    any(c -> c isa cap, server.config.capabilities)
+end
+
+"""
     handle_modern_request(server::Server, state::ServerState, request::Request;
                           authenticated_user=nothing) -> Union{Response,Nothing}
 
 Serve a modern-era (2026-07-28+) request statelessly: validate the per-request
 `_meta` protocol fields, dispatch to the shared feature handlers, and apply the
-modern result envelope. Session state is never consulted for era metadata — every
-request is self-contained — and the legacy session's negotiated version is left
-untouched, so both eras can interleave on one server.
+modern result envelope plus the CacheableResult fields where required. The handler
+context gets a FRESH `ServerState` — modern requests are self-contained, and a
+ctx-aware tool handler must not be able to mutate the legacy session's state.
 
 Validation, in order (per the spec):
+- missing `protocolVersion` (only reachable for `server/discover`, which routes
+  modern unconditionally) → -32602 Invalid params
 - unsupported `protocolVersion` → `UnsupportedProtocolVersionError` (-32022) with
   `data.supported`/`data.requested`
 - missing `clientCapabilities` → -32602 Invalid params (a required `_meta` field)
-- method not in the modern surface → -32601 Method not found
+- method not on the modern surface (or its capability undeclared) → -32601
 
 `notifications/message` is never emitted for modern requests: the spec forbids it
 for requests that did not set `io.modelcontextprotocol/logLevel`, and per-request
-log level support is not yet implemented (emission is a MAY).
+log level support is not yet implemented (emission is a MAY). The suppression flag
+is set for the remainder of the loop iteration — the server loop re-arms it per
+message — so the loop's own post-dispatch lifecycle records are covered too.
 
 # Arguments
 - `server::Server`: The MCP server instance
-- `state::ServerState`: Server state (used only as context plumbing; not read for era metadata)
+- `state::ServerState`: The legacy session state (NOT given to handlers; see above)
 - `request::Request`: The parsed request (with `meta.protocol_version` set)
 - `authenticated_user`: Per-request identity from HTTP auth, else `nothing`
 
@@ -194,6 +326,12 @@ log level support is not yet implemented (emission is a MAY).
 """
 function handle_modern_request(server::Server, state::ServerState, request::Request;
                                authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
+    # Suppress notifications/message from here through the END of this loop
+    # iteration (the loop re-arms the flag per message): parser/dispatch/post-
+    # dispatch log records must not reach a modern client that set no logLevel,
+    # even when a legacy client previously enabled debug delivery.
+    task_local_storage(:mcp_suppress_log_notifications, true)
+
     version = request.meta.protocol_version
 
     # server/discover routes here even without modern _meta (it exists in no other
@@ -232,7 +370,7 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         )
     end
 
-    if !(request.method in MODERN_METHODS)
+    if !modern_method_available(server, request.method)
         return JSONRPCError(
             id = request.id,
             error = ErrorInfo(
@@ -242,9 +380,11 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         )
     end
 
+    # Fresh state: modern requests are stateless, and handlers (including ctx-aware
+    # tool handlers) must not see or mutate the legacy session's ServerState
     ctx = RequestContext(
         server = server,
-        state = state,
+        state = ServerState(),
         request_id = request.id,
         progress_token = request.meta.progress_token,
         authenticated_user = authenticated_user,
@@ -253,11 +393,7 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
 
     request_start = time()
     result = try
-        # Suppress notifications/message for the duration: modern requests carry no
-        # logLevel yet, and emitting without one is forbidden
-        task_local_storage(:mcp_suppress_log_notifications, true) do
-            dispatch_modern(ctx, request)
-        end
+        dispatch_modern(ctx, request)
     catch e
         @debug "modern request failed" method=request.method id=request.id error=e
         return JSONRPCError(
@@ -285,6 +421,13 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         # No modern method defers today (core tasks are legacy-only); kept for shape
         nothing
     else
-        modern_result_envelope(result.response, server)
+        response = modern_result_envelope(result.response, server)
+        # CacheableResult fields are REQUIRED on complete results of the cacheable
+        # methods (discover set its own above)
+        if request.method in MODERN_CACHEABLE_METHODS && response.result isa AbstractDict
+            haskey(response.result, "ttlMs") || (response.result["ttlMs"] = DEFAULT_CACHE_TTL_MS)
+            haskey(response.result, "cacheScope") || (response.result["cacheScope"] = modern_cache_scope(server))
+        end
+        response
     end
 end

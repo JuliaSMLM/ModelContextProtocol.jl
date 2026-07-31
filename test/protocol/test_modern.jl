@@ -26,7 +26,14 @@
         )
     end
 
-    roundtrip(server, state, msg) = JSON3.read(process_message(server, state, JSON3.write(msg)))
+    # process_message leaves the log-suppression task-local armed after a modern
+    # request (the real server loop re-arms it per message); reset it here so it
+    # cannot leak into later testsets running in this same task
+    roundtrip(server, state, msg) = begin
+        r = JSON3.read(process_message(server, state, JSON3.write(msg)))
+        task_local_storage(:mcp_suppress_log_notifications, false)
+        r
+    end
 
     @testset "server/discover" begin
         server = modern_server()
@@ -162,9 +169,132 @@
         ctx_modern = RequestContext(server = server, protocol_version = "2026-07-28")
         @test !ModelContextProtocol.tasks_supported(ctx_modern)
 
-        # error-code remap: the reserved legacy -32002 must never appear on modern responses
-        @test ModelContextProtocol.modernize_error_code(-32002) == -32602
-        @test ModelContextProtocol.modernize_error_code(-32001) == -32001
+        # error-code remap: legacy-range not-found codes become -32602 on modern
+        # responses (-32002 is spec-reserved and MUST NOT be emitted at all)
+        for legacy in (-32000, -32001, -32002, -32003)
+            @test ModelContextProtocol.modernize_error_code(legacy) == -32602
+        end
+        @test ModelContextProtocol.modernize_error_code(-32603) == -32603
+
+        # wire path: unknown tool on a modern request surfaces -32602, not -32001
+        state = ServerState()
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 20, "method" => "tools/call",
+            "params" => Dict("name" => "no_such_tool", "arguments" => Dict(),
+                             "_meta" => modern_meta())))
+        @test resp["error"]["code"] == -32602
+    end
+
+    @testset "CacheableResult fields on list/read results" begin
+        server = modern_server()
+        state = ServerState()
+        for (method, params) in (
+            ("tools/list", Dict{String,Any}()),
+            ("prompts/list", Dict{String,Any}()),
+            ("resources/list", Dict{String,Any}()),
+            ("resources/templates/list", Dict{String,Any}()),
+            ("resources/read", Dict{String,Any}("uri" => "test://doc")),
+        )
+            params["_meta"] = modern_meta()
+            resp = roundtrip(server, state, Dict(
+                "jsonrpc" => "2.0", "id" => 21, "method" => method, "params" => params))
+            @test resp["result"]["ttlMs"] isa Integer && resp["result"]["ttlMs"] >= 0
+            @test resp["result"]["cacheScope"] in ("public", "private")
+        end
+
+        # tools/call is NOT cacheable: no caching hints attached
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 22, "method" => "tools/call",
+            "params" => Dict("name" => "echo", "arguments" => Dict("message" => "x"),
+                             "_meta" => modern_meta())))
+        @test !haskey(resp["result"], "ttlMs")
+    end
+
+    @testset "envelope preserves data fidelity (no lossy round-trip)" begin
+        big = 9007199254740993  # 2^53 + 1: dies in a Float64 coercion
+        server = mcp_server(name = "fidelity", version = "1.0.0",
+            tools = [MCPTool(name = "bignum", description = "big int", parameters = [],
+                handler = args -> CallToolResult(
+                    content = [TextContent(text = "big")],
+                    structured_content = Dict("value" => big),
+                    _meta = Dict{String,Any}("trace" => "keep-me")))])
+        state = ServerState()
+        out = process_message(server, state, JSON3.write(Dict(
+            "jsonrpc" => "2.0", "id" => 23, "method" => "tools/call",
+            "params" => Dict("name" => "bignum", "arguments" => Dict(),
+                             "_meta" => modern_meta()))))
+        task_local_storage(:mcp_suppress_log_notifications, false)
+        # Assert on the raw wire text: the exact integer must appear undamaged
+        @test occursin(string(big), out)
+        resp = JSON3.read(out)
+        @test resp["result"]["structuredContent"]["value"] == big
+        # handler _meta merged, not replaced
+        @test resp["result"]["_meta"]["trace"] == "keep-me"
+        @test haskey(resp["result"]["_meta"], "io.modelcontextprotocol/serverInfo")
+        @test resp["result"]["isError"] == false
+    end
+
+    @testset "capability gating of the modern surface" begin
+        # A server declaring only tools must answer -32601 for resources/prompts
+        # methods: the advertised capability set and callable surface must agree.
+        server = mcp_server(name = "tools-only", version = "1.0.0",
+            capabilities = ModelContextProtocol.Capability[ModelContextProtocol.ToolCapability()],
+            tools = [MCPTool(name = "t", description = "t", parameters = [],
+                handler = args -> TextContent(text = "t"))])
+        state = ServerState()
+        for method in ("resources/list", "prompts/list")
+            resp = roundtrip(server, state, Dict(
+                "jsonrpc" => "2.0", "id" => 24, "method" => method,
+                "params" => Dict("_meta" => modern_meta())))
+            @test resp["error"]["code"] == -32601
+        end
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 25, "method" => "tools/list",
+            "params" => Dict("_meta" => modern_meta())))
+        @test haskey(resp, "result")
+        # discover reflects the same reduced surface, presence-only objects
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 26, "method" => "server/discover",
+            "params" => Dict("_meta" => modern_meta())))
+        caps = resp["result"]["capabilities"]
+        @test haskey(caps, "tools") && isempty(caps["tools"])
+        @test !haskey(caps, "resources") && !haskey(caps, "prompts")
+    end
+
+    @testset "malformed _meta robustness" begin
+        server = modern_server()
+        state = ServerState()
+
+        # _meta: null / non-object -> not modern, no crash: served as legacy
+        for weird in (nothing, [1, 2], "junk")
+            resp = roundtrip(server, state, Dict(
+                "jsonrpc" => "2.0", "id" => 27, "method" => "tools/list",
+                "params" => Dict("_meta" => weird)))
+            @test haskey(resp, "result")  # legacy tools/list, no -32603
+        end
+
+        # Non-string protocolVersion -> treated as absent -> legacy
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 28, "method" => "tools/list",
+            "params" => Dict("_meta" => Dict(
+                "io.modelcontextprotocol/protocolVersion" => 2026,
+                "io.modelcontextprotocol/clientCapabilities" => Dict()))))
+        @test haskey(resp, "result")
+        @test !haskey(resp["result"], "resultType")
+
+        # Non-object clientCapabilities -> missing required field -> -32602
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 29, "method" => "tools/list",
+            "params" => Dict("_meta" => Dict(
+                "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities" => [1, 2]))))
+        @test resp["error"]["code"] == -32602
+
+        # Malformed typed params on a modern request -> -32602, not -32603
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 30, "method" => "tools/call",
+            "params" => Dict("_meta" => modern_meta())))  # no tool name
+        @test resp["error"]["code"] == -32602
     end
 
     @testset "log notifications suppressed for modern requests" begin
@@ -173,7 +303,10 @@
         out = IOBuffer()
         transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = out)
         server.transport = transport
-        logger = MCPLogger(IOBuffer(), Logging.Info)
+        # Debug-level logger: the worst case — a legacy client enabled debug
+        # delivery, so even the request-lifecycle @debug records are live and
+        # must still not reach an interleaved modern request's client.
+        logger = MCPLogger(IOBuffer(), Logging.Debug)
         logger.transport = transport
         logger.transport_active[] = true
         log_tool = MCPTool(name = "log_tool", description = "logs", parameters = [],
@@ -183,21 +316,30 @@
             end)
         push!(server.tools, log_tool)
 
-        with_logger(logger) do
-            # Modern request: the record must NOT be delivered over the transport
-            process_message(server, state, JSON3.write(Dict(
-                "jsonrpc" => "2.0", "id" => 12, "method" => "tools/call",
-                "params" => Dict("name" => "log_tool", "arguments" => Dict(),
-                                 "_meta" => modern_meta()))))
+        # Mimic the server loop's per-message re-arm: suppression defaults ON and
+        # process_message flips it off only once the message resolves as legacy
+        run_msg(msg) = begin
+            task_local_storage(:mcp_suppress_log_notifications, true)
+            with_logger(logger) do
+                process_message(server, state, JSON3.write(msg))
+            end
+            task_local_storage(:mcp_suppress_log_notifications, false)
         end
-        @test !occursin("modern-suppression-probe", String(take!(out)))
 
-        with_logger(logger) do
-            # Legacy request: delivery proceeds as usual
-            process_message(server, state, JSON3.write(Dict(
-                "jsonrpc" => "2.0", "id" => 13, "method" => "tools/call",
-                "params" => Dict("name" => "log_tool", "arguments" => Dict()))))
-        end
+        # Modern request: nothing — not the handler @info, not lifecycle @debug —
+        # may be delivered over the transport
+        run_msg(Dict(
+            "jsonrpc" => "2.0", "id" => 12, "method" => "tools/call",
+            "params" => Dict("name" => "log_tool", "arguments" => Dict(),
+                             "_meta" => modern_meta())))
+        modern_out = String(take!(out))
+        @test !occursin("modern-suppression-probe", modern_out)
+        @test !occursin("notifications/message", modern_out)
+
+        # Legacy request: delivery proceeds as usual (incl. debug lifecycle lines)
+        run_msg(Dict(
+            "jsonrpc" => "2.0", "id" => 13, "method" => "tools/call",
+            "params" => Dict("name" => "log_tool", "arguments" => Dict())))
         legacy_out = String(take!(out))
         @test occursin("notifications/message", legacy_out)
         @test occursin("modern-suppression-probe", legacy_out)

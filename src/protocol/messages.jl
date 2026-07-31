@@ -14,17 +14,19 @@ A non-`nothing` `protocol_version` marks the request as modern-era (stateless, n
 # Fields
 - `progress_token::Union{ProgressToken,Nothing}`: Optional token for tracking request progress
 - `protocol_version::Union{String,Nothing}`: `io.modelcontextprotocol/protocolVersion`
-  (required on every modern-era request; absent on legacy requests)
-- `client_capabilities::Union{Dict{String,Any},Nothing}`: `io.modelcontextprotocol/clientCapabilities`
-  (required on every modern-era request), kept as the raw JSON object
-- `client_info::Union{Dict{String,Any},Nothing}`: `io.modelcontextprotocol/clientInfo`
-  (optional), kept as the raw JSON object
+  (required on every modern-era request; absent on legacy requests). Only string
+  values are honored — a non-string value is treated as absent.
+- `client_capabilities::Any`: `io.modelcontextprotocol/clientCapabilities`
+  (required on every modern-era request), kept as the raw parsed JSON object —
+  no re-encoding copy is made
+- `client_info::Any`: `io.modelcontextprotocol/clientInfo` (optional), kept as the
+  raw parsed JSON object
 """
 Base.@kwdef struct RequestMeta
     progress_token::Union{ProgressToken,Nothing} = nothing
     protocol_version::Union{String,Nothing} = nothing
-    client_capabilities::Union{Dict{String,Any},Nothing} = nothing
-    client_info::Union{Dict{String,Any},Nothing} = nothing
+    client_capabilities::Any = nothing
+    client_info::Any = nothing
 end
 
 """
