@@ -15,11 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handled per spec: the URI is tracked in the session's subscription set and an
   empty result is returned; both are idempotent.
 - **DNS-rebinding protection** (GHSA-w48q-cv73-mx4w class): a loopback-bound
-  `HttpTransport` without bearer auth now rejects requests whose `Host` or `Origin`
-  header is neither local (`localhost`, `127.0.0.1`, `[::1]`) nor allowlisted with
-  `403 Forbidden`. New `allowed_hosts` kwarg admits extra hostnames (e.g. a reverse
-  proxy's public domain — though such deployments typically enable auth, which
-  disables the guard entirely since a browser cannot attach the bearer token).
+  `HttpTransport` without *enabled* bearer auth now rejects requests whose `Host` or
+  `Origin` header is neither local nor allowlisted with `403 Forbidden`. Loopback is
+  classified by parsing (any 127.0.0.0/8 address, `::1`, IPv4-mapped IPv6 loopback,
+  `localhost` with optional trailing dot) for both the bind host and header values;
+  malformed `Host` values (userinfo, junk after an IPv6 literal, multiple colons)
+  and duplicate `Host`/`Origin` headers are rejected rather than leniently parsed.
+  New `allowed_hosts` kwarg admits extra hostnames in `Host` only (e.g. a reverse
+  proxy's public domain); browser origins are admitted solely by loopback hostname
+  or an exact `allowed_origins` match. `disable_auth()` counts as no auth — the
+  guard stays active. (Hardened per security review.)
 
 ### Changed
 
@@ -43,7 +48,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fall back to stderr. Records below `Info` now map to the MCP `"debug"` level
   (previously `"info"`).
 
-## [0.6.1] - 2026-07-30
+### Fixed
+
+- **Client-sent JSON-RPC responses over HTTP now receive `202 Accepted`** per the
+  Streamable HTTP spec; previously they were misclassified as requests ("no `id`
+  field" was the notification test) and stranded the connection waiting for a reply
+  the server never sends. Invalid objects that are neither request, notification,
+  nor response (e.g. `{}`) now get `400` with a `-32600` Invalid Request error
+  instead of a blanket `202`.
+- **The single server loop can no longer stall on notification delivery.** The
+  out-of-band notification queue is unbounded with a drop-new soft cap (the GET SSE
+  consumer is optional per spec, so a bounded queue with blocking `put!` let a
+  POST-only client freeze the loop — trivially reachable at `logging/setLevel`
+  `debug`); per-request response channels are unbounded so a slow reader of one SSE
+  response cannot backpressure other clients' requests; and the loop's own lifecycle
+  log records are routed to the originating request's stream rather than the shared
+  queue. Transport shutdown now closes the notification queue and atomically fences
+  new response-channel registration (late connections get `503`), eliminating a
+  shutdown race that could strand a connection handler.
 
 ### Changed
 

@@ -133,3 +133,56 @@ end
     @test occursin("fallback probe", String(take!(fallback)))
     @test isempty(String(take!(out)))
 end
+
+@testset "logger recursion and cross-server activation" begin
+    # A log record emitted while another record is being handled (e.g. a user show()
+    # method that logs, or the transport send path logging) must not recurse: the
+    # entry guard replaces the inner record with a minimal fixed fallback line.
+    fallback = IOBuffer()
+    logger = MCPLogger(fallback, Logging.Info)
+    task_local_storage(:mcp_logger_reentry, true)  # simulate being inside handle_message
+    try
+        with_logger(logger) do
+            @info "inner record"
+        end
+    finally
+        task_local_storage(:mcp_logger_reentry, false)
+    end
+    text = String(take!(fallback))
+    @test occursin("recursive log record suppressed", text)
+    @test !occursin("inner record", text)  # not formatted, not delivered
+
+    # ...and with the guard clear, the same record goes through normally.
+    with_logger(logger) do
+        @info "normal record"
+    end
+    @test occursin("normal record", String(take!(fallback)))
+
+    # Initializing server A must not activate a logger wired to server B's transport.
+    server = mcp_server(name = "activation-test", version = "1.0.0")
+    server.transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = IOBuffer())
+    other_transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = IOBuffer())
+    foreign_logger = MCPLogger(IOBuffer(), Logging.Info)
+    foreign_logger.transport = other_transport
+    old_logger = Logging.global_logger(foreign_logger)
+    try
+        ctx = RequestContext(server = server, request_id = 1)
+        ModelContextProtocol.handle_initialize(ctx, InitializeParams(
+            capabilities = ClientCapabilities(),
+            clientInfo = Implementation(),
+            protocolVersion = "2025-11-25"))
+        @test foreign_logger.transport_active[] == false  # foreign logger untouched
+
+        # Same logger wired to THIS server's transport does activate
+        own_logger = MCPLogger(IOBuffer(), Logging.Info)
+        own_logger.transport = server.transport
+        Logging.global_logger(own_logger)
+        ModelContextProtocol.handle_initialize(ctx, InitializeParams(
+            capabilities = ClientCapabilities(),
+            clientInfo = Implementation(),
+            protocolVersion = "2025-11-25"))
+        @test own_logger.transport_active[] == true
+    finally
+        Logging.global_logger(old_logger)
+    end
+end

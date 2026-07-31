@@ -113,6 +113,21 @@ Format and output log messages according to the MCP protocol format.
 """
 function Logging.handle_message(logger::MCPLogger, level, message, _module, group, id,
                               filepath, line; kwargs...)
+    # Reentrancy guard FIRST: everything below — string(message), string(v) on kwarg
+    # values, JSON3.write, is_connected, the transport send — can invoke user-defined
+    # show methods or transport code that logs, re-entering this function. A recursive
+    # record gets a minimal fixed fallback line: no formatting of user values, no
+    # transport delivery, so the recursion terminates at depth one.
+    if get(task_local_storage(), :mcp_logger_reentry, false)
+        try
+            println(logger.stream, "{\"mcp_logger\":\"recursive log record suppressed\"}")
+        catch
+        end
+        return nothing
+    end
+    task_local_storage(:mcp_logger_reentry, true)
+    try
+
     # Convert log level to MCP protocol level
     mcp_level = if level >= Error
         "error"
@@ -153,25 +168,26 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
     serialized = String(take!(buf))
 
     # Deliver to the client as a notifications/message over the transport once the
-    # session is initialized. The task-local reentrancy guard prevents recursion when
-    # the send path itself logs (e.g. a transport @debug on a closed channel).
+    # session is initialized (recursion from the send path is handled by the
+    # entry guard above)
     t = logger.transport
-    if t !== nothing && logger.transport_active[] && is_connected(t) &&
-       !get(task_local_storage(), :mcp_logger_reentry, false)
-        task_local_storage(:mcp_logger_reentry, true)
+    if t !== nothing && logger.transport_active[] && is_connected(t)
         try
             send_notification(t, serialized)
             return nothing
         catch
             # Transport delivery failed; fall through to the fallback stream
-        finally
-            task_local_storage(:mcp_logger_reentry, false)
         end
     end
 
     # Fallback: write to the configured stream (stderr by default)
     println(logger.stream, serialized)
     Base.flush(logger.stream)
+
+    finally
+        task_local_storage(:mcp_logger_reentry, false)
+    end
+    nothing
 end
 
 """

@@ -168,21 +168,25 @@ function run_server_loop(server::Server, state::ServerState)
             # send_notification deliver request-scoped notifications (progress, log
             # messages) onto this request's response stream; background tasks never
             # inherit it, so their notifications stay on the out-of-band channel.
-            @debug "Processing message" raw=message
+            # The route must cover this loop's own @debug lines too — at setLevel
+            # "debug" they become notifications, and routed to a per-request channel
+            # they can never block the loop, whereas the out-of-band queue has no
+            # guaranteed consumer.
             task_local_storage(:mcp_notification_route, notification_route(transport))
-            response = try
-                process_message(server, state, message; authenticated_user=pending_auth_context(transport))
+            try
+                @debug "Processing message" raw=message
+                response = process_message(server, state, message; authenticated_user=pending_auth_context(transport))
+
+                # Keep the transport's advertised version in sync with the negotiated one
+                # (set by handle_initialize) so e.g. HTTP response headers echo it
+                isnothing(state.protocol_version) || set_negotiated_version!(transport, state.protocol_version)
+
+                if !isnothing(response)
+                    @debug "Sending response" response=response
+                    write_message(transport, response)
+                end
             finally
                 task_local_storage(:mcp_notification_route, nothing)
-            end
-
-            # Keep the transport's advertised version in sync with the negotiated one
-            # (set by handle_initialize) so e.g. HTTP response headers echo it
-            isnothing(state.protocol_version) || set_negotiated_version!(transport, state.protocol_version)
-
-            if !isnothing(response)
-                @debug "Sending response" response=response
-                write_message(transport, response)
             end
         catch e
             if e isa InterruptException

@@ -3,6 +3,7 @@
 using HTTP
 using JSON3
 using UUIDs: uuid4
+using Sockets: IPv4, IPv6
 
 """
     QueuedHttpRequest(id, body, user)
@@ -92,7 +93,10 @@ mutable struct HttpTransport <: Transport
             Dict{String,HTTP.Stream}(),  # SSE streams
             Channel{QueuedHttpRequest}(32),  # Buffer up to 32 requests
             Dict{String,Channel{Tuple{Symbol,String}}}(),
-            Channel{String}(100),  # Notification queue
+            # Unbounded with a soft cap enforced in send_notification: the GET SSE
+            # consumer is OPTIONAL per spec, so a bounded channel with blocking put!
+            # would let a POST-only client stall the single server loop once full
+            Channel{String}(Inf),
             nothing,  # current_request_id
             nothing,  # current_request_auth
             nothing,  # No session initially
@@ -148,29 +152,80 @@ function generate_session_id()::String
     return string(uuid4())
 end
 
-# Hostnames that always count as local for the DNS-rebinding guard
-const LOOPBACK_HOSTNAMES = ("localhost", "127.0.0.1", "::1", "[::1]")
+# Soft cap on pending out-of-band notifications when no GET SSE consumer drains them
+const NOTIFICATION_QUEUE_SOFTCAP = 1000
 
 """
-    strip_port(hostport::AbstractString) -> String
+    parse_host_header(hostport::AbstractString) -> Union{String,Nothing}
 
-Extract the hostname from a `host[:port]` string, handling bracketed IPv6
-literals (`[::1]:8080` -> `[::1]`).
+Parse a Host-header style `host[:port]` value strictly, returning the lowercased
+hostname or `nothing` when the value is malformed (userinfo, multiple colons on a
+non-bracketed host, junk after a bracketed IPv6 literal, non-numeric port). Malformed
+values must be REJECTED by the DNS-rebinding guard, not leniently truncated into
+something that looks local (`[::1]evil.example` must not read as `[::1]`).
 
 # Arguments
 - `hostport::AbstractString`: A Host-header style value
 
 # Returns
-- `String`: The hostname portion, lowercased
+- `Union{String,Nothing}`: The lowercased hostname (brackets kept for IPv6 literals),
+  or `nothing` when malformed
 """
-function strip_port(hostport::AbstractString)::String
+function parse_host_header(hostport::AbstractString)::Union{String,Nothing}
     h = lowercase(strip(hostport))
+    isempty(h) && return nothing
+    occursin('@', h) && return nothing  # userinfo smuggling
     if startswith(h, "[")
         idx = findfirst(']', h)
-        return isnothing(idx) ? h : h[1:idx]
+        isnothing(idx) && return nothing
+        rest = h[nextind(h, idx):end]
+        if !isempty(rest)
+            startswith(rest, ":") || return nothing  # junk after the bracket
+            port = rest[2:end]
+            (isempty(port) || !all(isdigit, port)) && return nothing
+        end
+        return h[1:idx]
     end
-    idx = findfirst(':', h)
-    return isnothing(idx) ? h : h[1:prevind(h, idx)]
+    parts = split(h, ':')
+    length(parts) > 2 && return nothing  # "host:80:evil" and unbracketed IPv6
+    isempty(parts[1]) && return nothing
+    if length(parts) == 2
+        (isempty(parts[2]) || !all(isdigit, parts[2])) && return nothing
+    end
+    return String(parts[1])
+end
+
+"""
+    is_loopback_host(host::AbstractString) -> Bool
+
+Determine whether a hostname refers to the local loopback: `localhost` (optionally
+with a trailing dot), any 127.0.0.0/8 IPv4 address, `::1`, or an IPv4-mapped IPv6
+loopback (`::ffff:127.x.y.z`). String-list matching is not enough here — binding or
+addressing via `127.0.0.2` is just as local as `127.0.0.1`.
+
+# Arguments
+- `host::AbstractString`: Hostname, IP literal, or bracketed IPv6 literal
+
+# Returns
+- `Bool`: true if the host is loopback
+"""
+function is_loopback_host(host::AbstractString)::Bool
+    h = lowercase(strip(host))
+    endswith(h, ".") && (h = chop(h))
+    h == "localhost" && return true
+    if startswith(h, "[") && endswith(h, "]")
+        h = h[2:prevind(h, lastindex(h))]
+    end
+    # No tryparse methods exist for IP types; parse throws on non-IP strings
+    ip4 = try parse(IPv4, h) catch; nothing end
+    ip4 !== nothing && return (ip4.host >>> 24) == 127
+    ip6 = try parse(IPv6, h) catch; nothing end
+    if ip6 !== nothing
+        ip6.host == UInt128(1) && return true  # ::1
+        # IPv4-mapped loopback ::ffff:127.x.y.z
+        return (ip6.host >>> 32) == 0xffff && ((ip6.host >>> 24) & 0xff) == 0x7f
+    end
+    return false
 end
 
 """
@@ -180,6 +235,10 @@ Check Host and Origin headers against DNS-rebinding attacks on a loopback-bound
 server (GHSA-w48q-cv73-mx4w class): a malicious website resolves its own domain to
 127.0.0.1 and drives the local server from the victim's browser. A legitimate local
 client sends a loopback Host; the attack necessarily carries the attacker's hostname.
+Malformed Host values are violations (see `parse_host_header`). `allowed_hosts`
+applies to the Host header only; Origin is admitted by loopback hostname or an exact
+`allowed_origins` match — a proxy hostname in `allowed_hosts` deliberately does NOT
+admit browser origins on that host.
 
 # Arguments
 - `host_header`: The request's Host header value ("" when absent)
@@ -195,22 +254,22 @@ function rebinding_violation(host_header::AbstractString, origin_header::Abstrac
                              allowed_hosts::Vector{String},
                              allowed_origins::Vector{String})::Union{String,Nothing}
     if !isempty(host_header)
-        hostname = strip_port(host_header)
-        if !(hostname in LOOPBACK_HOSTNAMES) &&
+        hostname = parse_host_header(host_header)
+        isnothing(hostname) && return "Host header '$host_header' is malformed"
+        if !is_loopback_host(hostname) &&
            !(hostname in (lowercase(h) for h in allowed_hosts))
             return "Host header '$host_header' is not a permitted hostname"
         end
     end
     if !isempty(origin_header)
-        # HTTP.URI separates host and port already, so no strip_port here (stripping
-        # would mangle an unbracketed IPv6 host like "::1")
+        # HTTP.URI separates host and port already (no strip needed; stripping would
+        # mangle an unbracketed IPv6 host like "::1")
         origin_host = try
             lowercase(String(HTTP.URI(origin_header).host))
         catch
             ""
         end
-        if !(origin_header in allowed_origins) && !(origin_host in LOOPBACK_HOSTNAMES) &&
-           !(origin_host in (lowercase(h) for h in allowed_hosts))
+        if !(origin_header in allowed_origins) && !is_loopback_host(origin_host)
             return "Origin header '$origin_header' is not a permitted origin"
         end
     end
@@ -382,19 +441,29 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         return nothing
     end
 
-    # DNS-rebinding guard: a loopback-bound server without bearer auth is exactly the
-    # target of browser-driven rebinding attacks, so Host/Origin must look local (or be
-    # explicitly allowlisted via allowed_hosts/allowed_origins). Auth-enabled servers are
-    # already protected — a browser cannot attach the bearer token — and commonly sit
-    # behind a reverse proxy that forwards a public Host, so the guard stays out of
-    # their way.
-    if isnothing(transport.auth) && lowercase(transport.host) in LOOPBACK_HOSTNAMES
-        violation = rebinding_violation(
-            HTTP.header(request, "Host", ""),
-            HTTP.header(request, "Origin", ""),
-            transport.allowed_hosts,
-            transport.allowed_origins
-        )
+    # DNS-rebinding guard: a loopback-bound server without ENABLED bearer auth is
+    # exactly the target of browser-driven rebinding attacks, so Host/Origin must look
+    # local (or be explicitly allowlisted via allowed_hosts/allowed_origins).
+    # Auth-enabled servers are already protected — a browser cannot attach the bearer
+    # token — and commonly sit behind a reverse proxy that forwards a public Host, so
+    # the guard stays out of their way. is_auth_enabled (not `auth === nothing`)
+    # matters: disable_auth() installs a middleware that accepts everyone anonymously,
+    # which provides no rebinding protection at all.
+    if !is_auth_enabled(transport) && is_loopback_host(transport.host)
+        host_values = [v for (k, v) in HTTP.headers(request) if lowercase(k) == "host"]
+        origin_values = [v for (k, v) in HTTP.headers(request) if lowercase(k) == "origin"]
+        violation = if length(host_values) > 1 || length(origin_values) > 1
+            # Duplicate authority headers are a smuggling vector: different components
+            # may honor different copies, so reject outright
+            "duplicate Host/Origin headers"
+        else
+            rebinding_violation(
+                isempty(host_values) ? "" : String(host_values[1]),
+                isempty(origin_values) ? "" : String(origin_values[1]),
+                transport.allowed_hosts,
+                transport.allowed_origins
+            )
+        end
         if !isnothing(violation)
             @debug "Rejected potential DNS-rebinding request" violation=violation
             HTTP.setstatus(stream, 403)
@@ -529,15 +598,56 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # Read request body
         body = String(read(stream))
         
-        # Parse to check if it's an initialization request
+        # Classify the message per JSON-RPC shape: a request has method+id, a
+        # notification has method but no id, a client RESPONSE has result/error+id
+        # but no method, and anything else (e.g. `{}`) is invalid. "No id" alone is
+        # NOT a notification — that misclassifies responses as requests (which would
+        # strand the connection waiting for a reply the loop never sends) and accepts
+        # invalid objects with 202.
         local is_initialize = false
         local is_notification = false
+        local is_client_response = false
+        local is_invalid = false
         try
             msg = JSON3.read(body)
-            is_initialize = get(msg, "method", "") == "initialize"
-            is_notification = !haskey(msg, "id")  # Notifications don't have IDs
+            has_method = haskey(msg, "method")
+            has_id = haskey(msg, "id")
+            is_initialize = has_method && get(msg, "method", "") == "initialize"
+            is_notification = has_method && !has_id
+            is_client_response = !has_method && has_id &&
+                                 (haskey(msg, "result") || haskey(msg, "error"))
+            is_invalid = !has_method && !is_client_response
         catch
-            # If parsing fails, let the server handle it
+            # Unparseable JSON: fall through to the request path, where the server
+            # loop produces the JSON-RPC parse-error response
+        end
+
+        if is_invalid
+            HTTP.setstatus(stream, 400)
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            error_response = JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "error" => Dict(
+                    "code" => -32600,
+                    "message" => "Invalid Request: not a JSON-RPC request, notification, or response"
+                ),
+                "id" => nothing
+            ))
+            HTTP.setheader(stream, "Content-Length" => string(length(error_response)))
+            HTTP.startwrite(stream)
+            write(stream, error_response)
+            return nothing
+        end
+
+        if is_client_response
+            # Per Streamable HTTP the server MUST return 202 for responses. This
+            # server sends no server-to-client requests on this transport, so there
+            # is nothing to correlate — acknowledge and drop.
+            @debug "Received client JSON-RPC response; acknowledging with 202"
+            HTTP.setstatus(stream, 202)
+            HTTP.setheader(stream, "Content-Length" => "0")
+            HTTP.startwrite(stream)
+            return nothing
         end
         
         # Session validation - only check after we know if it's initialization
@@ -606,11 +716,27 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         
         # Create the response route for this request. The channel carries any
         # request-scoped notifications (progress, log messages) followed by exactly
-        # one final (:response, ...) entry.
-        response_channel = Channel{Tuple{Symbol,String}}(64)
-        lock(transport.channels_lock) do
+        # one final (:response, ...) entry. Unbounded: producers include the single
+        # server loop, which must NEVER block on a slow client's half-read SSE
+        # response — buffering is bounded by the request's own lifetime.
+        # Registration is gated on `connected` UNDER the lock so it cannot race
+        # shutdown (a channel registered after close()'s snapshot would never be
+        # closed and would strand this handler in take! forever).
+        response_channel = Channel{Tuple{Symbol,String}}(Inf)
+        registered = lock(transport.channels_lock) do
+            transport.connected || return false
             transport.response_channels[request_id] = response_channel
             transport.active_streams[request_id] = stream
+            true
+        end
+        if !registered
+            HTTP.setstatus(stream, 503)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            error_msg = "Service Unavailable: server shutting down"
+            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+            HTTP.startwrite(stream)
+            write(stream, error_msg)
+            return nothing
         end
 
         # Queue the request for processing
@@ -772,16 +898,21 @@ Stop the HTTP server and close all connections.
 - `Nothing`
 """
 function close(transport::HttpTransport)::Nothing
-    if !transport.connected
-        return nothing
-    end
-    
-    transport.connected = false
-    
-    # Close all response channels (snapshot under the lock; close outside it)
+    # Flip `connected` and snapshot the response channels under the SAME lock that
+    # gates channel registration: a connection handler either registered before the
+    # snapshot (and its channel gets closed below) or observes connected == false and
+    # answers 503 — no channel can slip in after the snapshot and strand its handler
+    # in take! forever.
     channels = lock(transport.channels_lock) do
-        collect(values(transport.response_channels))
+        if !transport.connected
+            nothing
+        else
+            transport.connected = false
+            collect(values(transport.response_channels))
+        end
     end
+    channels === nothing && return nothing
+
     for channel in channels
         try
             Base.close(channel)
@@ -789,9 +920,11 @@ function close(transport::HttpTransport)::Nothing
             # Channel might be closed already
         end
     end
-    
-    # Close request queue
+
+    # Close request queue and the out-of-band notification queue (unblocks any
+    # GET SSE writer waiting on it)
     Base.close(transport.request_queue)
+    Base.close(transport.notification_queue)
     
     # Stop server
     if !isnothing(transport.server)
@@ -1003,8 +1136,15 @@ function send_notification(transport::HttpTransport, notification::String)::Noth
         end
     end
 
-    # Out-of-band delivery: the standalone GET SSE notification stream
+    # Out-of-band delivery: the standalone GET SSE notification stream. The queue is
+    # unbounded (put! must never block the single server loop — the GET consumer is
+    # optional per spec and may simply not exist), so enforce a soft cap here by
+    # dropping new notifications once too many are pending.
     try
+        if Base.n_avail(transport.notification_queue) >= NOTIFICATION_QUEUE_SOFTCAP
+            @debug "Notification queue full (no SSE consumer?); dropping notification"
+            return nothing
+        end
         put!(transport.notification_queue, notification)
     catch e
         @debug "Failed to queue notification" error=e

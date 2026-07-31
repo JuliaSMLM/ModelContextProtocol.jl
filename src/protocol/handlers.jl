@@ -294,9 +294,14 @@ function handle_initialize(ctx::RequestContext, params::InitializeParams)::Handl
     )
 
     # The client is initializing: from here on, log records may be delivered to it
-    # as notifications/message over the transport (never before initialization)
+    # as notifications/message over the transport (never before initialization).
+    # Activate only when the global logger belongs to THIS server's transport — with
+    # two servers in one process, server A's initialize must not switch on delivery
+    # for a logger wired to server B's client.
     let lg = Logging.global_logger()
-        lg isa MCPLogger && (lg.transport_active[] = true)
+        if lg isa MCPLogger && lg.transport === ctx.server.transport
+            lg.transport_active[] = true
+        end
     end
 
     HandlerResult(
