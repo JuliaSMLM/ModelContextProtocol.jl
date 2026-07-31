@@ -152,16 +152,20 @@ function run_server_loop(server::Server, state::ServerState)
         )
     )
     
-    while state.running && is_connected(transport)
+    # server.active is part of the run condition so that stop! ends the loop while
+    # the transport is STILL OPEN — the shutdown path must deliver each
+    # subscriptions/listen stream's graceful closing result before the transport
+    # (and its channels) are torn down. HTTP's read_message returns nothing after a
+    # bounded wait precisely so this condition is re-checked regularly.
+    while server.active && state.running && is_connected(transport)
         try
-            # read_message() blocks until a message is available
             message = read_message(transport)
-            
+
             # Handle different message conditions
             if isnothing(message)
-                # For HTTP transport, keep running even without messages
+                # For HTTP transport, keep running even without messages (the
+                # bounded wait inside read_message already paced the loop)
                 if isa(transport, HttpTransport)
-                    sleep(0.1)  # Small delay to prevent busy loop
                     continue
                 else
                     # For stdio transport, null message means EOF
@@ -308,7 +312,9 @@ end
 """
     stop!(server::Server) -> Nothing
 
-Stop a running MCP server.
+Stop a running MCP server: the server loop observes `active == false` on its next
+iteration and exits with the transport still open, so shutdown can deliver each
+`subscriptions/listen` stream's graceful closing result before the transport closes.
 
 # Arguments
 - `server::Server`: The server instance to stop

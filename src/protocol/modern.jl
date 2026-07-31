@@ -269,8 +269,8 @@ function dispatch_modern(ctx::RequestContext, request::Request)::HandlerResult
         request.params isa GetPromptParams || return modern_invalid_params(ctx, request.method)
         handle_get_prompt(ctx, request.params)
     elseif request.method == "subscriptions/listen"
-        params = request.params isa SubscriptionsListenParams ? request.params : SubscriptionsListenParams()
-        handle_subscriptions_listen(ctx, params)
+        request.params isa SubscriptionsListenParams || return modern_invalid_params(ctx, request.method)
+        handle_subscriptions_listen(ctx, request.params)
     else
         HandlerResult(
             error = ErrorInfo(

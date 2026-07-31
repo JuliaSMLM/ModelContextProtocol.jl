@@ -34,14 +34,26 @@ function subscription_notification(method::String, params::AbstractDict, sub_id)
     ))
 end
 
+# Limits: each subscription pins a record, a response route, and (on HTTP) an open
+# connection with its channel, for an unbounded lifetime — so both the number of
+# active subscriptions and the size of the id used to tag every message are bounded.
+const MAX_SUBSCRIPTIONS = 64
+const MAX_SUBSCRIPTION_ID_LENGTH = 128
+
 """
     handle_subscriptions_listen(ctx::RequestContext, params::SubscriptionsListenParams) -> HandlerResult
 
-Open a `subscriptions/listen` stream: register the subscription, send
+Open a `subscriptions/listen` stream: validate the filter (a malformed one is
+rejected with -32602, not silently emptied), send
 `notifications/subscriptions/acknowledged` as the stream's FIRST message (carrying the
-honored subset of the requested filter), and defer the request's response — the
-stream stays open until the client closes it or the server shuts down
-(`close_subscriptions!`).
+honored subset of the requested filter), register the subscription, and defer the
+request's response — the stream stays open until the client closes it, cancels it
+(`notifications/cancelled` on stdio), or the server shuts down (`close_subscriptions!`).
+
+Ack-then-register happens under the registry lock, so a concurrent broadcast can
+neither enqueue a change notification ahead of the acknowledgment nor observe a
+half-registered stream — and a stream whose ack cannot be delivered is never
+registered at all.
 
 Notification types the server cannot deliver are omitted from the acknowledged
 filter rather than silently accepted, so a client can tell what it will actually
@@ -57,6 +69,12 @@ receive.
 function handle_subscriptions_listen(ctx::RequestContext,
                                      params::SubscriptionsListenParams)::HandlerResult
     requested = parse_subscription_filter(params.notifications)
+    requested isa SubscriptionFilter || return HandlerResult(
+        error = ErrorInfo(
+            code = ErrorCodes.INVALID_PARAMS,
+            message = "Invalid subscriptions/listen filter: $requested"
+        )
+    )
 
     # Honor only what this server can actually deliver: list-changed types require
     # the corresponding capability, resource subscriptions require resources.subscribe
@@ -69,7 +87,7 @@ function handle_subscriptions_listen(ctx::RequestContext,
         tools_list_changed = requested.tools_list_changed && tool_lc,
         prompts_list_changed = requested.prompts_list_changed && prompt_lc,
         resources_list_changed = requested.resources_list_changed && res_lc,
-        resource_uris = res_sub ? requested.resource_uris : String[]
+        resource_uris = res_sub ? requested.resource_uris : Set{String}()
     )
 
     sub_id = ctx.request_id
@@ -78,6 +96,14 @@ function handle_subscriptions_listen(ctx::RequestContext,
             error = ErrorInfo(
                 code = ErrorCodes.INVALID_REQUEST,
                 message = "subscriptions/listen requires a string or integer request id"
+            )
+        )
+    end
+    if sub_id isa String && ncodeunits(sub_id) > MAX_SUBSCRIPTION_ID_LENGTH
+        return HandlerResult(
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_REQUEST,
+                message = "subscriptions/listen id exceeds $(MAX_SUBSCRIPTION_ID_LENGTH) bytes"
             )
         )
     end
@@ -92,25 +118,41 @@ function handle_subscriptions_listen(ctx::RequestContext,
         )
     end
 
-    # Detach this request's response route so the loop can move on; notifications
-    # (and the eventual closing result) are delivered on it from now on.
-    route = capture_response_route(transport)
-    record = SubscriptionRecord(sub_id, honored, route, transport)
-    registry = ctx.server.listen_subscriptions
-    lock(registry.lock) do
-        push!(registry.subs, record)
-    end
-
-    # The acknowledgment MUST be the first message on the stream
     ack = subscription_notification(
         "notifications/subscriptions/acknowledged",
         LittleDict{String,Any}("notifications" => filter_to_wire(honored)),
         sub_id
     )
-    if !deliver_notification(transport, route, ack)
-        lock(registry.lock) do
-            filter!(s -> !(s.id == sub_id && s.route === route), registry.subs)
-        end
+
+    # The rejection checks run BEFORE the route is captured (a rejected request's
+    # error response still goes out on the normal path), and the ack-then-register
+    # pair runs under the registry lock (see docstring). The id-uniqueness check is
+    # load-bearing on stdio, where the id is the only way to tell streams apart.
+    registry = ctx.server.listen_subscriptions
+    status = lock(registry.lock) do
+        length(registry.subs) >= MAX_SUBSCRIPTIONS && return :capacity
+        any(s -> s.id == sub_id, registry.subs) && return :duplicate
+        route = capture_response_route(transport)
+        deliver_notification(transport, route, ack) || return :unreachable
+        push!(registry.subs, SubscriptionRecord(sub_id, honored, route, transport))
+        :ok
+    end
+
+    if status === :capacity
+        return HandlerResult(
+            error = ErrorInfo(
+                code = ErrorCodes.INTERNAL_ERROR,
+                message = "subscriptions/listen: active subscription limit reached ($(MAX_SUBSCRIPTIONS))"
+            )
+        )
+    elseif status === :duplicate
+        return HandlerResult(
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_REQUEST,
+                message = "subscriptions/listen id duplicates an active subscription"
+            )
+        )
+    elseif status === :unreachable
         @debug "subscriptions/listen: client route unavailable; subscription dropped" sub_id
     end
 
@@ -123,8 +165,14 @@ end
                                         uri::Union{String,Nothing}=nothing) -> Int
 
 Deliver a notification to every `subscriptions/listen` stream that opted into it,
-tagged with each stream's own subscription id. Streams whose client has gone away are
-pruned. Returns the number of streams the notification reached.
+tagged with each stream's own subscription id. Every record — not just the filter
+matches — is swept for liveness (`route_alive`), so a disconnected client whose
+filter never matches anything still gets pruned. Returns the number of streams the
+notification reached.
+
+Delivery happens while holding the registry lock (every delivery path enqueues
+without blocking), so a broadcast cannot interleave with a stream's registration or
+graceful closure; see the `SubscriptionRegistry` docstring for the lock ordering.
 
 # Arguments
 - `server::Server`: The server whose subscriptions to notify
@@ -139,28 +187,24 @@ function broadcast_subscription_notification(server::Server, method::String;
                                              params::AbstractDict = LittleDict{String,Any}(),
                                              uri::Union{String,Nothing} = nothing)::Int
     registry = server.listen_subscriptions
-    targets = lock(registry.lock) do
-        filter(s -> filter_wants(s.filter, method, uri), registry.subs)
-    end
-    isempty(targets) && return 0
-
-    dead = SubscriptionRecord[]
-    delivered = 0
-    for s in targets
-        payload = subscription_notification(method, params, s.id)
-        if deliver_notification(s.transport, s.route, payload)
-            delivered += 1
-        else
-            push!(dead, s)
+    lock(registry.lock) do
+        delivered = 0
+        kept = SubscriptionRecord[]
+        for s in registry.subs
+            alive = route_alive(s.transport, s.route)
+            if alive && filter_wants(s.filter, method, uri)
+                payload = subscription_notification(method, params, s.id)
+                alive = deliver_notification(s.transport, s.route, payload)
+                alive && (delivered += 1)
+            end
+            alive && push!(kept, s)
         end
-    end
-    if !isempty(dead)
-        lock(registry.lock) do
-            filter!(s -> !any(d -> d.id == s.id && d.route === s.route, dead), registry.subs)
+        if length(kept) != length(registry.subs)
+            @debug "Pruned dead subscriptions/listen streams" count=(length(registry.subs) - length(kept))
+            registry.subs = kept
         end
-        @debug "Pruned closed subscriptions/listen streams" count=length(dead)
+        delivered
     end
-    delivered
 end
 
 """
@@ -209,12 +253,49 @@ function notify_resource_updated(server::Server, uri::AbstractString)::Int
 end
 
 """
+    cancel_subscription!(server::Server, request_id) -> Bool
+
+Cancel an active `subscriptions/listen` stream by its originating request id — the
+`notifications/cancelled` path, which is how a stdio client (which cannot close a
+response stream) ends a subscription. The record is removed so no further messages
+carry its id; per JSON-RPC cancellation semantics no response is sent, but an HTTP
+route is released (`close_response_route`) so its connection handler does not stay
+blocked on a stream nobody will ever complete.
+
+# Arguments
+- `server::Server`: The server holding the subscription
+- `request_id`: The listen request's JSON-RPC id (from the notification's `requestId`)
+
+# Returns
+- `Bool`: true when an active subscription was cancelled
+"""
+function cancel_subscription!(server::Server, request_id)::Bool
+    request_id isa Union{String,Int} || return false
+    registry = server.listen_subscriptions
+    cancelled = lock(registry.lock) do
+        idx = findfirst(s -> s.id == request_id, registry.subs)
+        idx === nothing && return nothing
+        s = registry.subs[idx]
+        deleteat!(registry.subs, idx)
+        s
+    end
+    cancelled === nothing && return false
+    close_response_route(cancelled.transport, cancelled.route)
+    true
+end
+
+"""
     close_subscriptions!(server::Server) -> Nothing
 
 End all `subscriptions/listen` streams gracefully: each open stream receives the
 JSON-RPC response to its originating listen request (an empty complete result tagged
-with its subscription id), which is how a client distinguishes an orderly server
-shutdown from an abrupt transport drop. Called during server shutdown.
+with its subscription id and carrying `serverInfo` like every other modern result),
+which is how a client distinguishes an orderly server shutdown from an abrupt
+transport drop. Called during server shutdown.
+
+The closing results are delivered while holding the registry lock, so a concurrent
+broadcast can never write on a stream AFTER its graceful result: the broadcast
+either completes first or finds an empty registry.
 
 # Arguments
 - `server::Server`: The server whose subscriptions to close
@@ -224,25 +305,29 @@ shutdown from an abrupt transport drop. Called during server shutdown.
 """
 function close_subscriptions!(server::Server)::Nothing
     registry = server.listen_subscriptions
-    subs = lock(registry.lock) do
-        s = copy(registry.subs)
-        empty!(registry.subs)
-        s
-    end
-    for s in subs
-        payload = JSON3.write(Dict{String,Any}(
-            "jsonrpc" => "2.0",
-            "id" => s.id,
-            "result" => Dict{String,Any}(
-                "resultType" => "complete",
-                "_meta" => Dict{String,Any}(META_SUBSCRIPTION_ID => s.id)
-            )
-        ))
-        try
-            deliver_response(s.transport, s.route, payload)
-        catch e
-            @debug "Failed to close subscription stream gracefully" sub_id=s.id error=e
+    lock(registry.lock) do
+        for s in registry.subs
+            payload = JSON3.write(Dict{String,Any}(
+                "jsonrpc" => "2.0",
+                "id" => s.id,
+                "result" => Dict{String,Any}(
+                    "resultType" => "complete",
+                    "_meta" => Dict{String,Any}(
+                        META_SUBSCRIPTION_ID => s.id,
+                        META_SERVER_INFO => Dict{String,Any}(
+                            "name" => server.config.name,
+                            "version" => server.config.version,
+                        )
+                    )
+                )
+            ))
+            try
+                deliver_response(s.transport, s.route, payload)
+            catch e
+                @debug "Failed to close subscription stream gracefully" sub_id=s.id error=e
+            end
         end
+        empty!(registry.subs)
     end
     nothing
 end

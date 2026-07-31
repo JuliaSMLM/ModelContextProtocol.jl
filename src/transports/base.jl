@@ -132,6 +132,43 @@ function deliver_notification(transport::Transport, ::Any, message::String)::Boo
 end
 
 """
+    route_alive(transport::Transport, route::Any) -> Bool
+
+Whether the client behind a captured response route is still reachable — used by
+subscription broadcasts to sweep dead streams without writing anything to them.
+
+The default returns `true`: stream transports (stdio) have no per-request route
+whose death is observable here, and their delivery attempt reports failure itself.
+HTTP overrides this to check whether the route's channel still exists and is open.
+
+# Arguments
+- `transport::Transport`: The transport instance
+- `route::Any`: The handle returned by `capture_response_route`
+
+# Returns
+- `Bool`: true when the route may still deliver
+"""
+route_alive(::Transport, ::Any)::Bool = true
+
+"""
+    close_response_route(transport::Transport, route::Any) -> Nothing
+
+Release a captured response route WITHOUT delivering anything on it — used when a
+`subscriptions/listen` request is cancelled: per JSON-RPC a cancelled request gets
+no response, but the transport-side resources pinned by the route must still be
+freed. The default is a no-op (stream transports pin nothing per request); HTTP
+overrides this to close the route's channel, which ends its connection handler.
+
+# Arguments
+- `transport::Transport`: The transport instance
+- `route::Any`: The handle returned by `capture_response_route`
+
+# Returns
+- `Nothing`
+"""
+close_response_route(::Transport, ::Any) = nothing
+
+"""
     capture_response_route(transport::Transport) -> Any
 
 Capture a route handle for delivering the CURRENT request's response later, from

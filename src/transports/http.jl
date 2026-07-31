@@ -156,6 +156,11 @@ end
 # Soft cap on pending out-of-band notifications when no GET SSE consumer drains them
 const NOTIFICATION_QUEUE_SOFTCAP = 1000
 
+# Max pending items on a subscriptions/listen response channel before the stream is
+# load-shed (see deliver_notification): listen streams live indefinitely, so their
+# backlog cannot be bounded by request lifetime like ordinary response channels.
+const LISTEN_BACKLOG_CAP = 256
+
 """
     parse_host_header(hostport::AbstractString) -> Union{String,Nothing}
 
@@ -914,6 +919,31 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             end
         end
 
+        # subscriptions/listen opens a long-lived SSE response stream; a client
+        # whose Accept excludes text/event-stream could never read one, and its
+        # request-scoped notifications are dropped by design — the subscription
+        # would be a black hole. Reject up front, BEFORE the request registers a
+        # response route.
+        if parsed_msg !== nothing && get(parsed_msg, "method", "") == "subscriptions/listen" &&
+           !is_notification && !contains(accept_header, "text/event-stream")
+            error_response = JSON3.write(Dict{String,Any}(
+                "jsonrpc" => "2.0",
+                "error" => Dict{String,Any}(
+                    "code" => ErrorCodes.INVALID_REQUEST,
+                    "message" => "subscriptions/listen requires an Accept header including text/event-stream"
+                ),
+                "id" => get(parsed_msg, "id", nothing)
+            ))
+            HTTP.setstatus(stream, 400)
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            (modern_version !== nothing && modern_version in MODERN_PROTOCOL_VERSIONS) &&
+                HTTP.setheader(stream, "MCP-Protocol-Version" => modern_version)
+            HTTP.setheader(stream, "Content-Length" => string(ncodeunits(error_response)))
+            HTTP.startwrite(stream)
+            write(stream, error_response)
+            return nothing
+        end
+
         # Session validation - only check after we know if it's initialization.
         # Modern-era requests are exempt: the modern transport removed protocol
         # sessions, so a stateless request without a legacy session ID must not be
@@ -1079,14 +1109,35 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                     write(stream, format_sse_event(payload, event="message", id=transport.event_counter))
                     Base.flush(stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
                     kind === :response && break
-                    kind, payload = take!(response_channel)
+                    # Wait for the next item by POLLING, not a blocking take!: a
+                    # subscriptions/listen stream can idle indefinitely, and only
+                    # checking the socket notices a client that disconnected while
+                    # idle (same pattern as the GET notification stream loop above).
+                    # isready is checked before isopen so items already buffered on
+                    # a closed channel still drain (graceful shutdown results).
+                    # isready-then-take! cannot race: this handler is the channel's
+                    # only consumer.
+                    got_next = false
+                    while isopen(stream)
+                        if isready(response_channel)
+                            kind, payload = take!(response_channel)
+                            got_next = true
+                            break
+                        end
+                        isopen(response_channel) || break
+                        sleep(0.05)
+                    end
+                    got_next || break
                 end
             end
 
         catch e
             if !(e isa InvalidStateException)
                 @debug "Error waiting for response" error=e
-                if !HTTP.iswritestarted(stream)
+                # nwritten starts at -1 and startwrite() sets it to 0, so this is
+                # HTTP.jl's own "response not started yet" signal (there is no
+                # public predicate for it) — only then is a 500 body still legal
+                if stream.nwritten < 0
                     HTTP.setstatus(stream, 500)
                     HTTP.setheader(stream, "Content-Type" => "application/json")
                     error_response = JSON3.write(Dict(
@@ -1117,7 +1168,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             @debug "Client disconnected while handling request" error=e
         else
             @error "Error handling request" error=e
-            if !HTTP.iswritestarted(stream)
+            if stream.nwritten < 0  # response not started (see comment above)
                 HTTP.setstatus(stream, 500)
                 HTTP.setheader(stream, "Content-Type" => "application/json")
                 error_response = JSON3.write(Dict(
@@ -1251,40 +1302,47 @@ end
 """
     read_message(transport::HttpTransport) -> Union{String,Nothing}
 
-Read a message from the request queue.
-Blocks until a request is available or the transport is disconnected.
+Read a message from the request queue. Waits a BOUNDED interval and returns
+`nothing` when no request arrives, so the server loop regularly re-checks its run
+condition: `stop!` must be able to end the loop while the transport is still open
+(graceful `subscriptions/listen` closure delivers on the open transport, then the
+transport is closed) — a blocking `take!` would pin the loop until the next request.
 
 # Arguments
 - `transport::HttpTransport`: The transport instance
 
 # Returns
-- `Union{String,Nothing}`: The message string, or nothing if disconnected
+- `Union{String,Nothing}`: The message string, or nothing when no request arrived
+  (or the transport disconnected)
 """
 function read_message(transport::HttpTransport)::Union{String,Nothing}
     if !transport.connected
         return nothing
     end
-    
-    try
-        # Block until request is available
-        env = take!(transport.request_queue)
 
-        # Store the current request ID for response correlation, and the
-        # per-request authenticated user (consumed by the single server loop via
-        # pending_auth_context before the next read — never shared across connections).
-        transport.current_request_id = env.id
-        transport.current_request_auth = env.user
+    deadline = time() + 0.2
+    while time() < deadline
+        if isready(transport.request_queue)
+            # The server loop is the queue's only consumer, so isready-then-take!
+            # cannot race another taker.
+            env = take!(transport.request_queue)
 
-        return env.body
-    catch e
-        if e isa InvalidStateException && !isopen(transport.request_queue)
-            # Channel is closed, transport is shutting down
+            # Store the current request ID for response correlation, and the
+            # per-request authenticated user (consumed by the single server loop via
+            # pending_auth_context before the next read — never shared across connections).
+            transport.current_request_id = env.id
+            transport.current_request_auth = env.user
+
+            return env.body
+        end
+        if !isopen(transport.request_queue)
+            # Queue closed and drained: transport is shutting down
             transport.connected = false
             return nothing
-        else
-            rethrow(e)
         end
+        sleep(0.01)
     end
+    nothing
 end
 
 """
@@ -1382,6 +1440,14 @@ Push a notification onto the response stream of the request identified by `route
 (captured via `capture_response_route`) — the delivery path for
 `subscriptions/listen` streams. Returns `false` when that route is gone (client
 disconnected), so the caller can prune the subscription.
+
+A listen stream lives arbitrarily long, so — unlike ordinary request channels,
+whose buffering is bounded by the request's own lifetime — its backlog must be
+capped: a reader that stopped draining would otherwise accumulate every
+notification forever. At `LISTEN_BACKLOG_CAP` pending items the stream is
+load-shed: its channel is closed (which ends the connection handler after it
+drains what is already buffered) and delivery is reported failed so the caller
+prunes the subscription.
 """
 function deliver_notification(transport::HttpTransport, route, message::String)::Bool
     route === nothing && return false
@@ -1389,6 +1455,11 @@ function deliver_notification(transport::HttpTransport, route, message::String):
         get(transport.response_channels, route, nothing)
     end
     channel === nothing && return false
+    if Base.n_avail(channel) >= LISTEN_BACKLOG_CAP
+        @debug "subscriptions/listen backlog cap reached; load-shedding stream" route
+        Base.close(channel)
+        return false
+    end
     try
         put!(channel, (:notification, message))
         return true
@@ -1396,6 +1467,38 @@ function deliver_notification(transport::HttpTransport, route, message::String):
         @debug "Subscription route closed" error=e
         return false
     end
+end
+
+"""
+    route_alive(transport::HttpTransport, route) -> Bool
+
+Whether a captured response route still has a live consumer: its channel is still
+registered and open. The connection handler unregisters and closes the channel when
+its client disconnects (or its stream is load-shed), so a dead route shows up here
+without anything being written to it.
+"""
+function route_alive(transport::HttpTransport, route)::Bool
+    route === nothing && return false
+    channel = lock(transport.channels_lock) do
+        get(transport.response_channels, route, nothing)
+    end
+    channel !== nothing && isopen(channel)
+end
+
+"""
+    close_response_route(transport::HttpTransport, route) -> Nothing
+
+Close a captured route's channel without delivering anything (the cancellation
+path): the connection handler drains whatever is already buffered, then ends the
+response stream and cleans up its registrations.
+"""
+function close_response_route(transport::HttpTransport, route)::Nothing
+    route === nothing && return nothing
+    channel = lock(transport.channels_lock) do
+        get(transport.response_channels, route, nothing)
+    end
+    channel === nothing || Base.close(channel)
+    nothing
 end
 
 """

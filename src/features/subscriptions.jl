@@ -8,9 +8,13 @@
 # and the broadcast API live in `src/protocol/subscriptions.jl` (they need
 # `RequestContext`); this file holds the types `Server` embeds.
 
+# A single filter may watch at most this many resource URIs: each URI is checked on
+# every resources/updated broadcast and held for the subscription's whole lifetime.
+const MAX_RESOURCE_SUBSCRIPTIONS = 256
+
 """
     SubscriptionFilter(; tools_list_changed=false, prompts_list_changed=false,
-                       resources_list_changed=false, resource_uris=String[])
+                       resources_list_changed=false, resource_uris=Set{String}())
 
 The notification types a `subscriptions/listen` stream opted into. A server MUST NOT
 send notification types the client did not explicitly request, so every delivery is
@@ -20,13 +24,14 @@ checked against this filter.
 - `tools_list_changed::Bool`: deliver `notifications/tools/list_changed`
 - `prompts_list_changed::Bool`: deliver `notifications/prompts/list_changed`
 - `resources_list_changed::Bool`: deliver `notifications/resources/list_changed`
-- `resource_uris::Vector{String}`: deliver `notifications/resources/updated` for these URIs
+- `resource_uris::Set{String}`: deliver `notifications/resources/updated` for these
+  URIs (a set: membership is checked on every update broadcast)
 """
 Base.@kwdef struct SubscriptionFilter
     tools_list_changed::Bool = false
     prompts_list_changed::Bool = false
     resources_list_changed::Bool = false
-    resource_uris::Vector{String} = String[]
+    resource_uris::Set{String} = Set{String}()
 end
 
 """
@@ -55,7 +60,13 @@ end
 
 Registry of active `subscriptions/listen` streams. Guarded by a lock: the single
 server loop registers streams while HTTP connection tasks and background task
-executions can broadcast notifications concurrently.
+executions can broadcast notifications concurrently. Deliveries happen WHILE
+holding this lock (all delivery paths enqueue without blocking), which is what
+guarantees the acknowledged-first and nothing-after-the-closing-result orderings.
+
+Lock ordering: `registry.lock` may be held when a delivery takes the HTTP
+transport's `channels_lock`, never the reverse — nothing takes `registry.lock`
+while holding `channels_lock`.
 
 # Fields
 - `subs::Vector{SubscriptionRecord}`: active subscriptions
@@ -69,35 +80,52 @@ mutable struct SubscriptionRegistry
 end
 
 """
-    parse_subscription_filter(notifications) -> SubscriptionFilter
+    parse_subscription_filter(notifications) -> Union{SubscriptionFilter,String}
 
-Parse the `notifications` filter object of a `subscriptions/listen` request. Absent
-or non-boolean flags mean "not subscribed"; `resourceSubscriptions` collects the
-resource URIs to watch. Unknown keys are ignored (a filter naming only unsupported
-types simply yields an empty subscription).
+Validate and parse the `notifications` filter object of a `subscriptions/listen`
+request. Returns the parsed filter, or a violation message the caller must reject
+with -32602: the filter must be an object, the `*ListChanged` flags booleans,
+`resourceSubscriptions` an array of at most `MAX_RESOURCE_SUBSCRIPTIONS` strings, and
+at least one notification type must be requested — a malformed filter must not
+silently establish a long-lived stream that can never deliver anything.
+
+Unknown keys are ignored (forward compatibility), and requesting types this server
+cannot deliver is NOT a violation: the honored subset in the acknowledgment is how
+the server communicates what it will actually send (see `handle_subscriptions_listen`).
 
 # Arguments
 - `notifications`: The request's `params.notifications` value (any JSON value)
 
 # Returns
-- `SubscriptionFilter`: The parsed filter
+- `Union{SubscriptionFilter,String}`: The parsed filter, or the violation
 """
-function parse_subscription_filter(notifications)::SubscriptionFilter
-    notifications isa AbstractDict || return SubscriptionFilter()
-    flag(key) = get(notifications, key, false) === true
-    uris = String[]
-    subs = get(notifications, "resourceSubscriptions", nothing)
-    if subs isa AbstractVector
+function parse_subscription_filter(notifications)::Union{SubscriptionFilter,String}
+    notifications isa AbstractDict || return "notifications must be an object"
+    for key in ("toolsListChanged", "promptsListChanged", "resourcesListChanged")
+        haskey(notifications, key) && !(notifications[key] isa Bool) &&
+            return "$key must be a boolean"
+    end
+    uris = Set{String}()
+    if haskey(notifications, "resourceSubscriptions")
+        subs = notifications["resourceSubscriptions"]
+        subs isa AbstractVector || return "resourceSubscriptions must be an array of strings"
+        length(subs) > MAX_RESOURCE_SUBSCRIPTIONS &&
+            return "resourceSubscriptions exceeds the limit of $(MAX_RESOURCE_SUBSCRIPTIONS) URIs"
         for u in subs
-            u isa AbstractString && push!(uris, String(u))
+            u isa AbstractString || return "resourceSubscriptions must be an array of strings"
+            push!(uris, String(u))
         end
     end
-    SubscriptionFilter(
-        tools_list_changed = flag("toolsListChanged"),
-        prompts_list_changed = flag("promptsListChanged"),
-        resources_list_changed = flag("resourcesListChanged"),
+    f = SubscriptionFilter(
+        tools_list_changed = get(notifications, "toolsListChanged", false) === true,
+        prompts_list_changed = get(notifications, "promptsListChanged", false) === true,
+        resources_list_changed = get(notifications, "resourcesListChanged", false) === true,
         resource_uris = uris
     )
+    if !(f.tools_list_changed || f.prompts_list_changed || f.resources_list_changed) && isempty(uris)
+        return "at least one notification type must be requested"
+    end
+    f
 end
 
 """
@@ -105,7 +133,8 @@ end
 
 Serialize a filter to the wire shape used in the acknowledgment's `notifications`
 field, which reflects the subset the server agreed to honor. Types not subscribed
-are omitted.
+are omitted, and the resource URIs are emitted sorted (the in-memory set has no
+stable order).
 
 # Arguments
 - `f::SubscriptionFilter`: The filter
@@ -118,7 +147,7 @@ function filter_to_wire(f::SubscriptionFilter)::LittleDict{String,Any}
     f.tools_list_changed && (d["toolsListChanged"] = true)
     f.prompts_list_changed && (d["promptsListChanged"] = true)
     f.resources_list_changed && (d["resourcesListChanged"] = true)
-    isempty(f.resource_uris) || (d["resourceSubscriptions"] = f.resource_uris)
+    isempty(f.resource_uris) || (d["resourceSubscriptions"] = sort!(collect(f.resource_uris)))
     d
 end
 

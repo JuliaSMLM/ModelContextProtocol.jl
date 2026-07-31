@@ -25,7 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `resourceSubscriptions` (per-URI `notifications/resources/updated`); a server never
   sends a type the client did not request. `server/discover` now advertises the
   `listChanged`/`subscribe` flags again, since there is finally a modern mechanism to
-  deliver them.
+  deliver them. Hardened for long-lived use: malformed filters are rejected with
+  `-32602` (they must not silently establish streams that can never deliver);
+  active subscriptions are capped (64, with 128-byte ids that must not duplicate an
+  active subscription's, and at most 256 watched resource URIs per stream); a stream
+  whose client stops reading is load-shed at a bounded backlog instead of buffering
+  forever; disconnected clients are detected while idle and pruned on the next
+  broadcast even when their filter never matches; `notifications/cancelled` with the
+  listen request's id cancels the subscription (the stdio path — HTTP clients just
+  close the response stream); and `stop!(server)` now ends the server loop with the
+  transport still open, so shutdown delivers each stream's graceful closing result
+  before the connections tear down.
 - **`notify_list_changed(server, kind)` and `notify_resource_updated(server, uri)`**
   (exported): announce runtime changes to open subscription streams. Call them after
   mutating `server.tools`/`server.prompts`/`server.resources` or a resource's contents;

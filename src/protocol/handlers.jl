@@ -1416,7 +1416,13 @@ function handle_notification(ctx::RequestContext, notification::JSONRPCNotificat
     if method == "notifications/initialized"
         ctx.server.active = true
     elseif method == "notifications/cancelled"
-        # Handle cancellation
+        # An active subscriptions/listen stream is cancelled by its requestId — the
+        # stdio cancellation path (an HTTP client cancels by closing the response
+        # stream instead). Per JSON-RPC, the cancelled request gets no response.
+        params = notification.params
+        if params isa AbstractDict
+            cancel_subscription!(ctx.server, get(params, "requestId", nothing))
+        end
     elseif method == "notifications/progress"
         # Handle progress updates
     end
