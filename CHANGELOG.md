@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Modern-era HTTP transport layer (2026-07-28).** Streamable HTTP now applies the
+  modern transport rules to modern-marked requests, while legacy traffic keeps its
+  existing behavior (dual-era): SEP-2243 standard header validation —
+  `MCP-Protocol-Version` and `Mcp-Method` required and mirroring the body,
+  `Mcp-Name` required on `tools/call`/`prompts/get`/`resources/read` (with the
+  `=?base64?…?=` sentinel decoded before comparison) — rejected with
+  `400` + `-32020 HeaderMismatch`; protocol-error HTTP status mapping (`404` for
+  `-32601`, `400` for `-32020`/`-32021`/`-32022` and for missing required `_meta`
+  fields); modern responses echo the request's own protocol version, never carry an
+  `Mcp-Session-Id` header, are exempt from legacy session validation
+  (`session_required` no longer rejects stateless requests), and never mint
+  sessions. `server/discover` without `_meta` gets `400` + `-32602` at the
+  transport. Custom `x-mcp-header`/`Mcp-Param-*` mirroring is not yet implemented
+  (servers designate no such parameters, and emission is optional).
+
 - **Modern-era (2026-07-28) stateless core.** The server is now dual-era per the
   2026-07-28 spec's backward-compatibility model: a request carrying
   `io.modelcontextprotocol/protocolVersion` in its params `_meta` is served
