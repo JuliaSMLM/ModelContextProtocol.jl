@@ -38,6 +38,7 @@ const RUN_E2E = get(ENV, "MCP_TEST_E2E", ON_CI ? "false" : "true") == "true"
     include("features/prompts.jl")
     include("features/auto_register.jl")
     include("features/test_tasks.jl")
+    include("features/test_subscriptions.jl")
     include("protocol/jsonrpc.jl")
     include("protocol/handlers.jl")
     include("protocol/parameters.jl")

@@ -446,9 +446,14 @@ session). Modern-era coverage so far: per-request `_meta` validation (-32602),
 `server/discover` (with `ttlMs`/`cacheScope`), `resultType` + `serverInfo` result
 envelope, error codes -32020/-32021/-32022, removed-method surface (`ping`,
 `logging/setLevel`, `resources/subscribe|unsubscribe`, core `tasks/*` → -32601).
-Still pending for the modern era: HTTP header validation (`Mcp-Method`/`Mcp-Name`,
-405s, session-ignore), CacheableResult fields on list/read results,
-`subscriptions/listen`, per-request `logLevel`, the tasks extension, and MRTR.
+Modern-era HTTP is in place too: SEP-2243 header validation (`Mcp-Method`/`Mcp-Name`
+mirroring the body, -32020), status mapping (404/-32601, 400/-32022), session-ignore
+and 405 on GET. `subscriptions/listen` replaces the GET stream and
+`resources/subscribe` (ack-first, `subscriptionId`-tagged, filtered; announce changes
+with the exported `notify_list_changed` / `notify_resource_updated`).
+Still pending for the modern era: per-request `logLevel`, the tasks extension, MRTR
+(elicitation/sampling/roots via `InputRequiredResult`), and `x-mcp-header` parameter
+mirroring.
 
 ### ✅ Implemented
 

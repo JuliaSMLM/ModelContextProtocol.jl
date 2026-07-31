@@ -28,6 +28,7 @@ const MODERN_METHODS = Dict{String,Union{DataType,Nothing}}(
     "resources/templates/list" => ResourceCapability,
     "prompts/list" => PromptCapability,
     "prompts/get" => PromptCapability,
+    "subscriptions/listen" => nothing,
 )
 
 """
@@ -168,11 +169,11 @@ optional instructions, with the CacheableResult fields (`ttlMs`, `cacheScope`) t
 spec requires on discovery results. `resultType` and `serverInfo` are attached by
 the modern envelope.
 
-Capabilities are presence-only objects for the features the modern era actually
-serves — no `listChanged`/`subscribe` claims (those notifications require
-`subscriptions/listen`, not yet implemented), no legacy-only `tasks`/`logging`, and
-no embedded resource listings (which would leak resource metadata into shared
-caches and do not match the modern ServerCapabilities shape).
+Capabilities carry only what the modern era actually serves: the features present,
+their `listChanged`/`subscribe` flags (delivered via `subscriptions/listen`), and no
+legacy-only `tasks`/`logging` — and never the legacy builder's embedded resource
+listings, which would leak resource metadata into shared caches and do not match the
+modern ServerCapabilities shape.
 
 # Arguments
 - `ctx::RequestContext`: The current request context
@@ -184,11 +185,18 @@ function handle_discover(ctx::RequestContext)::HandlerResult
     caps = LittleDict{String,Any}()
     for c in ctx.server.config.capabilities
         if c isa ToolCapability
-            caps["tools"] = LittleDict{String,Any}()
+            d = LittleDict{String,Any}()
+            c.list_changed && (d["listChanged"] = true)
+            caps["tools"] = d
         elseif c isa ResourceCapability
-            caps["resources"] = LittleDict{String,Any}()
+            d = LittleDict{String,Any}()
+            c.list_changed && (d["listChanged"] = true)
+            c.subscribe && (d["subscribe"] = true)
+            caps["resources"] = d
         elseif c isa PromptCapability
-            caps["prompts"] = LittleDict{String,Any}()
+            d = LittleDict{String,Any}()
+            c.list_changed && (d["listChanged"] = true)
+            caps["prompts"] = d
         end
     end
 
@@ -260,6 +268,9 @@ function dispatch_modern(ctx::RequestContext, request::Request)::HandlerResult
     elseif request.method == "prompts/get"
         request.params isa GetPromptParams || return modern_invalid_params(ctx, request.method)
         handle_get_prompt(ctx, request.params)
+    elseif request.method == "subscriptions/listen"
+        params = request.params isa SubscriptionsListenParams ? request.params : SubscriptionsListenParams()
+        handle_subscriptions_listen(ctx, params)
     else
         HandlerResult(
             error = ErrorInfo(

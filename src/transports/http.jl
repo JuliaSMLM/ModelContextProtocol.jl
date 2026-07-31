@@ -1376,6 +1376,29 @@ function deliver_response(transport::HttpTransport, route::Union{String,Nothing}
 end
 
 """
+    deliver_notification(transport::HttpTransport, route, message::String) -> Bool
+
+Push a notification onto the response stream of the request identified by `route`
+(captured via `capture_response_route`) — the delivery path for
+`subscriptions/listen` streams. Returns `false` when that route is gone (client
+disconnected), so the caller can prune the subscription.
+"""
+function deliver_notification(transport::HttpTransport, route, message::String)::Bool
+    route === nothing && return false
+    channel = lock(transport.channels_lock) do
+        get(transport.response_channels, route, nothing)
+    end
+    channel === nothing && return false
+    try
+        put!(channel, (:notification, message))
+        return true
+    catch e
+        @debug "Subscription route closed" error=e
+        return false
+    end
+end
+
+"""
     set_negotiated_version!(transport::HttpTransport, version::String) -> Nothing
 
 Update the version advertised in `MCP-Protocol-Version` response headers (and accepted

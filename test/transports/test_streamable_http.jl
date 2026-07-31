@@ -590,6 +590,108 @@
         Base.close(timer)
     end
 
+    @testset "subscriptions/listen over live HTTP" begin
+        port = 20090 + rand(1:1000)
+        transport = HttpTransport(port = port)
+        server = mcp_server(name = "listen-http", version = "1.0.0",
+            capabilities = ModelContextProtocol.Capability[
+                ModelContextProtocol.ToolCapability(list_changed = true),
+                ModelContextProtocol.PromptCapability(list_changed = true),
+                ModelContextProtocol.ResourceCapability(list_changed = true, subscribe = true)],
+            tools = [MCPTool(name = "noop", description = "noop", parameters = [],
+                             handler = args -> TextContent(text = "ok"))])
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        url = "http://127.0.0.1:$port/"
+        mmeta = Dict(
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities" => Dict())
+        listen_headers = ["Content-Type" => "application/json",
+                          "Accept" => "application/json, text/event-stream",
+                          "MCP-Protocol-Version" => "2026-07-28",
+                          "Mcp-Method" => "subscriptions/listen"]
+        listen_body = JSON3.write(Dict(
+            "jsonrpc" => "2.0", "id" => "sub-1", "method" => "subscriptions/listen",
+            "params" => Dict("_meta" => mmeta,
+                             "notifications" => Dict("toolsListChanged" => true))))
+
+        # The listen response is a long-lived stream: collect it continuously and
+        # poll (never read to eof — a healthy stream stays open indefinitely).
+        lines = String[]
+        listen_task = @async begin
+            try
+                HTTP.open("POST", url, listen_headers) do io
+                    write(io, listen_body)
+                    HTTP.closewrite(io)
+                    HTTP.startread(io)
+                    while !eof(io)
+                        line = readline(io)
+                        isempty(line) || push!(lines, line)
+                    end
+                end
+            catch
+                # Stream torn down at cleanup
+            end
+        end
+
+        seen(pat) = any(l -> occursin(pat, l), lines)
+        function waitfor(pred, secs = 10)
+            deadline = time() + secs
+            while time() < deadline && !pred()
+                sleep(0.05)
+            end
+            pred()
+        end
+
+        # The acknowledgment MUST be the stream's first message, tagged with the id
+        @test waitfor(() -> seen("notifications/subscriptions/acknowledged"))
+        first_data = findfirst(l -> startswith(l, "data:"), lines)
+        @test first_data !== nothing &&
+              occursin("notifications/subscriptions/acknowledged", lines[first_data])
+        @test seen("io.modelcontextprotocol/subscriptionId")
+        @test seen("sub-1")
+
+        # A subscribed change is delivered on the open stream, tagged
+        @test notify_list_changed(server, :tools) == 1
+        @test waitfor(() -> seen("notifications/tools/list_changed"))
+        tools_line = lines[findfirst(l -> occursin("notifications/tools/list_changed", l), lines)]
+        @test occursin("sub-1", tools_line)
+
+        # An UNsubscribed change must not leak onto this stream
+        before = count(l -> occursin("prompts/list_changed", l), lines)
+        @test notify_list_changed(server, :prompts) == 0
+        sleep(1)
+        @test count(l -> occursin("prompts/list_changed", l), lines) == before
+
+        # Ordinary requests still work while the stream is open (the loop was not
+        # blocked by the deferred listen request)
+        r = HTTP.post(url, ["Content-Type" => "application/json",
+                            "Accept" => "application/json, text/event-stream",
+                            "MCP-Protocol-Version" => "2026-07-28",
+                            "Mcp-Method" => "tools/list"],
+            JSON3.write(Dict("jsonrpc" => "2.0", "id" => 9, "method" => "tools/list",
+                             "params" => Dict("_meta" => mmeta)));
+            status_exception = false)
+        @test r.status == 200
+
+        # Graceful closure: the listen request finally gets its (empty) result
+        ModelContextProtocol.close_subscriptions!(server)
+        @test waitfor(() -> seen("\"result\""))
+        @test isempty(server.listen_subscriptions.subs)
+
+        # Clean up
+        server.active = false
+        ModelContextProtocol.close(transport)
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
+
     @testset "SEP-2243 header value decoding (strict)" begin
         dec = ModelContextProtocol.decode_mcp_header_value
         @test dec("plain-value") == "plain-value"

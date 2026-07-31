@@ -374,6 +374,20 @@ Base.@kwdef struct UnsubscribeParams <: RequestParams
     uri::String
 end
 
+"""
+    SubscriptionsListenParams(; notifications::Union{Nothing,Dict{String,Any}}=nothing) <: RequestParams
+
+Parameters for `subscriptions/listen` requests (modern era).
+
+# Fields
+- `notifications::Union{Nothing,Dict{String,Any}}`: The notification-type filter —
+  `toolsListChanged`/`promptsListChanged`/`resourcesListChanged` booleans and a
+  `resourceSubscriptions` array of resource URIs. Absent means an empty subscription.
+"""
+Base.@kwdef struct SubscriptionsListenParams <: RequestParams
+    notifications::Union{Nothing,Dict{String,Any}} = nothing
+end
+
 #= Logging Messages =#
 
 """

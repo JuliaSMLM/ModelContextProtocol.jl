@@ -290,6 +290,14 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
     finally
         server.active = false
         logger.transport_active[] = false
+        # End subscriptions/listen streams gracefully (an empty result on each
+        # listen request) BEFORE the transport goes away, so clients can tell an
+        # orderly shutdown from an abrupt drop
+        try
+            close_subscriptions!(server)
+        catch e
+            @debug "Error closing subscription streams" error=e
+        end
         close(server.transport)
         @info "Server stopped"
     end
