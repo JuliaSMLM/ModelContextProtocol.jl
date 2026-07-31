@@ -169,9 +169,12 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
 
     # Deliver to the client as a notifications/message over the transport once the
     # session is initialized (recursion from the send path is handled by the
-    # entry guard above)
+    # entry guard above). Modern-era (2026-07-28+) request handling sets the
+    # suppression flag: notifications/message MUST NOT be emitted for a request
+    # that did not opt in via io.modelcontextprotocol/logLevel.
     t = logger.transport
-    if t !== nothing && logger.transport_active[] && is_connected(t)
+    if t !== nothing && logger.transport_active[] && is_connected(t) &&
+       !get(task_local_storage(), :mcp_suppress_log_notifications, false)
         try
             send_notification(t, serialized)
             return nothing

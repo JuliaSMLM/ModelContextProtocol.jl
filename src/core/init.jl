@@ -174,6 +174,7 @@ end
              resources::Union{Vector{MCPResource},MCPResource,Nothing}=nothing,
              prompts::Union{Vector{MCPPrompt},MCPPrompt,Nothing}=nothing,
              description::String="",
+             instructions::String="",
              capabilities::Vector{Capability}=default_capabilities(),
              auto_register_dir::Union{String,Nothing}=nothing,
              title::Union{String,Nothing}=nothing,
@@ -190,6 +191,8 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
   with a provider; advertised via `resources/templates/list`)
 - `prompts`: Predefined prompts for the model
 - `description::String`: Optional server description
+- `instructions::String`: Optional natural-language guidance for LLM clients on using
+  this server (returned by legacy `initialize` and modern `server/discover`)
 - `capabilities::Vector{Capability}`: Server capability configuration
 - `auto_register_dir`: Directory to auto-register components from
 - `title::Union{String,Nothing}`: Optional human-friendly display name for the server
@@ -223,6 +226,7 @@ function mcp_server(;
     resource_templates::Union{Vector{ResourceTemplate}, ResourceTemplate, Nothing} = nothing,
     prompts::Union{Vector{MCPPrompt}, MCPPrompt, Nothing} = nothing,
     description::String = "",
+    instructions::String = "",
     capabilities::Vector{Capability} = default_capabilities(),
     auto_register_dir::Union{String, Nothing} = nothing,
     title::Union{String, Nothing} = nothing,
@@ -233,6 +237,7 @@ function mcp_server(;
         name = name,
         version = version,
         description = description,
+        instructions = instructions,
         capabilities = capabilities,
         title = title,
         icons = icons

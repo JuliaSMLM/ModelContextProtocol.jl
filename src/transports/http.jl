@@ -608,6 +608,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         local is_notification = false
         local is_client_response = false
         local is_invalid = false
+        local is_modern = false
         try
             msg = JSON3.read(body)
             has_method = haskey(msg, "method")
@@ -617,6 +618,13 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             is_client_response = !has_method && has_id &&
                                  (haskey(msg, "result") || haskey(msg, "error"))
             is_invalid = !has_method && !is_client_response
+            # Modern-era (2026-07-28+) requests are stateless: protocol-level
+            # sessions do not exist for them, so session validation must not apply
+            if has_method && haskey(msg, "params") && msg.params isa JSON3.Object &&
+               haskey(msg.params, "_meta") && msg.params._meta isa JSON3.Object
+                v = get(msg.params._meta, Symbol("io.modelcontextprotocol/protocolVersion"), nothing)
+                is_modern = v isa AbstractString
+            end
         catch
             # Unparseable JSON: fall through to the request path, where the server
             # loop produces the JSON-RPC parse-error response
@@ -650,8 +658,11 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             return nothing
         end
         
-        # Session validation - only check after we know if it's initialization
-        if !is_initialize
+        # Session validation - only check after we know if it's initialization.
+        # Modern-era requests are exempt: the modern transport removed protocol
+        # sessions, so a stateless request without a legacy session ID must not be
+        # rejected (and never mints one).
+        if !is_initialize && !is_modern
             # After initialization, session may be required
             if transport.session_required && !isnothing(transport.session_id) && isempty(session_id)
                 @debug "Missing required session ID"

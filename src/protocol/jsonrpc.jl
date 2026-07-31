@@ -155,11 +155,52 @@ Parse a JSON-RPC request object into a typed Request struct.
 """
 function parse_request(raw::JSON3.Object)::Request
     method = raw.method
+
+    # Extract from params._meta: the optional progress token (see RequestContext /
+    # send_progress) and the modern-era (2026-07-28+) per-request protocol fields.
+    # A present io.modelcontextprotocol/protocolVersion STRING marks the request as
+    # modern-era and routes it through handle_modern_request. All _meta values are
+    # attacker-controlled: a non-object _meta is ignored, non-string versions are
+    # treated as absent, and the capability/info objects are kept as raw parsed
+    # views (no re-encoding copy).
+    progress_token = nothing
+    protocol_version = nothing
+    client_capabilities = nothing
+    client_info = nothing
+    if haskey(raw, :params) && raw.params isa JSON3.Object && haskey(raw.params, :_meta)
+        meta = raw.params._meta
+        if meta isa JSON3.Object
+            if haskey(meta, :progressToken)
+                progress_token = meta.progressToken
+            end
+            if haskey(meta, Symbol(META_PROTOCOL_VERSION))
+                v = meta[Symbol(META_PROTOCOL_VERSION)]
+                v isa AbstractString && (protocol_version = String(v))
+            end
+            if haskey(meta, Symbol(META_CLIENT_CAPABILITIES))
+                caps = meta[Symbol(META_CLIENT_CAPABILITIES)]
+                caps isa JSON3.Object && (client_capabilities = caps)
+            end
+            if haskey(meta, Symbol(META_CLIENT_INFO))
+                info = meta[Symbol(META_CLIENT_INFO)]
+                info isa JSON3.Object && (client_info = info)
+            end
+        end
+    end
+
     params_type = get_params_type(method)
-    
-    typed_params = if !isnothing(params_type) && haskey(raw, :params)
+    typed_params = if !isnothing(params_type) && haskey(raw, :params) && raw.params isa JSON3.Object
         if isempty(raw.params)
             params_type()  # Construct default instance instead of nothing
+        elseif protocol_version !== nothing
+            # Modern-era request: typed-param failures must not abort parsing with
+            # a raw exception — the era handler owns validation and answers -32601
+            # (method removed) or -32602 (invalid params) as appropriate
+            try
+                StructTypes.constructfrom(params_type, raw.params)
+            catch
+                nothing
+            end
         else
             StructTypes.constructfrom(params_type, raw.params)
         end
@@ -167,21 +208,16 @@ function parse_request(raw::JSON3.Object)::Request
         nothing
     end
 
-    # Extract the optional progress token from params._meta.progressToken so a
-    # handler can report progress for this request (see RequestContext / send_progress).
-    progress_token = nothing
-    if haskey(raw, :params) && !isempty(raw.params) && haskey(raw.params, :_meta)
-        meta = raw.params._meta
-        if haskey(meta, :progressToken)
-            progress_token = meta.progressToken
-        end
-    end
-
     JSONRPCRequest(
         id = raw.id,
         method = method,
         params = typed_params,
-        meta = RequestMeta(progress_token = progress_token)
+        meta = RequestMeta(
+            progress_token = progress_token,
+            protocol_version = protocol_version,
+            client_capabilities = client_capabilities,
+            client_info = client_info
+        )
     )
 end
 

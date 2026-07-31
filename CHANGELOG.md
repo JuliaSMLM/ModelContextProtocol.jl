@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Modern-era (2026-07-28) stateless core.** The server is now dual-era per the
+  2026-07-28 spec's backward-compatibility model: a request carrying
+  `io.modelcontextprotocol/protocolVersion` in its params `_meta` is served
+  statelessly (no `initialize` handshake; version and `clientCapabilities`
+  validated per request), while `initialize` continues to select legacy semantics —
+  both eras interleave on one server without touching each other's state. Includes:
+  `server/discover` (spec MUST; advertises versions of both eras, capabilities,
+  instructions, and `ttlMs`/`cacheScope` caching hints); the modern result envelope
+  (`resultType: "complete"` plus `io.modelcontextprotocol/serverInfo` in every
+  result `_meta`, merged into handler-provided `_meta`); the 2026-07-28 error codes
+  (`UnsupportedProtocolVersionError` -32022 with `supported`/`requested` data,
+  `MissingRequiredClientCapability` -32021, `HeaderMismatch` -32020) with the
+  reserved legacy `-32002` remapped to `-32602` on modern responses; and the modern
+  method surface (methods removed by the spec — `ping`, `logging/setLevel`,
+  `resources/subscribe`/`unsubscribe`, core `tasks/*` — answer -32601 on modern
+  requests, and task-augmentation metadata is ignored pending the tasks extension).
+  Modern requests never receive `notifications/message` (per-request `logLevel`
+  support to follow). `mcp_server` gains an `instructions` kwarg, surfaced by both
+  `initialize` and `server/discover`.
+
 - **`resources/subscribe` and `resources/unsubscribe` wire handlers.** The server
   advertised `resources: { subscribe: true }` but answered both methods with
   "Unknown method" (found by the official MCP conformance suite). They are now

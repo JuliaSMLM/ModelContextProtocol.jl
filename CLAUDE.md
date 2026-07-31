@@ -436,10 +436,19 @@ pkill -9 -f "julia.*examples.*"
 
 ## MCP Protocol Compliance Status
 
-Latest spec: **2025-11-25**. The server advertises and negotiates it, with backward
-compatibility through `2025-06-18`, `2025-03-26`, and `2024-11-05`
-(`negotiate_version` / `SUPPORTED_PROTOCOL_VERSIONS`; HTTP response headers echo the
-negotiated version per session).
+Latest spec: **2026-07-28** (stateless modern era). The server is **dual-era**: a
+request carrying `io.modelcontextprotocol/protocolVersion` in params `_meta` is served
+statelessly under `2026-07-28` (`MODERN_PROTOCOL_VERSIONS`, `handle_modern_request` in
+`src/protocol/modern.jl`), while `initialize` selects legacy semantics negotiated
+across `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05` (`negotiate_version`
+/ `SUPPORTED_PROTOCOL_VERSIONS`; HTTP response headers echo the negotiated version per
+session). Modern-era coverage so far: per-request `_meta` validation (-32602),
+`server/discover` (with `ttlMs`/`cacheScope`), `resultType` + `serverInfo` result
+envelope, error codes -32020/-32021/-32022, removed-method surface (`ping`,
+`logging/setLevel`, `resources/subscribe|unsubscribe`, core `tasks/*` → -32601).
+Still pending for the modern era: HTTP header validation (`Mcp-Method`/`Mcp-Name`,
+405s, session-ignore), CacheableResult fields on list/read results,
+`subscriptions/listen`, per-request `logLevel`, the tasks extension, and MRTR.
 
 ### ✅ Implemented
 
