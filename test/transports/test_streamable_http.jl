@@ -517,11 +517,14 @@
 
         # A modern HEADER with a legacy body must NOT slip past validation: a
         # gateway routing on the header and a backend executing the body would
-        # otherwise see two different requests
+        # otherwise see two different requests. The header makes the request
+        # modern-era, so its missing required _meta field is -32602 (with -32020
+        # reserved for values that disagree); either way it is 400-rejected before
+        # any legacy handling.
         r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 17,
             "method" => "tools/list", "params" => Dict()))  # no modern _meta
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        @test JSON3.read(String(r.body))["error"]["code"] == -32602
 
         # Duplicate standard headers are a smuggling vector -> 400 + -32020
         r = post(vcat(mhdrs("tools/list"), ["Mcp-Method" => "tools/list"]),

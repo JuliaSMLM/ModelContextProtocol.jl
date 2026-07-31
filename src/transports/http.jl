@@ -474,28 +474,25 @@ the body's `_meta` protocol version and `method`; `Mcp-Name` is required on
 `tools/call`/`prompts/get` (mirroring `params.name`) and `resources/read` (mirroring
 `params.uri`), with the Base64 sentinel decoded before comparison. Header names are
 case-insensitive, duplicates and unsafe bytes are rejected (`mcp_standard_header`),
-values are compared case-sensitively after whitespace stripping. `body_version` may
-be `nothing`: a request whose HEADER claims a modern version while its body carries
-no modern `_meta` is a header/body mismatch — exactly the divergence a routing
-gateway must never see.
+values are compared case-sensitively after whitespace stripping. (A request whose
+headers claim a modern era while the body carries no modern `_meta` never reaches
+this function — the caller rejects it as a missing required field, -32602.)
 
 # Arguments
 - `request`: The HTTP request (for header access)
 - `msg`: The parsed JSON body (a `JSON3.Object`)
-- `body_version`: The body's `_meta` protocol version, or `nothing` when absent
+- `body_version`: The body's `_meta` protocol version
 
 # Returns
 - `Union{String,Nothing}`: A violation description for a -32020 HeaderMismatch, or
   `nothing` when the headers validate
 """
-function modern_header_violation(request, msg, body_version::Union{String,Nothing})::Union{String,Nothing}
+function modern_header_violation(request, msg, body_version::String)::Union{String,Nothing}
     header_version = mcp_standard_header(request, "MCP-Protocol-Version")
     header_version === :invalid &&
         return "MCP-Protocol-Version header is duplicated or contains unsafe characters"
     header_version === nothing &&
         return "required header MCP-Protocol-Version is missing"
-    body_version === nothing &&
-        return "MCP-Protocol-Version header claims a modern version but the body carries no $(META_PROTOCOL_VERSION)"
     header_version != body_version &&
         return "MCP-Protocol-Version header '$header_version' does not match body value '$body_version'"
 
@@ -875,7 +872,15 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         if (claims_modern || is_discover) && !is_notification && parsed_msg !== nothing
             req_id = get(parsed_msg, "id", nothing)
             failure = nothing  # (code, message, data)
-            if is_modern || header_claims_modern
+            if !is_modern
+                # The headers claim a modern era (or the method is modern-only) but
+                # the body carries no modern _meta protocol version: the request IS
+                # modern, and its required field is missing -> -32602. (-32020 is
+                # reserved for header/body values that DISAGREE; either way the
+                # request is rejected with 400 before reaching legacy handling.)
+                failure = (ErrorCodes.INVALID_PARAMS,
+                           "Missing required _meta field: $(META_PROTOCOL_VERSION)", nothing)
+            else
                 violation = modern_header_violation(request, parsed_msg, modern_version)
                 if violation !== nothing
                     failure = (ErrorCodes.HEADER_MISMATCH, "Header mismatch: $violation", nothing)
@@ -888,11 +893,6 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                     failure = (ErrorCodes.INVALID_PARAMS,
                                "Missing required _meta field: $(META_CLIENT_CAPABILITIES)", nothing)
                 end
-            else
-                # server/discover exists in no legacy era: without the modern _meta
-                # it is a modern request missing a required field
-                failure = (ErrorCodes.INVALID_PARAMS,
-                           "Missing required _meta field: $(META_PROTOCOL_VERSION)", nothing)
             end
             if failure !== nothing
                 code, message, data = failure
