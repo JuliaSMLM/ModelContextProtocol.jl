@@ -6,12 +6,16 @@
 # Otherwise, respond with our latest version and let client decide.
 
 """
-Latest MCP protocol version supported by this implementation.
+Latest LEGACY (initialize-handshake) MCP protocol version supported by this
+implementation. Modern-era versions live in `MODERN_PROTOCOL_VERSIONS`.
 """
 const LATEST_PROTOCOL_VERSION = "2025-11-25"
 
 """
-All MCP protocol versions supported by this implementation, newest first.
+All LEGACY (initialize-handshake) MCP protocol versions supported by this
+implementation, newest first. These are the versions `initialize` negotiates;
+modern-era versions (per-request `_meta`, no handshake) live in
+`MODERN_PROTOCOL_VERSIONS`.
 """
 const SUPPORTED_PROTOCOL_VERSIONS = [
     "2025-11-25",
@@ -19,6 +23,29 @@ const SUPPORTED_PROTOCOL_VERSIONS = [
     "2025-03-26",
     "2024-11-05"
 ]
+
+"""
+Modern-era (stateless, per-request `_meta`) MCP protocol versions supported by this
+implementation, newest first. A request carrying `io.modelcontextprotocol/protocolVersion`
+in `_meta` is served statelessly under one of these versions; `initialize` selects
+legacy semantics from `SUPPORTED_PROTOCOL_VERSIONS`. Both eras are served concurrently
+(dual-era server, per the 2026-07-28 spec's backward-compatibility model).
+"""
+const MODERN_PROTOCOL_VERSIONS = [
+    "2026-07-28"
+]
+
+"""
+Latest modern-era protocol version.
+"""
+const LATEST_MODERN_PROTOCOL_VERSION = "2026-07-28"
+
+# Reserved _meta keys for the modern-era per-request protocol fields (2026-07-28 spec)
+const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+const META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
 
 """
 Minimum protocol version required for each feature.

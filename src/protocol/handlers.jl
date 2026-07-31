@@ -27,6 +27,18 @@ Base.@kwdef mutable struct RequestContext
     progress_token::Union{ProgressToken,Nothing} = nothing
     authenticated_user::Union{AuthenticatedUser,Nothing} = nothing  # per-request identity from HTTP auth, else nothing; treat as read-only (may be shared from a validator cache)
     task::Union{TaskRecord,Nothing} = nothing  # set for task-augmented executions (MCP Tasks); enables task_cancelled(ctx)
+    protocol_version::Union{String,Nothing} = nothing  # modern-era per-request version from _meta; nothing on legacy requests (which use state.protocol_version)
+end
+
+"""
+    request_protocol_version(ctx::RequestContext) -> Union{String,Nothing}
+
+The protocol version in effect for THIS request: the per-request version carried in
+a modern-era request's `_meta` when present, otherwise the session version negotiated
+by `initialize` (legacy era). `nothing` before any negotiation.
+"""
+function request_protocol_version(ctx::RequestContext)::Union{String,Nothing}
+    ctx.protocol_version !== nothing ? ctx.protocol_version : ctx.state.protocol_version
 end
 
 """
@@ -1021,8 +1033,13 @@ with a `TaskCapability` AND the client negotiated a protocol version with task s
 `tasks/*` methods do not exist.
 """
 function tasks_supported(ctx::RequestContext)::Bool
-    ctx.state.protocol_version !== nothing &&
-        supports(ctx.state.protocol_version, :tasks) &&
+    v = request_protocol_version(ctx)
+    # Modern-era (2026-07-28+) requests have no core tasks: they moved to the
+    # io.modelcontextprotocol/tasks EXTENSION, which this server does not yet
+    # advertise — so task metadata on modern requests is ignored, per spec.
+    v !== nothing &&
+        !(v in MODERN_PROTOCOL_VERSIONS) &&
+        supports(v, :tasks) &&
         any(c -> c isa TaskCapability, ctx.server.config.capabilities)
 end
 
@@ -1436,6 +1453,13 @@ Any exceptions thrown during processing are caught and converted to INTERNAL_ERR
 """
 function handle_request(server::Server, state::ServerState, request::Request;
                         authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
+    # Era dispatch: a request carrying io.modelcontextprotocol/protocolVersion in its
+    # params _meta is modern-era (2026-07-28+) and served statelessly; everything
+    # below this branch is the legacy (initialize-handshake) era.
+    if request.meta.protocol_version !== nothing
+        return handle_modern_request(server, state, request; authenticated_user=authenticated_user)
+    end
+
     ctx = RequestContext(
         server=server,
         state=state,

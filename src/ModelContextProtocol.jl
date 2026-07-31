@@ -81,6 +81,7 @@ include("core/capabilities.jl")
 include("core/server.jl")
 include("core/init.jl")
 include("protocol/handlers.jl")
+include("protocol/modern.jl")
 
 # 6. Serialization (needs all types)
 include("utils/serialization.jl")

@@ -167,13 +167,34 @@ function parse_request(raw::JSON3.Object)::Request
         nothing
     end
 
-    # Extract the optional progress token from params._meta.progressToken so a
-    # handler can report progress for this request (see RequestContext / send_progress).
+    # Extract from params._meta: the optional progress token (see RequestContext /
+    # send_progress) and the modern-era (2026-07-28+) per-request protocol fields.
+    # A present io.modelcontextprotocol/protocolVersion key marks the request as
+    # modern-era and routes it through handle_modern_request.
     progress_token = nothing
+    protocol_version = nothing
+    client_capabilities = nothing
+    client_info = nothing
     if haskey(raw, :params) && !isempty(raw.params) && haskey(raw.params, :_meta)
         meta = raw.params._meta
         if haskey(meta, :progressToken)
             progress_token = meta.progressToken
+        end
+        if haskey(meta, Symbol(META_PROTOCOL_VERSION))
+            v = meta[Symbol(META_PROTOCOL_VERSION)]
+            protocol_version = v isa AbstractString ? String(v) : string(v)
+        end
+        if haskey(meta, Symbol(META_CLIENT_CAPABILITIES))
+            caps = meta[Symbol(META_CLIENT_CAPABILITIES)]
+            if caps isa JSON3.Object || caps isa AbstractDict
+                client_capabilities = JSON3.read(JSON3.write(caps), Dict{String,Any})
+            end
+        end
+        if haskey(meta, Symbol(META_CLIENT_INFO))
+            info = meta[Symbol(META_CLIENT_INFO)]
+            if info isa JSON3.Object || info isa AbstractDict
+                client_info = JSON3.read(JSON3.write(info), Dict{String,Any})
+            end
         end
     end
 
@@ -181,7 +202,12 @@ function parse_request(raw::JSON3.Object)::Request
         id = raw.id,
         method = method,
         params = typed_params,
-        meta = RequestMeta(progress_token = progress_token)
+        meta = RequestMeta(
+            progress_token = progress_token,
+            protocol_version = protocol_version,
+            client_capabilities = client_capabilities,
+            client_info = client_info
+        )
     )
 end
 

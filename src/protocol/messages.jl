@@ -1,15 +1,30 @@
 # src/protocol/messages.jl
 
 """
-    RequestMeta(; progress_token::Union{ProgressToken,Nothing}=nothing)
+    RequestMeta(; progress_token::Union{ProgressToken,Nothing}=nothing,
+                protocol_version::Union{String,Nothing}=nothing,
+                client_capabilities::Union{Dict{String,Any},Nothing}=nothing,
+                client_info::Union{Dict{String,Any},Nothing}=nothing)
 
-Metadata for MCP protocol requests, including progress tracking information.
+Metadata for MCP protocol requests: progress tracking, plus the modern-era (2026-07-28+)
+per-request protocol fields carried in `_meta` under `io.modelcontextprotocol/*` keys.
+A non-`nothing` `protocol_version` marks the request as modern-era (stateless, no
+`initialize` handshake) and routes it through `handle_modern_request`.
 
 # Fields
 - `progress_token::Union{ProgressToken,Nothing}`: Optional token for tracking request progress
+- `protocol_version::Union{String,Nothing}`: `io.modelcontextprotocol/protocolVersion`
+  (required on every modern-era request; absent on legacy requests)
+- `client_capabilities::Union{Dict{String,Any},Nothing}`: `io.modelcontextprotocol/clientCapabilities`
+  (required on every modern-era request), kept as the raw JSON object
+- `client_info::Union{Dict{String,Any},Nothing}`: `io.modelcontextprotocol/clientInfo`
+  (optional), kept as the raw JSON object
 """
 Base.@kwdef struct RequestMeta
     progress_token::Union{ProgressToken,Nothing} = nothing
+    protocol_version::Union{String,Nothing} = nothing
+    client_capabilities::Union{Dict{String,Any},Nothing} = nothing
+    client_info::Union{Dict{String,Any},Nothing} = nothing
 end
 
 """

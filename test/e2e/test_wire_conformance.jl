@@ -111,6 +111,56 @@ end
         length(resp) == 10 && _wire_assert(resp)
     end
 
+    @testset "stdio modern era (2026-07-28)" begin
+        # Modern-era requests are stateless: no initialize is sent at all. Each
+        # request carries its protocol fields in _meta, results carry the modern
+        # envelope (resultType + serverInfo), and server/discover works up front.
+        mmeta = """{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"modern-e2e","version":"1"}}"""
+        reqs = [
+            """{"jsonrpc":"2.0","method":"server/discover","params":{"_meta":$mmeta},"id":1}""",
+            """{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":$mmeta},"id":2}""",
+            """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_stats","arguments":{},"_meta":$mmeta},"id":3}""",
+            """{"jsonrpc":"2.0","method":"ping","params":{"_meta":$mmeta},"id":4}""",
+            """{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1999-01-01","io.modelcontextprotocol/clientCapabilities":{}}},"id":5}""",
+        ]
+        out = read(pipeline(`$(_E2E_JULIA) --project=$(_E2E_REPO) $(_WIRE_FIXTURE)`;
+                            stdin = IOBuffer(join(reqs, "\n") * "\n"),
+                            stderr = devnull), String)
+        resp = Dict{Int,Any}()
+        for line in split(out, '\n')
+            startswith(line, "{") || continue
+            msg = JSON3.read(line)
+            haskey(msg, :id) && (resp[msg.id] = msg)
+        end
+        @test length(resp) == 5
+
+        # server/discover: versions of both eras, caching hints, envelope
+        d = resp[1].result
+        @test d.resultType == "complete"
+        @test "2026-07-28" in d.supportedVersions
+        @test "2025-11-25" in d.supportedVersions
+        @test d.ttlMs >= 0
+        @test d.cacheScope in ("public", "private")
+        @test d._meta[Symbol("io.modelcontextprotocol/serverInfo")][:name] == "wire-demo"
+
+        # Shared handlers wear the modern envelope
+        @test resp[2].result.resultType == "complete"
+        @test any(t -> t.name == "get_stats", resp[2].result.tools)
+        @test resp[3].result.resultType == "complete"
+        @test resp[3].result.structuredContent.count == 42
+        # The envelope MERGES into an existing result _meta rather than replacing it
+        @test resp[3].result._meta.trace == "abc123"
+        @test haskey(resp[3].result._meta, Symbol("io.modelcontextprotocol/serverInfo"))
+
+        # ping is removed from the modern era
+        @test resp[4].error.code == -32601
+
+        # Unsupported version -> -32022 with supported/requested
+        @test resp[5].error.code == -32022
+        @test resp[5].error.data.requested == "1999-01-01"
+        @test "2026-07-28" in resp[5].error.data.supported
+    end
+
     @testset "stdio logging/setLevel takes effect live" begin
         # setLevel "debug" must actually enable the request-lifecycle @debug lines on a
         # REAL server (the global-logger LogState caches min_enabled_level at install
