@@ -7,7 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-07-30
+### Added
+
+- **`resources/subscribe` and `resources/unsubscribe` wire handlers.** The server
+  advertised `resources: { subscribe: true }` but answered both methods with
+  "Unknown method" (found by the official MCP conformance suite). They are now
+  handled per spec: the URI is tracked in the session's subscription set and an
+  empty result is returned; both are idempotent.
+- **DNS-rebinding protection** (GHSA-w48q-cv73-mx4w class): a loopback-bound
+  `HttpTransport` without *enabled* bearer auth now rejects requests whose `Host` or
+  `Origin` header is neither local nor allowlisted with `403 Forbidden`. Loopback is
+  classified by parsing (any 127.0.0.0/8 address, `::1`, IPv4-mapped IPv6 loopback,
+  `localhost` with optional trailing dot) for both the bind host and header values;
+  malformed `Host` values (userinfo, junk after an IPv6 literal, multiple colons)
+  and duplicate `Host`/`Origin` headers are rejected rather than leniently parsed.
+  New `allowed_hosts` kwarg admits extra hostnames in `Host` only (e.g. a reverse
+  proxy's public domain); browser origins are admitted solely by loopback hostname
+  or an exact `allowed_origins` match. `disable_auth()` counts as no auth — the
+  guard stays active. (Hardened per security review.)
+
+### Changed
+
+- **Request-scoped notifications now ride the originating POST's SSE response
+  stream** on Streamable HTTP, as the spec (and standard clients: TypeScript SDK,
+  Inspector, conformance suite) expect. Previously `notifications/progress` emitted
+  by a ctx-aware tool was queued to the standalone GET stream — which mainstream
+  clients never open — and was effectively lost. A request that emits notifications
+  during handling now receives a `text/event-stream` response carrying the
+  notifications followed by the final response; a quiet request still gets a plain
+  `application/json` response. Out-of-band notifications (background MCP Tasks
+  status updates) keep flowing on the GET stream. Clients whose `Accept` lacks
+  `text/event-stream` receive the plain JSON response with request-scoped
+  notifications dropped.
+- **MCP log notifications are now actually delivered to the client.** `MCPLogger`
+  wrote `notifications/message` as JSON lines to stderr, so no client ever received
+  them regardless of `logging/setLevel`. Once the client has initialized, log
+  records now go over the transport: stdout on stdio (interleaved with responses
+  per spec), the originating request's SSE response stream on HTTP. Before
+  initialization — and whenever transport delivery is unavailable — records still
+  fall back to stderr. Records below `Info` now map to the MCP `"debug"` level
+  (previously `"info"`).
+
+### Fixed
+
+- **Client-sent JSON-RPC responses over HTTP now receive `202 Accepted`** per the
+  Streamable HTTP spec; previously they were misclassified as requests ("no `id`
+  field" was the notification test) and stranded the connection waiting for a reply
+  the server never sends. Invalid objects that are neither request, notification,
+  nor response (e.g. `{}`) now get `400` with a `-32600` Invalid Request error
+  instead of a blanket `202`.
+- **The single server loop can no longer stall on notification delivery.** The
+  out-of-band notification queue is unbounded with a drop-new soft cap (the GET SSE
+  consumer is optional per spec, so a bounded queue with blocking `put!` let a
+  POST-only client freeze the loop — trivially reachable at `logging/setLevel`
+  `debug`); per-request response channels are unbounded so a slow reader of one SSE
+  response cannot backpressure other clients' requests; and the loop's own lifecycle
+  log records are routed to the originating request's stream rather than the shared
+  queue. Transport shutdown now closes the notification queue and atomically fences
+  new response-channel registration (late connections get `503`), eliminating a
+  shutdown race that could strand a connection handler.
 
 ### Changed
 

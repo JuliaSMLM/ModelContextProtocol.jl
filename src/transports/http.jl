@@ -3,6 +3,7 @@
 using HTTP
 using JSON3
 using UUIDs: uuid4
+using Sockets: IPv4, IPv6
 
 """
     QueuedHttpRequest(id, body, user)
@@ -19,10 +20,18 @@ struct QueuedHttpRequest
 end
 
 """
-    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/")
+    HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/",
+                  allowed_origins::Vector{String}=String[], allowed_hosts::Vector{String}=String[])
 
 Transport implementation following the MCP Streamable HTTP specification (2025-06-18).
-Supports Server-Sent Events (SSE) for streaming and session management.
+Supports Server-Sent Events (SSE) for streaming and session management. A request's
+response is a single JSON object, or — when request-scoped notifications (progress,
+log messages) are emitted during handling — an SSE stream scoped to that request.
+
+When bound to a loopback host without bearer auth, requests whose Host or Origin
+header is neither local nor allowlisted are rejected with 403 (DNS-rebinding
+protection); a deployment behind a reverse proxy adds its public hostname to
+`allowed_hosts` (or enables auth, which disables the guard).
 
 # Fields
 - `host::String`: Host address to bind to (default: "127.0.0.1")
@@ -33,7 +42,10 @@ Supports Server-Sent Events (SSE) for streaming and session management.
 - `server_task::Union{Task,Nothing}`: Server task handle
 - `active_streams::Dict{String,HTTP.Stream}`: Active streaming connections
 - `request_queue::Channel{QueuedHttpRequest}`: Queue for incoming requests (id, body, auth user)
-- `response_channels::Dict{String,Channel{String}}`: Response channels per request
+- `response_channels::Dict{String,Channel{Tuple{Symbol,String}}}`: Per-request response
+  routes carrying `(:notification, json)` entries followed by one `(:response, json)`
+- `allowed_origins::Vector{String}`: Origins accepted by the DNS-rebinding guard (exact match)
+- `allowed_hosts::Vector{String}`: Extra Host-header hostnames accepted by the DNS-rebinding guard
 """
 mutable struct HttpTransport <: Transport
     host::String
@@ -45,7 +57,7 @@ mutable struct HttpTransport <: Transport
     active_streams::Dict{String,HTTP.Stream}
     sse_streams::Dict{String,HTTP.Stream}  # SSE connections
     request_queue::Channel{QueuedHttpRequest}
-    response_channels::Dict{String,Channel{String}}
+    response_channels::Dict{String,Channel{Tuple{Symbol,String}}}  # (:notification|:response, payload) per request
     notification_queue::Channel{String}  # For SSE notifications
     current_request_id::Union{String,Nothing}
     current_request_auth::Union{AuthenticatedUser,Nothing}  # Auth user of the message just read; set in the single server loop, never across connections
@@ -54,6 +66,7 @@ mutable struct HttpTransport <: Transport
     protocol_version::String  # MCP protocol version
     event_counter::Int64  # SSE event IDs
     allowed_origins::Vector{String}  # CORS security
+    allowed_hosts::Vector{String}  # Extra Host-header hostnames accepted by the DNS-rebinding guard
     auth::Union{AuthMiddleware,Nothing}  # OAuth Resource Server token validation (nothing = disabled)
     resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 Protected Resource Metadata
     channels_lock::ReentrantLock  # guards response_channels/active_streams (HTTP connection tasks + server loop + deferred-response waiters)
@@ -63,6 +76,7 @@ mutable struct HttpTransport <: Transport
         port::Int=8080,
         endpoint::String="/",
         allowed_origins::Vector{String}=String[],
+        allowed_hosts::Vector{String}=String[],
         protocol_version::String=LATEST_PROTOCOL_VERSION,
         session_required::Bool=false,
         auth::Union{AuthMiddleware,Nothing}=nothing,
@@ -78,8 +92,11 @@ mutable struct HttpTransport <: Transport
             Dict{String,HTTP.Stream}(),
             Dict{String,HTTP.Stream}(),  # SSE streams
             Channel{QueuedHttpRequest}(32),  # Buffer up to 32 requests
-            Dict{String,Channel{String}}(),
-            Channel{String}(100),  # Notification queue
+            Dict{String,Channel{Tuple{Symbol,String}}}(),
+            # Unbounded with a soft cap enforced in send_notification: the GET SSE
+            # consumer is OPTIONAL per spec, so a bounded channel with blocking put!
+            # would let a POST-only client stall the single server loop once full
+            Channel{String}(Inf),
             nothing,  # current_request_id
             nothing,  # current_request_auth
             nothing,  # No session initially
@@ -87,6 +104,7 @@ mutable struct HttpTransport <: Transport
             protocol_version,
             0,  # Event counter starts at 0
             allowed_origins,
+            allowed_hosts,
             auth,
             resource_metadata,
             ReentrantLock()
@@ -132,6 +150,130 @@ Must contain only visible ASCII characters (0x21 to 0x7E).
 function generate_session_id()::String
     # Use UUID which contains only alphanumeric and hyphens (all valid ASCII)
     return string(uuid4())
+end
+
+# Soft cap on pending out-of-band notifications when no GET SSE consumer drains them
+const NOTIFICATION_QUEUE_SOFTCAP = 1000
+
+"""
+    parse_host_header(hostport::AbstractString) -> Union{String,Nothing}
+
+Parse a Host-header style `host[:port]` value strictly, returning the lowercased
+hostname or `nothing` when the value is malformed (userinfo, multiple colons on a
+non-bracketed host, junk after a bracketed IPv6 literal, non-numeric port). Malformed
+values must be REJECTED by the DNS-rebinding guard, not leniently truncated into
+something that looks local (`[::1]evil.example` must not read as `[::1]`).
+
+# Arguments
+- `hostport::AbstractString`: A Host-header style value
+
+# Returns
+- `Union{String,Nothing}`: The lowercased hostname (brackets kept for IPv6 literals),
+  or `nothing` when malformed
+"""
+function parse_host_header(hostport::AbstractString)::Union{String,Nothing}
+    h = lowercase(strip(hostport))
+    isempty(h) && return nothing
+    occursin('@', h) && return nothing  # userinfo smuggling
+    if startswith(h, "[")
+        idx = findfirst(']', h)
+        isnothing(idx) && return nothing
+        rest = h[nextind(h, idx):end]
+        if !isempty(rest)
+            startswith(rest, ":") || return nothing  # junk after the bracket
+            port = rest[2:end]
+            (isempty(port) || !all(isdigit, port)) && return nothing
+        end
+        return h[1:idx]
+    end
+    parts = split(h, ':')
+    length(parts) > 2 && return nothing  # "host:80:evil" and unbracketed IPv6
+    isempty(parts[1]) && return nothing
+    if length(parts) == 2
+        (isempty(parts[2]) || !all(isdigit, parts[2])) && return nothing
+    end
+    return String(parts[1])
+end
+
+"""
+    is_loopback_host(host::AbstractString) -> Bool
+
+Determine whether a hostname refers to the local loopback: `localhost` (optionally
+with a trailing dot), any 127.0.0.0/8 IPv4 address, `::1`, or an IPv4-mapped IPv6
+loopback (`::ffff:127.x.y.z`). String-list matching is not enough here — binding or
+addressing via `127.0.0.2` is just as local as `127.0.0.1`.
+
+# Arguments
+- `host::AbstractString`: Hostname, IP literal, or bracketed IPv6 literal
+
+# Returns
+- `Bool`: true if the host is loopback
+"""
+function is_loopback_host(host::AbstractString)::Bool
+    h = lowercase(strip(host))
+    endswith(h, ".") && (h = chop(h))
+    h == "localhost" && return true
+    if startswith(h, "[") && endswith(h, "]")
+        h = h[2:prevind(h, lastindex(h))]
+    end
+    # No tryparse methods exist for IP types; parse throws on non-IP strings
+    ip4 = try parse(IPv4, h) catch; nothing end
+    ip4 !== nothing && return (ip4.host >>> 24) == 127
+    ip6 = try parse(IPv6, h) catch; nothing end
+    if ip6 !== nothing
+        ip6.host == UInt128(1) && return true  # ::1
+        # IPv4-mapped loopback ::ffff:127.x.y.z
+        return (ip6.host >>> 32) == 0xffff && ((ip6.host >>> 24) & 0xff) == 0x7f
+    end
+    return false
+end
+
+"""
+    rebinding_violation(host_header, origin_header, allowed_hosts, allowed_origins) -> Union{String,Nothing}
+
+Check Host and Origin headers against DNS-rebinding attacks on a loopback-bound
+server (GHSA-w48q-cv73-mx4w class): a malicious website resolves its own domain to
+127.0.0.1 and drives the local server from the victim's browser. A legitimate local
+client sends a loopback Host; the attack necessarily carries the attacker's hostname.
+Malformed Host values are violations (see `parse_host_header`). `allowed_hosts`
+applies to the Host header only; Origin is admitted by loopback hostname or an exact
+`allowed_origins` match — a proxy hostname in `allowed_hosts` deliberately does NOT
+admit browser origins on that host.
+
+# Arguments
+- `host_header`: The request's Host header value ("" when absent)
+- `origin_header`: The request's Origin header value ("" when absent)
+- `allowed_hosts`: Extra hostnames accepted in Host (e.g. a reverse-proxy domain)
+- `allowed_origins`: Full origins accepted in Origin (exact match, existing semantics)
+
+# Returns
+- `Union{String,Nothing}`: A human-readable violation description, or `nothing` if the
+  request is acceptable
+"""
+function rebinding_violation(host_header::AbstractString, origin_header::AbstractString,
+                             allowed_hosts::Vector{String},
+                             allowed_origins::Vector{String})::Union{String,Nothing}
+    if !isempty(host_header)
+        hostname = parse_host_header(host_header)
+        isnothing(hostname) && return "Host header '$host_header' is malformed"
+        if !is_loopback_host(hostname) &&
+           !(hostname in (lowercase(h) for h in allowed_hosts))
+            return "Host header '$host_header' is not a permitted hostname"
+        end
+    end
+    if !isempty(origin_header)
+        # HTTP.URI separates host and port already (no strip needed; stripping would
+        # mangle an unbracketed IPv6 host like "::1")
+        origin_host = try
+            lowercase(String(HTTP.URI(origin_header).host))
+        catch
+            ""
+        end
+        if !(origin_header in allowed_origins) && !is_loopback_host(origin_host)
+            return "Origin header '$origin_header' is not a permitted origin"
+        end
+    end
+    return nothing
 end
 
 """
@@ -299,6 +441,41 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         return nothing
     end
 
+    # DNS-rebinding guard: a loopback-bound server without ENABLED bearer auth is
+    # exactly the target of browser-driven rebinding attacks, so Host/Origin must look
+    # local (or be explicitly allowlisted via allowed_hosts/allowed_origins).
+    # Auth-enabled servers are already protected — a browser cannot attach the bearer
+    # token — and commonly sit behind a reverse proxy that forwards a public Host, so
+    # the guard stays out of their way. is_auth_enabled (not `auth === nothing`)
+    # matters: disable_auth() installs a middleware that accepts everyone anonymously,
+    # which provides no rebinding protection at all.
+    if !is_auth_enabled(transport) && is_loopback_host(transport.host)
+        host_values = [v for (k, v) in HTTP.headers(request) if lowercase(k) == "host"]
+        origin_values = [v for (k, v) in HTTP.headers(request) if lowercase(k) == "origin"]
+        violation = if length(host_values) > 1 || length(origin_values) > 1
+            # Duplicate authority headers are a smuggling vector: different components
+            # may honor different copies, so reject outright
+            "duplicate Host/Origin headers"
+        else
+            rebinding_violation(
+                isempty(host_values) ? "" : String(host_values[1]),
+                isempty(origin_values) ? "" : String(origin_values[1]),
+                transport.allowed_hosts,
+                transport.allowed_origins
+            )
+        end
+        if !isnothing(violation)
+            @debug "Rejected potential DNS-rebinding request" violation=violation
+            HTTP.setstatus(stream, 403)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            error_msg = "Forbidden: $violation"
+            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+            HTTP.startwrite(stream)
+            write(stream, error_msg)
+            return nothing
+        end
+    end
+
     # OAuth Resource Server: require a valid bearer token when auth is configured.
     # Applies to every request to the MCP endpoint (POST and SSE GET); the
     # well-known discovery endpoint above is exempt so clients can bootstrap.
@@ -421,15 +598,56 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # Read request body
         body = String(read(stream))
         
-        # Parse to check if it's an initialization request
+        # Classify the message per JSON-RPC shape: a request has method+id, a
+        # notification has method but no id, a client RESPONSE has result/error+id
+        # but no method, and anything else (e.g. `{}`) is invalid. "No id" alone is
+        # NOT a notification — that misclassifies responses as requests (which would
+        # strand the connection waiting for a reply the loop never sends) and accepts
+        # invalid objects with 202.
         local is_initialize = false
         local is_notification = false
+        local is_client_response = false
+        local is_invalid = false
         try
             msg = JSON3.read(body)
-            is_initialize = get(msg, "method", "") == "initialize"
-            is_notification = !haskey(msg, "id")  # Notifications don't have IDs
+            has_method = haskey(msg, "method")
+            has_id = haskey(msg, "id")
+            is_initialize = has_method && get(msg, "method", "") == "initialize"
+            is_notification = has_method && !has_id
+            is_client_response = !has_method && has_id &&
+                                 (haskey(msg, "result") || haskey(msg, "error"))
+            is_invalid = !has_method && !is_client_response
         catch
-            # If parsing fails, let the server handle it
+            # Unparseable JSON: fall through to the request path, where the server
+            # loop produces the JSON-RPC parse-error response
+        end
+
+        if is_invalid
+            HTTP.setstatus(stream, 400)
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            error_response = JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "error" => Dict(
+                    "code" => -32600,
+                    "message" => "Invalid Request: not a JSON-RPC request, notification, or response"
+                ),
+                "id" => nothing
+            ))
+            HTTP.setheader(stream, "Content-Length" => string(length(error_response)))
+            HTTP.startwrite(stream)
+            write(stream, error_response)
+            return nothing
+        end
+
+        if is_client_response
+            # Per Streamable HTTP the server MUST return 202 for responses. This
+            # server sends no server-to-client requests on this transport, so there
+            # is nothing to correlate — acknowledge and drop.
+            @debug "Received client JSON-RPC response; acknowledging with 202"
+            HTTP.setstatus(stream, 202)
+            HTTP.setheader(stream, "Content-Length" => "0")
+            HTTP.startwrite(stream)
+            return nothing
         end
         
         # Session validation - only check after we know if it's initialization
@@ -496,51 +714,54 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # Generate unique request ID
         request_id = string(uuid4())
         
-        # Create response channel for this request (buffer size 1 for single response)
-        response_channel = Channel{String}(1)
-        lock(transport.channels_lock) do
+        # Create the response route for this request. The channel carries any
+        # request-scoped notifications (progress, log messages) followed by exactly
+        # one final (:response, ...) entry. Unbounded: producers include the single
+        # server loop, which must NEVER block on a slow client's half-read SSE
+        # response — buffering is bounded by the request's own lifetime.
+        # Registration is gated on `connected` UNDER the lock so it cannot race
+        # shutdown (a channel registered after close()'s snapshot would never be
+        # closed and would strand this handler in take! forever).
+        response_channel = Channel{Tuple{Symbol,String}}(Inf)
+        registered = lock(transport.channels_lock) do
+            transport.connected || return false
             transport.response_channels[request_id] = response_channel
             transport.active_streams[request_id] = stream
+            true
         end
-        
+        if !registered
+            HTTP.setstatus(stream, 503)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            error_msg = "Service Unavailable: server shutting down"
+            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
+            HTTP.startwrite(stream)
+            write(stream, error_msg)
+            return nothing
+        end
+
         # Queue the request for processing
         put!(transport.request_queue, QueuedHttpRequest(request_id, body, authenticated_user))
-        
-        # Wait for the single response
+
+        # Deliver the response. Per Streamable HTTP, a request's response is either a
+        # single JSON object or an SSE stream scoped to this request carrying
+        # request-related notifications followed by the final response. The first item
+        # on the channel decides which shape we use: a quiet request stays plain JSON,
+        # a notification arriving first upgrades the response to SSE.
         try
-            response = take!(response_channel)
-            
-            # Check if we should send via SSE or direct response
-            accept_header = HTTP.header(request, "Accept", "")
-            use_sse = contains(accept_header, "text/event-stream") && !isempty(transport.sse_streams)
-            
-            if use_sse && length(transport.sse_streams) > 0
-                # Send response via SSE stream
-                for (_, sse_stream) in transport.sse_streams
-                    try
-                        transport.event_counter += 1
-                        event = format_sse_event(
-                            response,
-                            event="response",
-                            id=transport.event_counter
-                        )
-                        write(sse_stream, event)
-                        Base.flush(sse_stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
-                    catch e
-                        @debug "Failed to write to SSE stream" error=e
-                    end
+            kind, payload = take!(response_channel)
+            client_accepts_sse = contains(HTTP.header(request, "Accept", ""), "text/event-stream")
+
+            if kind === :notification && !client_accepts_sse
+                # Client can't consume an SSE response; drop request-scoped
+                # notifications and answer with the bare JSON response.
+                while kind !== :response
+                    @debug "Dropping request-scoped notification (client Accept lacks text/event-stream)"
+                    kind, payload = take!(response_channel)
                 end
-                
-                # Still send 200 OK for the POST request
-                HTTP.setstatus(stream, 200)
-                HTTP.setheader(stream, "Content-Type" => "application/json")
-                HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
-                if !isnothing(transport.session_id)
-                    HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
-                end
-                write(stream, response)
-            else
-                # Write the response directly
+            end
+
+            if kind === :response
+                # Plain JSON response
                 HTTP.setstatus(stream, 200)
                 HTTP.setheader(stream, "Content-Type" => "application/json")
                 HTTP.setheader(stream, "Cache-Control" => "no-cache")
@@ -548,9 +769,27 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 if !isnothing(transport.session_id)
                     HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
                 end
-                write(stream, response)
+                write(stream, payload)
+            else
+                # SSE response stream scoped to this request
+                HTTP.setstatus(stream, 200)
+                HTTP.setheader(stream, "Content-Type" => "text/event-stream")
+                HTTP.setheader(stream, "Cache-Control" => "no-cache")
+                HTTP.setheader(stream, "X-Accel-Buffering" => "no")
+                HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
+                if !isnothing(transport.session_id)
+                    HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
+                end
+                HTTP.startwrite(stream)
+                while true
+                    transport.event_counter += 1
+                    write(stream, format_sse_event(payload, event="message", id=transport.event_counter))
+                    Base.flush(stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
+                    kind === :response && break
+                    kind, payload = take!(response_channel)
+                end
             end
-            
+
         catch e
             if !(e isa InvalidStateException)
                 @debug "Error waiting for response" error=e
@@ -659,16 +898,21 @@ Stop the HTTP server and close all connections.
 - `Nothing`
 """
 function close(transport::HttpTransport)::Nothing
-    if !transport.connected
-        return nothing
-    end
-    
-    transport.connected = false
-    
-    # Close all response channels (snapshot under the lock; close outside it)
+    # Flip `connected` and snapshot the response channels under the SAME lock that
+    # gates channel registration: a connection handler either registered before the
+    # snapshot (and its channel gets closed below) or observes connected == false and
+    # answers 503 — no channel can slip in after the snapshot and strand its handler
+    # in take! forever.
     channels = lock(transport.channels_lock) do
-        collect(values(transport.response_channels))
+        if !transport.connected
+            nothing
+        else
+            transport.connected = false
+            collect(values(transport.response_channels))
+        end
     end
+    channels === nothing && return nothing
+
     for channel in channels
         try
             Base.close(channel)
@@ -676,9 +920,11 @@ function close(transport::HttpTransport)::Nothing
             # Channel might be closed already
         end
     end
-    
-    # Close request queue
+
+    # Close request queue and the out-of-band notification queue (unblocks any
+    # GET SSE writer waiting on it)
     Base.close(transport.request_queue)
+    Base.close(transport.notification_queue)
     
     # Stop server
     if !isnothing(transport.server)
@@ -776,7 +1022,7 @@ function write_message(transport::HttpTransport, message::String)::Nothing
         end
         if channel !== nothing
             try
-                put!(channel, message)
+                put!(channel, (:response, message))
                 # Clear current request ID after sending response
                 transport.current_request_id = nothing
             catch e
@@ -789,6 +1035,15 @@ function write_message(transport::HttpTransport, message::String)::Nothing
 
     nothing
 end
+
+"""
+    notification_route(transport::HttpTransport) -> Union{String,Nothing}
+
+Return the HTTP request ID of the message just read from the queue, used by the
+server loop as the request-scoped notification route (see the base
+`notification_route` docstring).
+"""
+notification_route(transport::HttpTransport) = transport.current_request_id
 
 """
     capture_response_route(transport::HttpTransport) -> Union{String,Nothing}
@@ -820,7 +1075,7 @@ function deliver_response(transport::HttpTransport, route::Union{String,Nothing}
     end
     channel === nothing && return nothing
     try
-        put!(channel, message)
+        put!(channel, (:response, message))
     catch e
         @debug "Failed to deliver deferred response (client likely disconnected)" error=e
     end
@@ -842,7 +1097,16 @@ end
 """
     send_notification(transport::HttpTransport, notification::String) -> Nothing
 
-Send a notification to all connected SSE streams.
+Send a notification. A notification emitted while the server loop is synchronously
+handling a request (progress, log messages) is request-scoped: it is routed onto that
+request's response channel and delivered on the POST's SSE response stream, per
+Streamable HTTP. Anything else — notifications from background tasks (MCP Tasks
+status updates) or emitted outside request handling — goes to the standalone GET SSE
+notification stream.
+
+The request route is read from the server loop's task-local storage (set in
+`run_server_loop`), so background tasks — which never inherit it — can't misroute
+their notifications into whatever request the loop happens to be processing.
 
 # Arguments
 - `transport::HttpTransport`: The transport instance
@@ -855,14 +1119,37 @@ function send_notification(transport::HttpTransport, notification::String)::Noth
     if !transport.connected
         return nothing
     end
-    
-    # Queue notification for SSE streams
+
+    # Request-scoped delivery: onto the active request's response channel
+    route = get(task_local_storage(), :mcp_notification_route, nothing)
+    if route !== nothing
+        channel = lock(transport.channels_lock) do
+            get(transport.response_channels, route, nothing)
+        end
+        if channel !== nothing
+            try
+                put!(channel, (:notification, notification))
+                return nothing
+            catch e
+                @debug "Request route closed; falling back to GET stream" error=e
+            end
+        end
+    end
+
+    # Out-of-band delivery: the standalone GET SSE notification stream. The queue is
+    # unbounded (put! must never block the single server loop — the GET consumer is
+    # optional per spec and may simply not exist), so enforce a soft cap here by
+    # dropping new notifications once too many are pending.
     try
+        if Base.n_avail(transport.notification_queue) >= NOTIFICATION_QUEUE_SOFTCAP
+            @debug "Notification queue full (no SSE consumer?); dropping notification"
+            return nothing
+        end
         put!(transport.notification_queue, notification)
     catch e
         @debug "Failed to queue notification" error=e
     end
-    
+
     nothing
 end
 

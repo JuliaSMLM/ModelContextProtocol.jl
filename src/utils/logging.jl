@@ -5,17 +5,35 @@
 
 Define a custom logger for MCP server that formats messages according to protocol requirements.
 
+Once the server is initialized, log records are delivered to the client as MCP
+`notifications/message` notifications via the server's transport (`send_notification`):
+stdio writes them to stdout alongside responses; Streamable HTTP delivers them on the
+originating request's SSE response stream (or the standalone notification stream when
+no request is being handled). Before initialization — or if transport delivery fails —
+records fall back to `stream` as JSON lines.
+
 # Fields
-- `stream::IO`: The output stream for log messages
+- `stream::IO`: Fallback output stream for log messages (used before the client
+  initializes and when transport delivery is unavailable)
 - `min_level::LogLevel`: Minimum logging level to display (mutable so `logging/setLevel`
   can adjust it on the installed logger)
 - `message_limits::Dict{Any,Int}`: Message limit settings for rate limiting
+- `transport::Any`: The server transport notifications are delivered over
+  (`Union{Nothing,Transport}`; typed `Any` to avoid include-order coupling)
+- `transport_active::Base.RefValue{Bool}`: Gate flipped on client initialization —
+  notifications MUST NOT be emitted to a client that has not initialized
 """
 mutable struct MCPLogger <: AbstractLogger
     stream::IO
     min_level::LogLevel
     message_limits::Dict{Any,Int}
+    transport::Any
+    transport_active::Base.RefValue{Bool}
 end
+
+# Back-compat: the pre-transport three-field positional shape still constructs
+MCPLogger(stream::IO, level::LogLevel, limits::Dict{Any,Int}) =
+    MCPLogger(stream, level, limits, nothing, Ref(false))
 
 """
     MCP_LOG_LEVELS
@@ -95,13 +113,30 @@ Format and output log messages according to the MCP protocol format.
 """
 function Logging.handle_message(logger::MCPLogger, level, message, _module, group, id,
                               filepath, line; kwargs...)
+    # Reentrancy guard FIRST: everything below — string(message), string(v) on kwarg
+    # values, JSON3.write, is_connected, the transport send — can invoke user-defined
+    # show methods or transport code that logs, re-entering this function. A recursive
+    # record gets a minimal fixed fallback line: no formatting of user values, no
+    # transport delivery, so the recursion terminates at depth one.
+    if get(task_local_storage(), :mcp_logger_reentry, false)
+        try
+            println(logger.stream, "{\"mcp_logger\":\"recursive log record suppressed\"}")
+        catch
+        end
+        return nothing
+    end
+    task_local_storage(:mcp_logger_reentry, true)
+    try
+
     # Convert log level to MCP protocol level
     mcp_level = if level >= Error
         "error"
-    elseif level >= Warn 
+    elseif level >= Warn
         "warning"
-    else
+    elseif level >= Info
         "info"
+    else
+        "debug"
     end
     
     # Create JSON-RPC formatted log message
@@ -130,10 +165,29 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
     
     # Write to buffer
     JSON3.write(buf, log_message)
-    
-    # Write to output stream
-    println(logger.stream, String(take!(buf)))
+    serialized = String(take!(buf))
+
+    # Deliver to the client as a notifications/message over the transport once the
+    # session is initialized (recursion from the send path is handled by the
+    # entry guard above)
+    t = logger.transport
+    if t !== nothing && logger.transport_active[] && is_connected(t)
+        try
+            send_notification(t, serialized)
+            return nothing
+        catch
+            # Transport delivery failed; fall through to the fallback stream
+        end
+    end
+
+    # Fallback: write to the configured stream (stderr by default)
+    println(logger.stream, serialized)
     Base.flush(logger.stream)
+
+    finally
+        task_local_storage(:mcp_logger_reentry, false)
+    end
+    nothing
 end
 
 """

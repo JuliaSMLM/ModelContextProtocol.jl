@@ -132,9 +132,11 @@
     @testset "SSE notification delivery (issue #71 regression)" begin
         # The initial "connection" event is written BEFORE the notification loop, so a
         # test asserting only that stays green even when the loop itself is broken.
-        # This test asserts a real notification traverses queue -> SSE stream:
-        # a ctx-aware tool emits notifications/progress, and the GET-SSE client must
-        # actually receive it. Two historical failure modes this guards against:
+        # This test asserts a real OUT-OF-BAND notification traverses queue -> GET SSE
+        # stream (the path used by e.g. background MCP Task status updates;
+        # request-scoped notifications ride the originating POST's SSE response stream
+        # instead — see the dedicated testset below). Two historical failure modes this
+        # guards against:
         #   - `close(timer)` / `flush(sse_stream)` resolving to the package's own
         #     Transport-only methods (Base shadowing) -> MethodError on the first loop
         #     iteration, swallowed by the catch, stream dropped ~100ms after connect;
@@ -144,19 +146,9 @@
         port = 15090 + rand(1:1000)
 
         transport = HttpTransport(port=port)
-        progress_tool = MCPTool(
-            name = "progress_test",
-            description = "Emit a progress notification",
-            parameters = [],
-            handler = (args, ctx) -> begin
-                send_progress(ctx, 1; total = 1, message = "sse-regression-tick")
-                TextContent(text = "done")
-            end
-        )
         server = mcp_server(
             name = "sse-notify-server",
-            version = "1.0.0",
-            tools = [progress_tool]
+            version = "1.0.0"
         )
         server.transport = transport
         ModelContextProtocol.connect(transport)
@@ -211,23 +203,18 @@
         # discriminate.
         sleep(1.0)
 
-        call_response = HTTP.post(
-            "http://127.0.0.1:$port/",
-            ["Content-Type" => "application/json",
-             "Mcp-Session-Id" => session_id,
-             "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
-                "jsonrpc" => "2.0",
-                "method" => "tools/call",
-                "params" => Dict(
-                    "name" => "progress_test",
-                    "arguments" => Dict(),
-                    "_meta" => Dict("progressToken" => "tok-71")
-                ),
-                "id" => 2
-            ))
-        )
-        @test call_response.status == 200
+        # Emit an out-of-band notification (no request being handled, so no
+        # task-local route): it must flow over the standalone GET SSE stream.
+        ModelContextProtocol.send_notification(transport, JSON3.write(Dict(
+            "jsonrpc" => "2.0",
+            "method" => "notifications/progress",
+            "params" => Dict(
+                "progressToken" => "tok-71",
+                "progress" => 1,
+                "total" => 1,
+                "message" => "sse-regression-tick"
+            )
+        )))
 
         # The progress notification must arrive on the SSE stream.
         deadline = time() + 10
@@ -247,6 +234,166 @@
             sleep(0.1)
         end
         Base.close(timer)
+    end
+
+    @testset "Request-scoped notifications ride the POST SSE response stream" begin
+        # Per Streamable HTTP, notifications related to a request (progress, log
+        # messages) are delivered on that request's SSE response stream, before the
+        # final response — NOT on the standalone GET stream. This is what standard
+        # clients (TS SDK, Inspector, conformance suite) listen to.
+        port = 17090 + rand(1:1000)
+
+        transport = HttpTransport(port=port)
+        progress_tool = MCPTool(
+            name = "progress_test",
+            description = "Emit a progress notification",
+            parameters = [],
+            handler = (args, ctx) -> begin
+                send_progress(ctx, 1; total = 1, message = "post-sse-tick")
+                TextContent(text = "done")
+            end
+        )
+        log_tool = MCPTool(
+            name = "log_test",
+            description = "Emit a log notification",
+            parameters = [],
+            handler = args -> begin
+                @info "post-sse-log-probe"
+                TextContent(text = "logged")
+            end
+        )
+        quiet_tool = MCPTool(
+            name = "quiet_test",
+            description = "No notifications",
+            parameters = [],
+            handler = args -> TextContent(text = "quiet")
+        )
+        server = mcp_server(
+            name = "post-sse-server",
+            version = "1.0.0",
+            tools = [progress_tool, log_tool, quiet_tool]
+        )
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        prior_logger = Logging.global_logger()
+        server_task = @async start!(server)
+        sleep(2)
+
+        init_response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "MCP-Protocol-Version" => "2025-11-25",
+             "Accept" => "application/json, text/event-stream"],
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "initialize",
+                "params" => Dict(
+                    "protocolVersion" => "2025-11-25",
+                    "capabilities" => Dict(),
+                    "clientInfo" => Dict("name" => "test", "version" => "1.0")
+                ),
+                "id" => 1
+            ))
+        )
+        @test init_response.status == 200
+        session_id = HTTP.header(init_response, "Mcp-Session-Id", "")
+
+        # Progress-emitting call: the response is an SSE stream scoped to the request,
+        # carrying the notification then the final response, in order.
+        call_response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "Mcp-Session-Id" => session_id,
+             "Accept" => "application/json, text/event-stream"],
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "tools/call",
+                "params" => Dict(
+                    "name" => "progress_test",
+                    "arguments" => Dict(),
+                    "_meta" => Dict("progressToken" => "tok-post")
+                ),
+                "id" => 2
+            ))
+        )
+        @test call_response.status == 200
+        @test startswith(HTTP.header(call_response, "Content-Type", ""), "text/event-stream")
+        body = String(call_response.body)
+        @test contains(body, "notifications/progress")
+        @test contains(body, "tok-post")
+        @test contains(body, "post-sse-tick")
+        @test contains(body, "\"result\"")
+        @test first(findfirst("notifications/progress", body)) <
+              first(findfirst("\"result\"", body))
+
+        # Log-emitting call: notifications/message rides the same request's stream.
+        log_response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "Mcp-Session-Id" => session_id,
+             "Accept" => "application/json, text/event-stream"],
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "tools/call",
+                "params" => Dict("name" => "log_test", "arguments" => Dict()),
+                "id" => 3
+            ))
+        )
+        @test log_response.status == 200
+        @test startswith(HTTP.header(log_response, "Content-Type", ""), "text/event-stream")
+        log_body = String(log_response.body)
+        @test contains(log_body, "notifications/message")
+        @test contains(log_body, "post-sse-log-probe")
+
+        # Quiet call: stays a plain JSON response.
+        quiet_response = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "Mcp-Session-Id" => session_id,
+             "Accept" => "application/json, text/event-stream"],
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "tools/call",
+                "params" => Dict("name" => "quiet_test", "arguments" => Dict()),
+                "id" => 4
+            ))
+        )
+        @test startswith(HTTP.header(quiet_response, "Content-Type", ""), "application/json")
+        quiet_result = JSON3.read(String(quiet_response.body))
+        @test quiet_result["id"] == 4
+
+        # A client whose Accept lacks text/event-stream gets plain JSON with the
+        # request-scoped notifications dropped.
+        json_only = HTTP.post(
+            "http://127.0.0.1:$port/",
+            ["Content-Type" => "application/json",
+             "Mcp-Session-Id" => session_id,
+             "Accept" => "application/json"],
+            JSON3.write(Dict(
+                "jsonrpc" => "2.0",
+                "method" => "tools/call",
+                "params" => Dict(
+                    "name" => "progress_test",
+                    "arguments" => Dict(),
+                    "_meta" => Dict("progressToken" => "tok-json")
+                ),
+                "id" => 5
+            ))
+        )
+        @test startswith(HTTP.header(json_only, "Content-Type", ""), "application/json")
+        json_result = JSON3.read(String(json_only.body))
+        @test json_result["id"] == 5
+        @test haskey(json_result, "result")
+
+        # Clean up (restore the suite's logger — start! installed its own)
+        server.active = false
+        ModelContextProtocol.close(transport)
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+        Logging.global_logger(prior_logger)
     end
 
     @testset "Origin Validation" begin

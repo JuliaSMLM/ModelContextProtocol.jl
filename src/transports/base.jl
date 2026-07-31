@@ -83,6 +83,24 @@ never corrupts that request's response.
 send_notification(transport::Transport, message::String) = write_message(transport, message)
 
 """
+    notification_route(transport::Transport) -> Any
+
+Return the route handle identifying the request the transport just handed to the
+server loop, for request-scoped notification delivery. The loop stores it in
+task-local storage around message processing so `send_notification` can route
+notifications emitted during synchronous handling onto that request's response
+stream. The default returns `nothing` — stdio has a single shared stream, so
+notifications need no routing. HTTP overrides this with the current request's ID.
+
+# Arguments
+- `transport::Transport`: The transport instance
+
+# Returns
+- An opaque route handle, or `nothing` when the transport needs no routing
+"""
+notification_route(::Transport) = nothing
+
+"""
     capture_response_route(transport::Transport) -> Any
 
 Capture a route handle for delivering the CURRENT request's response later, from

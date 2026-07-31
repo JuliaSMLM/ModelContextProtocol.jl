@@ -478,4 +478,106 @@
         end
         Base.close(timer)
     end
+
+    @testset "DNS rebinding guard" begin
+        ph = ModelContextProtocol.parse_host_header
+        @test ph("localhost:8080") == "localhost"
+        @test ph("127.0.0.1") == "127.0.0.1"
+        @test ph("[::1]:8080") == "[::1]"
+        @test ph("Evil.COM:80") == "evil.com"
+        # Malformed values are rejected, not leniently truncated into loopback
+        @test ph("[::1]evil.example") === nothing
+        @test ph("[::1]@evil.example") === nothing
+        @test ph("localhost:80:evil") === nothing
+        @test ph("user@localhost") === nothing
+        @test ph("localhost:notaport") === nothing
+        @test ph("") === nothing
+
+        lb = ModelContextProtocol.is_loopback_host
+        @test lb("localhost") && lb("Localhost.") && lb("127.0.0.1") && lb("[::1]") && lb("::1")
+        @test lb("127.0.0.2")            # all of 127/8 is loopback
+        @test lb("::ffff:127.0.0.1")     # IPv4-mapped IPv6 loopback
+        @test !lb("evil.com") && !lb("128.0.0.1") && !lb("::2")
+
+        rv = ModelContextProtocol.rebinding_violation
+        # Local Host/Origin values pass
+        @test rv("localhost:9000", "", String[], String[]) === nothing
+        @test rv("127.0.0.1:9000", "http://localhost:5173", String[], String[]) === nothing
+        @test rv("[::1]:9000", "http://[::1]:5173", String[], String[]) === nothing
+        @test rv("", "", String[], String[]) === nothing  # absent headers are fine
+        # Rebinding attempts are flagged
+        @test rv("evil.com", "", String[], String[]) !== nothing
+        @test rv("evil.com:80", "http://evil.com", String[], String[]) !== nothing
+        @test rv("localhost:9000", "http://evil.com", String[], String[]) !== nothing
+        # Malformed Host is a violation
+        @test rv("[::1]evil.example", "", String[], String[]) !== nothing
+        # Allowlists open specific holes
+        @test rv("mcp.example.org", "", ["mcp.example.org"], String[]) === nothing
+        @test rv("localhost", "http://app.example", String[], ["http://app.example"]) === nothing
+        # allowed_hosts governs the Host header ONLY — it must not admit browser
+        # origins on that hostname (that is what allowed_origins is for)
+        @test rv("", "http://proxy.example", ["proxy.example"], String[]) !== nothing
+    end
+
+    @testset "DNS rebinding guard rejects live requests" begin
+        port = 18090 + rand(1:1000)
+        transport = HttpTransport(port = port)
+        server = mcp_server(name = "rebinding-test", version = "1.0.0")
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        init_body = JSON3.write(Dict(
+            "jsonrpc" => "2.0",
+            "method" => "initialize",
+            "params" => Dict(
+                "protocolVersion" => "2025-11-25",
+                "capabilities" => Dict(),
+                "clientInfo" => Dict("name" => "test", "version" => "1.0")
+            ),
+            "id" => 1
+        ))
+        base_headers = ["Content-Type" => "application/json",
+                        "MCP-Protocol-Version" => "2025-11-25",
+                        "Accept" => "application/json, text/event-stream"]
+
+        # Normal local request passes
+        response = HTTP.post("http://127.0.0.1:$port/", base_headers, init_body)
+        @test response.status == 200
+
+        # A rebinding attempt (attacker's hostname in Host) is rejected with 403
+        evil_host = HTTP.post("http://127.0.0.1:$port/",
+            vcat(base_headers, ["Host" => "evil.example.com"]), init_body;
+            status_exception = false)
+        @test evil_host.status == 403
+
+        # Same for a foreign Origin (browser-driven attack)
+        evil_origin = HTTP.post("http://127.0.0.1:$port/",
+            vcat(base_headers, ["Origin" => "http://evil.example.com"]), init_body;
+            status_exception = false)
+        @test evil_origin.status == 403
+
+        # JSON-RPC message classification on the same live server: a client-sent
+        # RESPONSE gets 202 (not stranded on the request path), and a bare `{}`
+        # (neither request, notification, nor response) gets 400.
+        resp_202 = HTTP.post("http://127.0.0.1:$port/", base_headers,
+            JSON3.write(Dict("jsonrpc" => "2.0", "id" => 42, "result" => Dict()));
+            status_exception = false)
+        @test resp_202.status == 202
+
+        resp_400 = HTTP.post("http://127.0.0.1:$port/", base_headers, "{}";
+            status_exception = false)
+        @test resp_400.status == 400
+        @test JSON3.read(String(resp_400.body))["error"]["code"] == -32600
+
+        # Clean up
+        server.active = false
+        ModelContextProtocol.close(transport)
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
 end

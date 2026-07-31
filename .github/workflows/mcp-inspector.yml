@@ -207,11 +207,16 @@ jobs:
             --method tools/list > bridge_tools.json
           "$ASSERT" bridge_tools.json 'any(.result.tools[]; .name == "echo")' 'bridge tools/list has echo'
 
-          # Direct wire-level check, no client library involved.
+          # Direct wire-level check, no client library involved. Accept is JSON-only
+          # ON PURPOSE: the bridge step above set logging/setLevel debug, so a request
+          # offering text/event-stream would receive a spec-legal SSE response carrying
+          # the lifecycle log notifications before the result — which these jq asserts
+          # can't parse. JSON-only Accept exercises the server's fallback: request-scoped
+          # notifications are dropped and the bare JSON response returned.
           curl -X POST http://127.0.0.1:3000/ \
             -H 'Content-Type: application/json' \
             -H 'MCP-Protocol-Version: 2025-11-25' \
-            -H 'Accept: application/json, text/event-stream' \
+            -H 'Accept: application/json' \
             -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' \
             -s -o init.json -D headers.txt
           "$ASSERT" init.json '.result.serverInfo.name | length > 0' 'initialize returns serverInfo'
@@ -229,7 +234,7 @@ jobs:
           curl -X POST http://127.0.0.1:3000/ \
             -H 'Content-Type: application/json' \
             -H "Mcp-Session-Id: $SESSION_ID" \
-            -H 'Accept: application/json, text/event-stream' \
+            -H 'Accept: application/json' \
             -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' \
             -s -o http_direct_tools.json
           "$ASSERT" http_direct_tools.json 'any(.result.tools[]; .name == "echo")' 'direct HTTP tools/list has echo'
