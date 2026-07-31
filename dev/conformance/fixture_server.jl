@@ -85,6 +85,14 @@ tools = [
             TextContent(text = "Progress test complete")
         end),
     MCPTool(
+        name = "test_logging_tool",
+        description = "Emits a log record (stateless suite: must NOT reach a modern client without logLevel)",
+        parameters = ToolParameter[],
+        handler = args -> begin
+            @info "test_logging_tool fired"
+            TextContent(text = "logged")
+        end),
+    MCPTool(
         name = "test_tool_with_logging",
         description = "Emits log notifications during execution",
         parameters = ToolParameter[],
