@@ -401,77 +401,130 @@ const MCP_NAME_METHODS = Dict(
 )
 
 """
-    decode_mcp_header_value(value::AbstractString) -> Union{String,Nothing}
+    mcp_standard_header(request, name::String) -> Union{String,Nothing,Symbol}
 
-Decode a standard-header value per SEP-2243: surrounding whitespace is stripped, and
-a `=?base64?...?=` sentinel wraps a Base64-encoded UTF-8 payload (used when the raw
-value is not header-safe). Returns `nothing` when the sentinel payload is not valid
-Base64 — the request must be rejected, not compared literally.
+Fetch a SEP-2243 standard header strictly: header names are matched
+case-insensitively across ALL header instances; duplicates (a smuggling vector —
+a gateway may honor a different copy than the backend) and values containing
+non-visible-ASCII bytes (NUL/control/8-bit, which HTTP.jl's parser admits but
+intermediaries interpret divergently) are rejected. Returns the single
+whitespace-stripped value, `nothing` when absent, or `:invalid` when the header
+must cause a -32020 rejection.
 
 # Arguments
-- `value::AbstractString`: The raw header value
+- `request`: The HTTP request
+- `name::String`: The header name
+
+# Returns
+- `Union{String,Nothing,Symbol}`: Value, `nothing` (absent), or `:invalid`
+"""
+function mcp_standard_header(request, name::String)
+    lname = lowercase(name)
+    values = [String(v) for (k, v) in HTTP.headers(request) if lowercase(String(k)) == lname]
+    isempty(values) && return nothing
+    length(values) > 1 && return :invalid
+    v = values[1]
+    all(b -> 0x20 <= b <= 0x7e || b == UInt8('\t'), codeunits(v)) || return :invalid
+    return String(strip(v))
+end
+
+"""
+    decode_mcp_header_value(value::AbstractString) -> Union{String,Nothing}
+
+Decode a standard-header value per SEP-2243: a `=?base64?...?=` sentinel wraps a
+Base64-encoded UTF-8 payload (used when the raw value is not header-safe). The
+Base64 is validated STRICTLY — canonical alphabet, correct padding, length a
+multiple of four — because Julia's decoder is permissive (it ignores invalid
+characters and missing padding), and SEP-2243 requires such values to be rejected,
+not fuzzily matched. The decoded bytes must be valid UTF-8. Returns `nothing` when
+the value must cause a -32020 rejection.
+
+# Arguments
+- `value::AbstractString`: The header value (already whitespace-stripped)
 
 # Returns
 - `Union{String,Nothing}`: The decoded value, or `nothing` when malformed
 """
 function decode_mcp_header_value(value::AbstractString)::Union{String,Nothing}
-    s = strip(value)
+    s = String(value)
     if startswith(s, "=?base64?") && endswith(s, "?=")
-        payload = SubString(s, 1 + ncodeunits("=?base64?"), lastindex(s) - 2)
-        return try
+        ncodeunits(s) < ncodeunits("=?base64?") + ncodeunits("?=") + 1 && return nothing
+        # Byte-safe slice (prefix/suffix are ASCII; interior bytes may be anything)
+        payload = String(codeunits(s)[(ncodeunits("=?base64?") + 1):(end - 2)])
+        # Strict canonical Base64: alphabet + padding + length
+        occursin(r"^[A-Za-z0-9+/]+={0,2}$", payload) || return nothing
+        ncodeunits(payload) % 4 == 0 || return nothing
+        decoded = try
             String(base64decode(payload))
         catch
-            nothing
+            return nothing
         end
+        all(isvalid, decoded) || return nothing  # reject non-UTF-8 payloads
+        return decoded
     end
-    return String(s)
+    return s
 end
 
 """
-    modern_header_violation(request, msg) -> Union{String,Nothing}
+    modern_header_violation(request, msg, body_version) -> Union{String,Nothing}
 
 Validate the SEP-2243 standard request headers of a modern-era POST against its body:
 `MCP-Protocol-Version` and `Mcp-Method` are required on every request and must match
 the body's `_meta` protocol version and `method`; `Mcp-Name` is required on
 `tools/call`/`prompts/get` (mirroring `params.name`) and `resources/read` (mirroring
 `params.uri`), with the Base64 sentinel decoded before comparison. Header names are
-case-insensitive (HTTP), values are compared case-sensitively after whitespace
-stripping.
+case-insensitive, duplicates and unsafe bytes are rejected (`mcp_standard_header`),
+values are compared case-sensitively after whitespace stripping. `body_version` may
+be `nothing`: a request whose HEADER claims a modern version while its body carries
+no modern `_meta` is a header/body mismatch — exactly the divergence a routing
+gateway must never see.
 
 # Arguments
 - `request`: The HTTP request (for header access)
-- `msg`: The parsed JSON body (a `JSON3.Object` with `method`/`params`/`_meta`)
+- `msg`: The parsed JSON body (a `JSON3.Object`)
+- `body_version`: The body's `_meta` protocol version, or `nothing` when absent
 
 # Returns
 - `Union{String,Nothing}`: A violation description for a -32020 HeaderMismatch, or
   `nothing` when the headers validate
 """
-function modern_header_violation(request, msg)::Union{String,Nothing}
-    body_version = String(msg.params._meta[Symbol(META_PROTOCOL_VERSION)])
-    header_version = HTTP.header(request, "MCP-Protocol-Version", "")
-    isempty(strip(header_version)) &&
+function modern_header_violation(request, msg, body_version::Union{String,Nothing})::Union{String,Nothing}
+    header_version = mcp_standard_header(request, "MCP-Protocol-Version")
+    header_version === :invalid &&
+        return "MCP-Protocol-Version header is duplicated or contains unsafe characters"
+    header_version === nothing &&
         return "required header MCP-Protocol-Version is missing"
-    strip(header_version) != body_version &&
-        return "MCP-Protocol-Version header '$(strip(header_version))' does not match body value '$body_version'"
+    body_version === nothing &&
+        return "MCP-Protocol-Version header claims a modern version but the body carries no $(META_PROTOCOL_VERSION)"
+    header_version != body_version &&
+        return "MCP-Protocol-Version header '$header_version' does not match body value '$body_version'"
 
-    method = String(msg.method)
-    header_method = HTTP.header(request, "Mcp-Method", "")
-    isempty(strip(header_method)) &&
+    method = get(msg, "method", nothing)
+    method isa AbstractString ||
+        return "body method is not a string"
+    method = String(method)
+    header_method = mcp_standard_header(request, "Mcp-Method")
+    header_method === :invalid &&
+        return "Mcp-Method header is duplicated or contains unsafe characters"
+    header_method === nothing &&
         return "required header Mcp-Method is missing"
-    strip(header_method) != method &&
-        return "Mcp-Method header '$(strip(header_method))' does not match body method '$method'"
+    header_method != method &&
+        return "Mcp-Method header '$header_method' does not match body method '$method'"
 
     if haskey(MCP_NAME_METHODS, method)
         field = MCP_NAME_METHODS[method]
-        body_name = msg.params isa JSON3.Object ? get(msg.params, Symbol(field), nothing) : nothing
-        header_name_raw = HTTP.header(request, "Mcp-Name", "")
-        isempty(strip(header_name_raw)) &&
+        body_name = get(msg, "params", nothing) isa JSON3.Object ?
+                    get(msg.params, Symbol(field), nothing) : nothing
+        header_name_raw = mcp_standard_header(request, "Mcp-Name")
+        header_name_raw === :invalid &&
+            return "Mcp-Name header is duplicated or contains unsafe characters"
+        header_name_raw === nothing &&
             return "required header Mcp-Name is missing for $method"
         header_name = decode_mcp_header_value(header_name_raw)
         header_name === nothing &&
             return "Mcp-Name header carries a malformed Base64 sentinel value"
         if !(body_name isa AbstractString) || header_name != String(body_name)
-            return "Mcp-Name header '$header_name' does not match body params.$field"
+            return "Mcp-Name header does not match body params.$field"
         end
     end
 
@@ -494,6 +547,10 @@ errors) → 200.
 - `Int`: The HTTP status code to use
 """
 function modern_error_http_status(payload::String)::Int
+    # Every mappable error response is a small validation/dispatch error body; skip
+    # the sniff-and-parse entirely for large payloads (big tool results would
+    # otherwise pay a second full parse whenever they contain the string "error")
+    ncodeunits(payload) > 4096 && return 200
     contains(payload, "\"error\"") || return 200
     code = try
         msg = JSON3.read(payload)
@@ -625,24 +682,37 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
 
     # Handle GET requests for SSE notification stream
     if method == "GET"
+        # The modern era removed the GET endpoint: a GET declaring a modern
+        # MCP-Protocol-Version gets 405, never the legacy SSE stream or health body
+        get_version = strip(HTTP.header(request, "MCP-Protocol-Version", ""))
+        if get_version in MODERN_PROTOCOL_VERSIONS
+            HTTP.setstatus(stream, 405)
+            HTTP.setheader(stream, "Content-Type" => "text/plain")
+            error_msg = "Method Not Allowed"
+            HTTP.setheader(stream, "Content-Length" => string(ncodeunits(error_msg)))
+            HTTP.startwrite(stream)
+            write(stream, error_msg)
+            return nothing
+        end
         accept_header = HTTP.header(request, "Accept", "")
         if contains(accept_header, "text/event-stream")
             # Generate unique stream ID
             stream_id = string(uuid4())
-            
+
             # Handle SSE stream
             handle_sse_stream(transport, stream, stream_id)
         else
-            # Return health check response for plain GET requests (no Accept: text/event-stream)
-            # This allows clients like Claude Code to perform health checks
+            # Return health check response for plain GET requests (no Accept:
+            # text/event-stream); allows clients like Claude Code to health-check.
+            # The session ID is deliberately NOT included — it authenticates the
+            # legacy session and must not be readable by an unauthenticated GET.
             HTTP.setstatus(stream, 200)
             HTTP.setheader(stream, "Content-Type" => "application/json")
             health_response = JSON3.write(Dict(
                 "status" => "ok",
-                "protocol_version" => transport.protocol_version,
-                "session_id" => transport.session_id
+                "protocol_version" => transport.protocol_version
             ))
-            HTTP.setheader(stream, "Content-Length" => string(length(health_response)))
+            HTTP.setheader(stream, "Content-Length" => string(ncodeunits(health_response)))
             HTTP.startwrite(stream)
             write(stream, health_response)
         end
@@ -717,7 +787,9 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # but no method, and anything else (e.g. `{}`) is invalid. "No id" alone is
         # NOT a notification — that misclassifies responses as requests (which would
         # strand the connection waiting for a reply the loop never sends) and accepts
-        # invalid objects with 202.
+        # invalid objects with 202. Non-object JSON (arrays, scalars) keeps
+        # parsed_msg == nothing and falls through to the request path, where the
+        # server loop produces the JSON-RPC batch/parse rejection.
         local is_initialize = false
         local is_notification = false
         local is_client_response = false
@@ -727,28 +799,41 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         local parsed_msg = nothing
         try
             msg = JSON3.read(body)
-            parsed_msg = msg
-            has_method = haskey(msg, "method")
-            has_id = haskey(msg, "id")
-            is_initialize = has_method && get(msg, "method", "") == "initialize"
-            is_notification = has_method && !has_id
-            is_client_response = !has_method && has_id &&
-                                 (haskey(msg, "result") || haskey(msg, "error"))
-            is_invalid = !has_method && !is_client_response
-            # Modern-era (2026-07-28+) requests are stateless: protocol-level
-            # sessions do not exist for them, so session validation must not apply
-            if has_method && haskey(msg, "params") && msg.params isa JSON3.Object &&
-               haskey(msg.params, "_meta") && msg.params._meta isa JSON3.Object
-                v = get(msg.params._meta, Symbol(META_PROTOCOL_VERSION), nothing)
-                if v isa AbstractString
-                    is_modern = true
-                    modern_version = String(v)
+            if msg isa JSON3.Object
+                parsed_msg = msg
+                has_method = haskey(msg, "method")
+                has_id = haskey(msg, "id")
+                is_initialize = has_method && get(msg, "method", "") == "initialize"
+                is_notification = has_method && !has_id
+                is_client_response = !has_method && has_id &&
+                                     (haskey(msg, "result") || haskey(msg, "error"))
+                is_invalid = !has_method && !is_client_response
+                # Modern-era (2026-07-28+) requests are stateless: protocol-level
+                # sessions do not exist for them, so session validation must not apply
+                if has_method && haskey(msg, "params") && msg.params isa JSON3.Object &&
+                   haskey(msg.params, "_meta") && msg.params._meta isa JSON3.Object
+                    v = get(msg.params._meta, Symbol(META_PROTOCOL_VERSION), nothing)
+                    if v isa AbstractString
+                        is_modern = true
+                        modern_version = String(v)
+                    end
                 end
             end
         catch
             # Unparseable JSON: fall through to the request path, where the server
             # loop produces the JSON-RPC parse-error response
         end
+
+        # Era can also be CLAIMED by the headers alone: a request whose
+        # MCP-Protocol-Version header names a modern version must pass modern
+        # validation even when its body carries no modern _meta — otherwise a
+        # gateway routing on the headers and a backend executing the legacy body
+        # see two different requests, which is exactly the attack the mirrored
+        # headers exist to prevent.
+        header_claims_modern = any(strip(String(v)) in MODERN_PROTOCOL_VERSIONS
+                                   for (k, v) in HTTP.headers(request)
+                                   if lowercase(String(k)) == "mcp-protocol-version")
+        claims_modern = is_modern || header_claims_modern
 
         if is_invalid
             HTTP.setstatus(stream, 400)
@@ -761,7 +846,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 ),
                 "id" => nothing
             ))
-            HTTP.setheader(stream, "Content-Length" => string(length(error_response)))
+            HTTP.setheader(stream, "Content-Length" => string(ncodeunits(error_response)))
             HTTP.startwrite(stream)
             write(stream, error_response)
             return nothing
@@ -777,14 +862,63 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             HTTP.startwrite(stream)
             return nothing
         end
-        
+
+        # Modern-era transport validation (SEP-2243/SEP-2575), before session logic
+        # and before the request is queued: standard headers must mirror the body
+        # (-32020 HeaderMismatch), the version must be supported (-32022), and
+        # clientCapabilities must be present (-32602) — each with HTTP 400 per the
+        # modern transport. Header-mismatch is checked FIRST. Notification POSTs are
+        # excluded (the revision defines no header requirements for them). The
+        # version echoed back is ALLOWLISTED — body strings never reach a response
+        # header, which would otherwise be a header-injection vector.
+        is_discover = parsed_msg !== nothing && get(parsed_msg, "method", "") == "server/discover"
+        if (claims_modern || is_discover) && !is_notification && parsed_msg !== nothing
+            req_id = get(parsed_msg, "id", nothing)
+            failure = nothing  # (code, message, data)
+            if is_modern || header_claims_modern
+                violation = modern_header_violation(request, parsed_msg, modern_version)
+                if violation !== nothing
+                    failure = (ErrorCodes.HEADER_MISMATCH, "Header mismatch: $violation", nothing)
+                elseif !(modern_version in MODERN_PROTOCOL_VERSIONS)
+                    failure = (ErrorCodes.UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
+                               Dict{String,Any}(
+                                   "supported" => vcat(MODERN_PROTOCOL_VERSIONS, SUPPORTED_PROTOCOL_VERSIONS),
+                                   "requested" => modern_version))
+                elseif !(get(parsed_msg.params._meta, Symbol(META_CLIENT_CAPABILITIES), nothing) isa JSON3.Object)
+                    failure = (ErrorCodes.INVALID_PARAMS,
+                               "Missing required _meta field: $(META_CLIENT_CAPABILITIES)", nothing)
+                end
+            else
+                # server/discover exists in no legacy era: without the modern _meta
+                # it is a modern request missing a required field
+                failure = (ErrorCodes.INVALID_PARAMS,
+                           "Missing required _meta field: $(META_PROTOCOL_VERSION)", nothing)
+            end
+            if failure !== nothing
+                code, message, data = failure
+                err = Dict{String,Any}("code" => code, "message" => message)
+                data === nothing || (err["data"] = data)
+                error_response = JSON3.write(Dict{String,Any}(
+                    "jsonrpc" => "2.0",
+                    "error" => err,
+                    "id" => req_id
+                ))
+                HTTP.setstatus(stream, 400)
+                HTTP.setheader(stream, "Content-Type" => "application/json")
+                (modern_version !== nothing && modern_version in MODERN_PROTOCOL_VERSIONS) &&
+                    HTTP.setheader(stream, "MCP-Protocol-Version" => modern_version)
+                HTTP.setheader(stream, "Content-Length" => string(ncodeunits(error_response)))
+                HTTP.startwrite(stream)
+                write(stream, error_response)
+                return nothing
+            end
+        end
+
         # Session validation - only check after we know if it's initialization.
         # Modern-era requests are exempt: the modern transport removed protocol
         # sessions, so a stateless request without a legacy session ID must not be
         # rejected (and never mints one). server/discover is modern-only, so it is
-        # exempt too — its (missing-_meta) validation error must come from the
-        # modern pre-validation below, not the legacy session gate.
-        is_discover = parsed_msg !== nothing && get(parsed_msg, "method", "") == "server/discover"
+        # exempt too.
         if !is_initialize && !is_modern && !is_discover
             # After initialization, session may be required
             if transport.session_required && !isnothing(transport.session_id) && isempty(session_id)
@@ -802,7 +936,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 write(stream, error_response)
                 return nothing
             end
-            
+
             # Validate provided session ID
             if !isempty(session_id) && !isnothing(transport.session_id) && session_id != transport.session_id
                 @debug "Invalid session ID" provided=session_id expected=transport.session_id
@@ -820,7 +954,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 return nothing
             end
         end
-        
+
         # Generate session ID on initialization if not exists. Modern-era requests
         # never mint sessions (the modern transport removed them).
         if is_initialize && !is_modern && isnothing(transport.session_id)
@@ -829,69 +963,34 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             # Don't automatically require session - let server config decide
         end
 
-        # For notifications, return 202 Accepted immediately
+        # For notifications, return 202 Accepted immediately. A modern-marked
+        # notification is acknowledged WITHOUT the legacy session/version headers
+        # and WITHOUT entering the legacy processing path: the modern core defines
+        # no client-to-server notifications on this transport (cancellation is
+        # closing the response stream), so there is nothing to process.
         if is_notification
             HTTP.setstatus(stream, 202)
             HTTP.setheader(stream, "Content-Type" => "application/json")
-            HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
-            if !isnothing(transport.session_id)
-                HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
+            if claims_modern
+                (modern_version !== nothing && modern_version in MODERN_PROTOCOL_VERSIONS) &&
+                    HTTP.setheader(stream, "MCP-Protocol-Version" => modern_version)
+            else
+                HTTP.setheader(stream, "MCP-Protocol-Version" => transport.protocol_version)
+                if !isnothing(transport.session_id)
+                    HTTP.setheader(stream, "Mcp-Session-Id" => transport.session_id)
+                end
             end
             HTTP.setheader(stream, "Content-Length" => "0")
             # No body for 202 Accepted per spec
             HTTP.startwrite(stream)  # Ensure headers are sent
 
-            # Still queue the notification for processing
-            put!(transport.request_queue, QueuedHttpRequest("notification-" * string(uuid4()), body, authenticated_user))
-            return nothing
-        end
-
-        # Modern-era transport validation (SEP-2243/SEP-2575), before the request is
-        # queued: standard headers must mirror the body (-32020 HeaderMismatch), the
-        # version must be supported (-32022), and clientCapabilities must be present
-        # (-32602) — each with HTTP 400 per the modern transport. Header-mismatch is
-        # checked FIRST: a routing gateway acting on a header that disagrees with the
-        # body is the security failure this exists to prevent.
-        if (is_modern || is_discover) && parsed_msg !== nothing
-            req_id = get(parsed_msg, "id", nothing)
-            failure = nothing  # (code, message, data)
-            if !is_modern
-                # server/discover exists in no legacy era: without the modern _meta
-                # it is a modern request missing a required field
-                failure = (ErrorCodes.INVALID_PARAMS,
-                           "Missing required _meta field: $(META_PROTOCOL_VERSION)", nothing)
+            # Queue legacy notifications for processing; drop modern-marked ones
+            if !claims_modern
+                put!(transport.request_queue, QueuedHttpRequest("notification-" * string(uuid4()), body, authenticated_user))
             else
-                violation = modern_header_violation(request, parsed_msg)
-                if violation !== nothing
-                    failure = (ErrorCodes.HEADER_MISMATCH, "Header mismatch: $violation", nothing)
-                elseif !(modern_version in MODERN_PROTOCOL_VERSIONS)
-                    failure = (ErrorCodes.UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
-                               Dict{String,Any}(
-                                   "supported" => vcat(MODERN_PROTOCOL_VERSIONS, SUPPORTED_PROTOCOL_VERSIONS),
-                                   "requested" => modern_version))
-                elseif !(get(parsed_msg.params._meta, Symbol(META_CLIENT_CAPABILITIES), nothing) isa JSON3.Object)
-                    failure = (ErrorCodes.INVALID_PARAMS,
-                               "Missing required _meta field: $(META_CLIENT_CAPABILITIES)", nothing)
-                end
+                @debug "Dropping modern-marked notification (no client notifications in the modern era)"
             end
-            if failure !== nothing
-                code, message, data = failure
-                err = Dict{String,Any}("code" => code, "message" => message)
-                data === nothing || (err["data"] = data)
-                error_response = JSON3.write(Dict{String,Any}(
-                    "jsonrpc" => "2.0",
-                    "error" => err,
-                    "id" => req_id
-                ))
-                HTTP.setstatus(stream, 400)
-                HTTP.setheader(stream, "Content-Type" => "application/json")
-                modern_version === nothing ||
-                    HTTP.setheader(stream, "MCP-Protocol-Version" => modern_version)
-                HTTP.setheader(stream, "Content-Length" => string(length(error_response)))
-                HTTP.startwrite(stream)
-                write(stream, error_response)
-                return nothing
-            end
+            return nothing
         end
 
         # Generate unique request ID

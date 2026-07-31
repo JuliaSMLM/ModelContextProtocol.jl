@@ -515,6 +515,62 @@
         @test r.status == 400
         @test JSON3.read(String(r.body))["error"]["code"] == -32602
 
+        # A modern HEADER with a legacy body must NOT slip past validation: a
+        # gateway routing on the header and a backend executing the body would
+        # otherwise see two different requests
+        r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 17,
+            "method" => "tools/list", "params" => Dict()))  # no modern _meta
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+
+        # Duplicate standard headers are a smuggling vector -> 400 + -32020
+        r = post(vcat(mhdrs("tools/list"), ["Mcp-Method" => "tools/list"]),
+            Dict("jsonrpc" => "2.0", "id" => 18, "method" => "tools/list",
+                 "params" => Dict("_meta" => mmeta)))
+        @test r.status == 400
+        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+
+        # Permissive Base64 must be rejected: missing padding and invalid chars
+        # both decode "successfully" under Julia's lenient decoder
+        for bad in ("=?base64?" * "SGVsbG8" * "?=",          # no padding (len % 4 != 0)
+                    "=?base64?" * "SGVs!!!bG8=" * "?=")      # invalid characters
+            r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => bad]), call_msg(19))
+            @test r.status == 400
+            @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        end
+
+        # Header injection via the body version string: the response must never
+        # echo an unvalidated body value into a header
+        inj_meta = Dict(
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28\r\nSet-Cookie: injected=1",
+            "io.modelcontextprotocol/clientCapabilities" => Dict())
+        r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 20,
+            "method" => "tools/list", "params" => Dict("_meta" => inj_meta)))
+        @test r.status == 400
+        @test HTTP.header(r, "Set-Cookie", "") == ""
+        @test !contains(HTTP.header(r, "MCP-Protocol-Version", ""), "injected")
+
+        # Modern-marked notification: 202 without legacy session/version headers
+        r = post(mhdrs("notifications/initialized"), Dict(
+            "jsonrpc" => "2.0", "method" => "notifications/initialized",
+            "params" => Dict("_meta" => mmeta)))
+        @test r.status == 202
+        @test HTTP.header(r, "Mcp-Session-Id", "") == ""
+
+        # A JSON array body (batch) must produce a JSON-RPC rejection, not a 500
+        r = HTTP.post(url, base, "[]"; status_exception = false)
+        @test r.status != 500
+        @test contains(String(r.body), "error")
+
+        # GET declaring a modern version -> 405 (the modern era removed GET)
+        r = HTTP.get(url, ["MCP-Protocol-Version" => "2026-07-28"]; status_exception = false)
+        @test r.status == 405
+
+        # The health GET must not leak the legacy session ID
+        r = HTTP.get(url, ["Accept" => "application/json"]; status_exception = false)
+        @test r.status == 200
+        @test !haskey(JSON3.read(String(r.body)), "session_id")
+
         # Legacy session still intact after all the modern traffic
         r = post(vcat(base, ["Mcp-Session-Id" => session]),
             Dict("jsonrpc" => "2.0", "id" => 16, "method" => "tools/list", "params" => Dict()))
@@ -529,6 +585,36 @@
             sleep(0.1)
         end
         Base.close(timer)
+    end
+
+    @testset "SEP-2243 header value decoding (strict)" begin
+        dec = ModelContextProtocol.decode_mcp_header_value
+        @test dec("plain-value") == "plain-value"
+        @test dec("=?base64?" * Base64.base64encode("Hello, 世界") * "?=") == "Hello, 世界"
+        # Strictness: Julia's decoder would accept all of these
+        @test dec("=?base64?SGVsbG8?=") === nothing        # missing padding
+        @test dec("=?base64?SGVs!!!bG8=?=") === nothing    # invalid characters
+        @test dec("=?base64??=") === nothing               # empty payload
+        @test dec("=?base64?é?=") === nothing              # non-ASCII payload (no throw)
+        @test dec("=?base64?/w==?=") === nothing           # decodes to invalid UTF-8
+        # Sentinel-shaped literal that is valid base64 of a sentinel: decodes once
+        @test dec("=?base64?" * Base64.base64encode("=?base64?x?=") * "?=") == "=?base64?x?="
+
+        hs = ModelContextProtocol.mcp_standard_header
+        req = HTTP.Request("POST", "/", ["Mcp-Method" => "tools/list"])
+        @test hs(req, "Mcp-Method") == "tools/list"
+        @test hs(req, "mcp-method") == "tools/list"        # case-insensitive name
+        @test hs(req, "Mcp-Name") === nothing
+        req2 = HTTP.Request("POST", "/", ["Mcp-Method" => "a", "MCP-METHOD" => "b"])
+        @test hs(req2, "Mcp-Method") === :invalid          # duplicates rejected
+        req3 = HTTP.Request("POST", "/", ["Mcp-Name" => "foo\tbar"])
+        @test hs(req3, "Mcp-Name") == "foo\tbar"           # tab is legal in values
+        # HTTP.jl's client-side Request constructor rejects NUL, but the SERVER
+        # parser admits it (verified against HTTP.Messages.readheaders) — push the
+        # raw pair to model what a hostile client can actually deliver
+        req4 = HTTP.Request("POST", "/")
+        push!(req4.headers, "Mcp-Name" => "foo\0bar")
+        @test hs(req4, "Mcp-Name") === :invalid            # NUL rejected
     end
 
     @testset "Origin Validation" begin
