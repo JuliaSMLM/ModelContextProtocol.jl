@@ -196,6 +196,18 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
                                authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
     version = request.meta.protocol_version
 
+    # server/discover routes here even without modern _meta (it exists in no other
+    # era); a missing protocolVersion is a missing REQUIRED field -> Invalid params
+    if version === nothing
+        return JSONRPCError(
+            id = request.id,
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_PARAMS,
+                message = "Missing required _meta field: $(META_PROTOCOL_VERSION)"
+            )
+        )
+    end
+
     if !(version in MODERN_PROTOCOL_VERSIONS)
         return JSONRPCError(
             id = request.id,

@@ -98,6 +98,14 @@
             "params" => Dict("_meta" => Dict(
                 "io.modelcontextprotocol/protocolVersion" => "2026-07-28"))))
         @test resp["error"]["code"] == -32602
+
+        # server/discover is modern-only, so it routes modern even without _meta:
+        # a missing protocolVersion is a missing required field (-32602), not the
+        # legacy era's -32601 Unknown method
+        resp = roundtrip(server, state, Dict(
+            "jsonrpc" => "2.0", "id" => 71, "method" => "server/discover",
+            "params" => Dict()))
+        @test resp["error"]["code"] == -32602
     end
 
     @testset "methods removed from the modern era" begin

@@ -1455,8 +1455,11 @@ function handle_request(server::Server, state::ServerState, request::Request;
                         authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
     # Era dispatch: a request carrying io.modelcontextprotocol/protocolVersion in its
     # params _meta is modern-era (2026-07-28+) and served statelessly; everything
-    # below this branch is the legacy (initialize-handshake) era.
-    if request.meta.protocol_version !== nothing
+    # below this branch is the legacy (initialize-handshake) era. server/discover is
+    # modern-only, so it always routes modern — a discover missing its required _meta
+    # fields must get the modern validation error (-32602), not fall through to the
+    # legacy era's "unknown method".
+    if request.meta.protocol_version !== nothing || request.method == "server/discover"
         return handle_modern_request(server, state, request; authenticated_user=authenticated_user)
     end
 
