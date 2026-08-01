@@ -86,8 +86,11 @@ mutable struct HttpTransport <: Transport
         sse_keepalive_secs::Real=15.0
     )
         # The keepalive is what detects silently-dead SSE peers: Inf/NaN would
-        # disable that detection entirely, and non-positive values busy-write
-        isfinite(sse_keepalive_secs) && sse_keepalive_secs > 0 ||
+        # disable that detection entirely, and non-positive values busy-write.
+        # Validate the CONVERTED value — a subnormal BigFloat is finite and
+        # positive but stores as 0.0, and a huge one stores as Inf.
+        keepalive = Float64(sse_keepalive_secs)
+        isfinite(keepalive) && keepalive > 0 ||
             throw(ArgumentError("sse_keepalive_secs must be finite and positive, got $sse_keepalive_secs"))
         new(
             host,
@@ -115,7 +118,7 @@ mutable struct HttpTransport <: Transport
             auth,
             resource_metadata,
             ReentrantLock(),
-            Float64(sse_keepalive_secs)
+            keepalive
         )
     end
 end
@@ -406,6 +409,46 @@ function handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream
 end
 
 """
+    split_outside_quotes(s::AbstractString, delim::Char) -> Vector{String}
+
+Split `s` on `delim` occurrences that lie OUTSIDE double-quoted strings, honoring
+backslash escapes inside quotes (RFC 9110 quoted-string). Header parameters may
+legally quote separator characters (`profile="a,b"`), so a naive `split` corrupts
+the ranges around them.
+
+# Arguments
+- `s::AbstractString`: The header text to split
+- `delim::Char`: The separator character
+
+# Returns
+- `Vector{String}`: The parts (quotes preserved verbatim)
+"""
+function split_outside_quotes(s::AbstractString, delim::Char)::Vector{String}
+    parts = String[]
+    buf = IOBuffer()
+    inq = false
+    esc = false
+    for c in s
+        if esc
+            write(buf, c)
+            esc = false
+        elseif inq && c == '\\'
+            write(buf, c)
+            esc = true
+        elseif c == '"'
+            inq = !inq
+            write(buf, c)
+        elseif c == delim && !inq
+            push!(parts, String(take!(buf)))
+        else
+            write(buf, c)
+        end
+    end
+    push!(parts, String(take!(buf)))
+    parts
+end
+
+"""
     accepts_sse(accept_header::AbstractString) -> Bool
 
 Whether an `Accept` header admits a `text/event-stream` response, per media-range
@@ -427,8 +470,8 @@ fields are equivalent to their comma-joined concatenation).
 function accepts_sse(accept_header::AbstractString)::Bool
     best_spec = -1
     best_q = 0.0
-    for item in split(accept_header, ',')
-        parts = split(item, ';')
+    for item in split_outside_quotes(accept_header, ',')
+        parts = split_outside_quotes(item, ';')
         mt = lowercase(strip(parts[1]))
         spec = mt == "text/event-stream" ? 2 : mt == "text/*" ? 1 : mt == "*/*" ? 0 : -1
         spec == -1 && continue

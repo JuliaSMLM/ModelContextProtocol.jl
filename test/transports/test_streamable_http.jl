@@ -781,6 +781,9 @@
         @test !ok("text/*;q=0, */*;q=1")
         @test ok("text/event-stream, text/*;q=0")           # exact acceptance beats wildcard refusal
         @test ok("text/event-stream;q=0, text/event-stream")  # equal specificity: acceptance wins
+        # Separators inside quoted parameter values do not split ranges/params
+        @test !ok("text/event-stream;profile=\"a,b\";q=0")  # quoted comma: still ONE refused range
+        @test ok("text/event-stream;profile=\"a;q=0\"")     # quoted semicolon: q was never set
     end
 
     @testset "HttpTransport keepalive validation" begin
@@ -789,6 +792,10 @@
         @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = -1.0)
         @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = Inf)
         @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = NaN)
+        # Validation applies to the CONVERTED Float64: a subnormal BigFloat is
+        # finite and positive but would store as 0.0 (and a huge one as Inf)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = big"1e-10000")
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = big"1e10000")
         @test HttpTransport(port = 18995, sse_keepalive_secs = 0.5).sse_keepalive_secs == 0.5
     end
 
