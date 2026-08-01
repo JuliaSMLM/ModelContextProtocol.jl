@@ -37,6 +37,26 @@
         @test isempty(req(e, Dict("elicitation" => Dict("form" => Dict()))))
         @test isempty(req(e, Dict("elicitation" => Dict("form" => Dict(), "url" => Dict()))))
         @test isempty(req(e, Dict("elicitation" => Dict())))
+        # A PRESENT-but-null mode is not an absent mode: form: null declares no
+        # form support (only the empty elicitation object implies it)
+        @test haskey(req(e, Dict("elicitation" => Dict("form" => nothing))), "elicitation")
+        @test haskey(req(e, Dict("elicitation" => Dict("url" => nothing))), "elicitation")
+
+        # Tool-enabled sampling needs sampling.tools, not just sampling
+        st = InputRequired(Dict("s" => sampling_request(Dict(
+            "maxTokens" => 4, "tools" => [Dict("name" => "t")]))))
+        r = req(st, Dict("sampling" => Dict()))
+        @test r["sampling"]["tools"] isa AbstractDict  # requirement names the subfeature
+        @test isempty(req(st, Dict("sampling" => Dict("tools" => Dict()))))
+        @test haskey(req(st, Dict("sampling" => Dict("tools" => nothing))), "sampling")
+        # Plain sampling stays satisfied by a bare object...
+        sp = InputRequired(Dict("s" => sampling_request(Dict("maxTokens" => 4))))
+        @test isempty(req(sp, Dict("sampling" => Dict())))
+        # ...and a mixed plain+tool set with nothing declared requires the superset
+        mixed = InputRequired(Dict("p" => sampling_request(Dict("maxTokens" => 4)),
+                                   "t" => sampling_request(Dict("maxTokens" => 4,
+                                                                "tools" => Any[]))))
+        @test req(mixed, Dict())["sampling"]["tools"] isa AbstractDict
     end
 
     @testset "canonical params digest" begin

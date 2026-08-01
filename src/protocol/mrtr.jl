@@ -146,7 +146,9 @@ struct InputRequired <: ResponseResult
     end
 end
 
-# Fetch a capability value by String or Symbol key; `nothing` when absent
+# Fetch a capability value by String or Symbol key; `nothing` when absent. NOTE:
+# JSON null also parses to `nothing`, so use _capability_present when a
+# present-but-null value must be distinguished from an absent one.
 function _capability_value(caps, name::String)
     caps isa AbstractDict || return nothing
     haskey(caps, name) && return caps[name]
@@ -154,15 +156,27 @@ function _capability_value(caps, name::String)
     nothing
 end
 
+_capability_present(caps, name::String)::Bool =
+    caps isa AbstractDict && (haskey(caps, name) || haskey(caps, Symbol(name)))
+
+# Whether a sampling/createMessage input request asks for tool-enabled sampling
+# (its params include `tools`) — that needs the client's sampling.tools declared
+_sampling_wants_tools(r::InputRequest)::Bool =
+    r.params isa AbstractDict && (haskey(r.params, "tools") || haskey(r.params, :tools))
+
 """
     capability_satisfied(client_capabilities, r::InputRequest) -> Bool
 
 Whether this request's declared `_meta` client capabilities cover input request
 `r`. Declaration means the capability VALUE is an object (a `null` or scalar value
-declares nothing), and for form-mode elicitation the modes are honored: an
-`elicitation` object that names modes must name `form` (a `url`-only declaration
-does NOT cover a form request), while one naming no modes declares generic
-elicitation support.
+declares nothing — including MODE values: `{"elicitation": {"form": null}}`
+declares no form support), and subfeatures are honored:
+
+- form-mode elicitation: an `elicitation` object that names modes must name `form`
+  with an object value (a `url`-only declaration does NOT cover a form request);
+  one naming no modes declares generic elicitation support
+- tool-enabled sampling (`params.tools` present): requires `sampling.tools`
+  declared as an object, not just `sampling`
 
 # Arguments
 - `client_capabilities`: The request's declared client capabilities (any JSON value)
@@ -175,11 +189,13 @@ function capability_satisfied(client_capabilities, r::InputRequest)::Bool
     if r.method == "elicitation/create"
         e = _capability_value(client_capabilities, "elicitation")
         e isa AbstractDict || return false
-        form = _capability_value(e, "form")
-        form !== nothing && return form isa AbstractDict
-        return _capability_value(e, "url") === nothing  # url-only excludes form
+        _capability_present(e, "form") && return _capability_value(e, "form") isa AbstractDict
+        return !_capability_present(e, "url")  # url-only (even url: null) excludes form
     elseif r.method == "sampling/createMessage"
-        return _capability_value(client_capabilities, "sampling") isa AbstractDict
+        s = _capability_value(client_capabilities, "sampling")
+        s isa AbstractDict || return false
+        _sampling_wants_tools(r) || return true
+        return _capability_value(s, "tools") isa AbstractDict
     elseif r.method == "roots/list"
         return _capability_value(client_capabilities, "roots") isa AbstractDict
     end
@@ -191,11 +207,12 @@ end
         -> LittleDict{String,Any}
 
 The `requiredCapabilities` object for the capabilities `ir`'s input requests need
-but this request did not declare — a ClientCapabilities-shaped object (e.g.
-`{"sampling": {}}`, or `{"elicitation": {"form": {}}}` for a form elicitation). A
-server MUST NOT send inputRequests the client did not declare support for: a
-non-empty return means the request must be rejected with -32021 carrying this
-object as `error.data.requiredCapabilities`.
+but this request did not declare — a ClientCapabilities-shaped object precise to
+the subfeature: `{"elicitation": {"form": {}}}` for a form elicitation,
+`{"sampling": {}}` for plain sampling, `{"sampling": {"tools": {}}}` for
+tool-enabled sampling. A server MUST NOT send inputRequests the client did not
+declare support for: a non-empty return means the request must be rejected with
+-32021 carrying this object as `error.data.requiredCapabilities`.
 
 # Arguments
 - `ir::InputRequired`: The handler's input-required value
@@ -212,7 +229,10 @@ function undeclared_capability_requirements(ir::InputRequired,
         if r.method == "elicitation/create"
             req["elicitation"] = LittleDict{String,Any}("form" => LittleDict{String,Any}())
         elseif r.method == "sampling/createMessage"
-            req["sampling"] = LittleDict{String,Any}()
+            # Merge: a tool-enabled request upgrades the requirement to
+            # sampling.tools without a later plain one downgrading it
+            entry = get!(req, "sampling", LittleDict{String,Any}())
+            _sampling_wants_tools(r) && (entry["tools"] = LittleDict{String,Any}())
         elseif r.method == "roots/list"
             req["roots"] = LittleDict{String,Any}()
         end
