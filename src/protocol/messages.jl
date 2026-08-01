@@ -382,7 +382,9 @@ Parameters for `subscriptions/listen` requests (modern era).
 # Fields
 - `notifications::Union{Nothing,Dict{String,Any}}`: The notification-type filter —
   `toolsListChanged`/`promptsListChanged`/`resourcesListChanged` booleans and a
-  `resourceSubscriptions` array of resource URIs. Absent means an empty subscription.
+  `resourceSubscriptions` array of resource URIs. Required: an absent or malformed
+  filter is rejected with -32602 by the handler (see `parse_subscription_filter`);
+  `nothing` here only represents the not-yet-validated wire state.
 """
 Base.@kwdef struct SubscriptionsListenParams <: RequestParams
     notifications::Union{Nothing,Dict{String,Any}} = nothing

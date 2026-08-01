@@ -130,6 +130,11 @@ function handle_subscriptions_listen(ctx::RequestContext,
     # load-bearing on stdio, where the id is the only way to tell streams apart.
     registry = ctx.server.listen_subscriptions
     status = lock(registry.lock) do
+        # Sweep dead routes FIRST: a record whose connection handler already died
+        # (client vanished) must not consume the capacity cap or pin its id
+        # against a reconnect — without this, pruning would only happen on the
+        # next broadcast, which on a quiet server never comes.
+        filter!(s -> route_alive(s.transport, s.route), registry.subs)
         length(registry.subs) >= MAX_SUBSCRIPTIONS && return :capacity
         any(s -> s.id == sub_id, registry.subs) && return :duplicate
         route = capture_response_route(transport)
@@ -258,9 +263,14 @@ end
 Cancel an active `subscriptions/listen` stream by its originating request id — the
 `notifications/cancelled` path, which is how a stdio client (which cannot close a
 response stream) ends a subscription. The record is removed so no further messages
-carry its id; per JSON-RPC cancellation semantics no response is sent, but an HTTP
-route is released (`close_response_route`) so its connection handler does not stay
-blocked on a stream nobody will ever complete.
+carry its id; per JSON-RPC cancellation semantics no response is sent.
+
+Only ROUTELESS records (stream transports like stdio, where the single shared
+channel means the cancellation can only come from the stream's own client) are
+cancellable this way. A route-bound (HTTP) stream is cancelled by closing the
+response stream itself — an in-band cancellation message must never be honored
+for it, because on HTTP the notification can arrive on ANY connection: honoring
+it would let one client end another client's stream by guessing its id.
 
 # Arguments
 - `server::Server`: The server holding the subscription
@@ -272,16 +282,12 @@ blocked on a stream nobody will ever complete.
 function cancel_subscription!(server::Server, request_id)::Bool
     request_id isa Union{String,Int} || return false
     registry = server.listen_subscriptions
-    cancelled = lock(registry.lock) do
-        idx = findfirst(s -> s.id == request_id, registry.subs)
-        idx === nothing && return nothing
-        s = registry.subs[idx]
+    lock(registry.lock) do
+        idx = findfirst(s -> s.id == request_id && s.route === nothing, registry.subs)
+        idx === nothing && return false
         deleteat!(registry.subs, idx)
-        s
+        true
     end
-    cancelled === nothing && return false
-    close_response_route(cancelled.transport, cancelled.route)
-    true
 end
 
 """

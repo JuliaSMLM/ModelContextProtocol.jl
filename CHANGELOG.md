@@ -30,12 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   active subscriptions are capped (64, with 128-byte ids that must not duplicate an
   active subscription's, and at most 256 watched resource URIs per stream); a stream
   whose client stops reading is load-shed at a bounded backlog instead of buffering
-  forever; disconnected clients are detected while idle and pruned on the next
-  broadcast even when their filter never matches; `notifications/cancelled` with the
-  listen request's id cancels the subscription (the stdio path — HTTP clients just
-  close the response stream); and `stop!(server)` now ends the server loop with the
-  transport still open, so shutdown delivers each stream's graceful closing result
-  before the connections tear down.
+  forever; idle HTTP streams carry periodic SSE keepalive comments
+  (`HttpTransport(sse_keepalive_secs=...)`, default 15s) so a silently-dead peer is
+  detected within about two intervals, and dead records are swept both on broadcast
+  and at registration time (they never pin the cap or their id against a reconnect);
+  `notifications/cancelled` with the listen request's id cancels the subscription on
+  stdio only (HTTP clients close the response stream instead — honoring an in-band
+  cancellation there would let one client end another's stream by guessing its id);
+  and `stop!(server)` now ends the server loop with the transport still open, so
+  shutdown delivers each stream's graceful closing result before the connections
+  tear down.
 - **`notify_list_changed(server, kind)` and `notify_resource_updated(server, uri)`**
   (exported): announce runtime changes to open subscription streams. Call them after
   mutating `server.tools`/`server.prompts`/`server.resources` or a resource's contents;

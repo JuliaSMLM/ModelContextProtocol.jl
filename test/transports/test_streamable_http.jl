@@ -592,7 +592,8 @@
 
     @testset "subscriptions/listen over live HTTP" begin
         port = 20090 + rand(1:1000)
-        transport = HttpTransport(port = port)
+        # Fast keepalives so idle-disconnect detection is observable in test time
+        transport = HttpTransport(port = port, sse_keepalive_secs = 0.3)
         server = mcp_server(name = "listen-http", version = "1.0.0",
             capabilities = ModelContextProtocol.Capability[
                 ModelContextProtocol.ToolCapability(list_changed = true),
@@ -660,6 +661,15 @@
             @test r.status == 400
             @test JSON3.read(String(r.body))["error"]["code"] == -32600
 
+            # ...and q=0 is a refusal, not an acceptance (media-range matching,
+            # not a substring test)
+            r = HTTP.post(url, ["Content-Type" => "application/json",
+                                "Accept" => "text/event-stream;q=0, application/json",
+                                "MCP-Protocol-Version" => "2026-07-28",
+                                "Mcp-Method" => "subscriptions/listen"],
+                listen_body("sub-reject-q0"); status_exception = false)
+            @test r.status == 400
+
             # The acknowledgment MUST be the stream's first message, tagged with the id
             @test waitfor(() -> seen("notifications/subscriptions/acknowledged"))
             first_data = findfirst(l -> startswith(l, "data:"), lines)
@@ -691,12 +701,17 @@
                 status_exception = false)
             @test r.status == 200
 
-            # A second subscriber that disconnects is noticed and pruned. Raw TCP,
-            # so the client can vanish ABRUPTLY (an HTTP.open exit would block
-            # draining the endless stream). At worst ONE broadcast right after the
-            # drop is over-counted (a first write into a dead socket can be
-            # buffered before the failure surfaces), so converge on: only the live
-            # stream remains.
+            # The live stream receives periodic keepalive comments while idle —
+            # the write is what surfaces a dead socket, so this is also the
+            # disconnect-detection mechanism under test below
+            @test waitfor(() -> any(l -> startswith(l, ": keepalive"), lines))
+
+            # A second subscriber that disconnects while idle is detected WITHOUT
+            # any broadcast: the keepalive write fails on the dead socket and the
+            # connection handler dies, freeing the route. The registry record is
+            # inert from that moment (its route is gone) and is swept by the next
+            # broadcast or registration. Raw TCP so the client can vanish abruptly
+            # (an HTTP.open exit would block draining the endless stream).
             body2 = listen_body("sub-2")
             sock = HTTP.Sockets.connect("127.0.0.1", port)
             write(sock,
@@ -708,8 +723,14 @@
                 "Mcp-Method: subscriptions/listen\r\n" *
                 "Content-Length: $(ncodeunits(body2))\r\n\r\n" * body2)
             @test waitfor(() -> length(server.listen_subscriptions.subs) == 2)
+            open_routes() = lock(transport.channels_lock) do
+                length(transport.response_channels)
+            end
+            @test open_routes() == 2  # sub-1 and sub-2 streams
             Base.close(sock)  # never read the response: unread data makes this an abrupt reset
-            @test waitfor(() -> notify_list_changed(server, :tools) == 1)
+            @test waitfor(() -> open_routes() == 1, 5)  # keepalive surfaced the dead socket
+            # One broadcast then sweeps the stale record and reaches only the live stream
+            @test notify_list_changed(server, :tools) == 1
             @test length(server.listen_subscriptions.subs) == 1
 
             # stop! must end the server loop while the transport is STILL open, so
@@ -734,6 +755,22 @@
         @test istaskdone(listen_task)
         @test listen_err[] === nothing ||
               listen_err[] isa Union{EOFError,Base.IOError,HTTP.Exceptions.RequestError,HTTP.Exceptions.HTTPError}
+    end
+
+    @testset "Accept media-range matching for SSE" begin
+        ok = ModelContextProtocol.accepts_sse
+        @test ok("text/event-stream")
+        @test ok("application/json, text/event-stream")
+        @test ok("TEXT/EVENT-STREAM")                       # case-insensitive
+        @test ok("text/event-stream; charset=utf-8")        # params stripped
+        @test ok("text/*")
+        @test ok("*/*")
+        @test ok("text/event-stream;q=0.5")
+        @test !ok("text/event-stream;q=0")                  # q=0 is a refusal
+        @test !ok("text/event-stream; q=0.0, application/json")
+        @test !ok("application/x-text/event-stream")        # different media type
+        @test !ok("application/json")
+        @test !ok("")
     end
 
     @testset "SEP-2243 header value decoding (strict)" begin

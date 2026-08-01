@@ -168,6 +168,53 @@
         @test notify_list_changed(server, :tools) == 0
         @test isempty(String(take!(out)))
         task_local_storage(:mcp_suppress_log_notifications, false)
+
+        # A route-bound (HTTP) stream is NOT cancellable by message: on HTTP the
+        # notification can arrive on any connection, so honoring it would let one
+        # client end another client's stream by guessing its id — HTTP cancels by
+        # closing the response stream instead
+        ht = HttpTransport(port = 18997)
+        ch = Channel{Tuple{Symbol,String}}(Inf)
+        lock(ht.channels_lock) do
+            ht.response_channels["r-live"] = ch
+        end
+        push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+            "http-sub", ModelContextProtocol.SubscriptionFilter(tools_list_changed = true),
+            "r-live", ht))
+        @test !ModelContextProtocol.cancel_subscription!(server, "http-sub")
+        @test length(server.listen_subscriptions.subs) == 1
+    end
+
+    @testset "dead records are swept at registration, not just on broadcast" begin
+        server = mcp_server(name = "reg-sweep", version = "1.0.0",
+            capabilities = ModelContextProtocol.Capability[ModelContextProtocol.ToolCapability(list_changed = true)])
+        server.transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = IOBuffer())
+        # A record whose connection handler already died: HTTP route with no channel
+        dead_transport = HttpTransport(port = 18996)
+        push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+            "dup", ModelContextProtocol.SubscriptionFilter(tools_list_changed = true),
+            "r-gone", dead_transport))
+        # Reconnecting with the SAME id must succeed — the dead record must not
+        # pin its id (or the capacity cap) until some broadcast happens to sweep it
+        r = ModelContextProtocol.handle_subscriptions_listen(
+            RequestContext(server = server, request_id = "dup", protocol_version = "2026-07-28"),
+            ModelContextProtocol.SubscriptionsListenParams(
+                notifications = Dict{String,Any}("toolsListChanged" => true)))
+        @test r.deferred
+        sub = only(server.listen_subscriptions.subs)
+        @test sub.id == "dup" && sub.route === nothing  # the NEW (stdio) record
+    end
+
+    @testset "stop! cannot be undone by notifications/initialized" begin
+        server = mcp_server(name = "lifecycle", version = "1.0.0")
+        server.transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = IOBuffer())
+        state = ServerState()
+        server.active = false  # as after stop!
+        process_message(server, state, JSON3.write(Dict(
+            "jsonrpc" => "2.0", "method" => "notifications/initialized", "params" => Dict())))
+        @test !server.active            # the loop-run flag belongs to start!/stop!
+        @test state.initialized         # the session-lifecycle flag still records it
+        task_local_storage(:mcp_suppress_log_notifications, false)
     end
 
     @testset "the acknowledgment precedes any broadcast on a new stream" begin

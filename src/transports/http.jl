@@ -71,6 +71,7 @@ mutable struct HttpTransport <: Transport
     auth::Union{AuthMiddleware,Nothing}  # OAuth Resource Server token validation (nothing = disabled)
     resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 Protected Resource Metadata
     channels_lock::ReentrantLock  # guards response_channels/active_streams (HTTP connection tasks + server loop + deferred-response waiters)
+    sse_keepalive_secs::Float64  # idle interval between SSE keepalive comments (a WRITE is the only way to notice a silently-dead peer)
 
     function HttpTransport(;
         host::String="127.0.0.1",
@@ -81,7 +82,8 @@ mutable struct HttpTransport <: Transport
         protocol_version::String=LATEST_PROTOCOL_VERSION,
         session_required::Bool=false,
         auth::Union{AuthMiddleware,Nothing}=nothing,
-        resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing
+        resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing,
+        sse_keepalive_secs::Real=15.0
     )
         new(
             host,
@@ -108,7 +110,8 @@ mutable struct HttpTransport <: Transport
             allowed_hosts,
             auth,
             resource_metadata,
-            ReentrantLock()
+            ReentrantLock(),
+            Float64(sse_keepalive_secs)
         )
     end
 end
@@ -396,6 +399,39 @@ function handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream
         # Clean up
         delete!(transport.sse_streams, stream_id)
     end
+end
+
+"""
+    accepts_sse(accept_header::AbstractString) -> Bool
+
+Whether an `Accept` header admits a `text/event-stream` response, per media-range
+matching: comma-separated ranges, media types compared case-insensitively with
+parameters stripped, `text/*` and `*/*` accepted, and a range with `q=0`
+explicitly NOT acceptable. A bare substring test gets all of those wrong
+(`text/event-stream;q=0` is a refusal, `application/x-text/event-stream` is a
+different type, and case variants are legal).
+
+# Arguments
+- `accept_header::AbstractString`: The request's `Accept` header value
+
+# Returns
+- `Bool`: true when the client can consume an SSE response
+"""
+function accepts_sse(accept_header::AbstractString)::Bool
+    for item in split(accept_header, ',')
+        parts = split(item, ';')
+        mt = lowercase(strip(parts[1]))
+        mt in ("text/event-stream", "text/*", "*/*") || continue
+        q = 1.0
+        for p in parts[2:end]
+            kv = split(p, '='; limit = 2)
+            if length(kv) == 2 && lowercase(strip(kv[1])) == "q"
+                q = something(tryparse(Float64, strip(kv[2])), 0.0)
+            end
+        end
+        q > 0 && return true
+    end
+    false
 end
 
 # Modern methods whose Mcp-Name header mirrors a body field (SEP-2243)
@@ -925,7 +961,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # would be a black hole. Reject up front, BEFORE the request registers a
         # response route.
         if parsed_msg !== nothing && get(parsed_msg, "method", "") == "subscriptions/listen" &&
-           !is_notification && !contains(accept_header, "text/event-stream")
+           !is_notification && !accepts_sse(accept_header)
             error_response = JSON3.write(Dict{String,Any}(
                 "jsonrpc" => "2.0",
                 "error" => Dict{String,Any}(
@@ -1061,7 +1097,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # a notification arriving first upgrades the response to SSE.
         try
             kind, payload = take!(response_channel)
-            client_accepts_sse = contains(HTTP.header(request, "Accept", ""), "text/event-stream")
+            client_accepts_sse = accepts_sse(HTTP.header(request, "Accept", ""))
 
             if kind === :notification && !client_accepts_sse
                 # Client can't consume an SSE response; drop request-scoped
@@ -1104,19 +1140,24 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                     end
                 end
                 HTTP.startwrite(stream)
+                last_write = time()
                 while true
                     transport.event_counter += 1
                     write(stream, format_sse_event(payload, event="message", id=transport.event_counter))
                     Base.flush(stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
+                    last_write = time()
                     kind === :response && break
                     # Wait for the next item by POLLING, not a blocking take!: a
-                    # subscriptions/listen stream can idle indefinitely, and only
-                    # checking the socket notices a client that disconnected while
-                    # idle (same pattern as the GET notification stream loop above).
-                    # isready is checked before isopen so items already buffered on
-                    # a closed channel still drain (graceful shutdown results).
+                    # subscriptions/listen stream can idle indefinitely. isready is
+                    # checked before isopen so items already buffered on a closed
+                    # channel still drain (graceful shutdown results), and
                     # isready-then-take! cannot race: this handler is the channel's
-                    # only consumer.
+                    # only consumer. isopen(stream) alone CANNOT see a peer that
+                    # vanished while idle (a FIN/RST is only observed on I/O), so
+                    # the loop also writes a periodic SSE comment as a keepalive —
+                    # invisible to event parsers, but the write is what surfaces a
+                    # dead socket, bounding a dead stream's lifetime to about two
+                    # keepalive intervals.
                     got_next = false
                     while isopen(stream)
                         if isready(response_channel)
@@ -1125,6 +1166,11 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                             break
                         end
                         isopen(response_channel) || break
+                        if time() - last_write >= transport.sse_keepalive_secs
+                            write(stream, ": keepalive\n\n")
+                            Base.flush(stream)
+                            last_write = time()
+                        end
                         sleep(0.05)
                     end
                     got_next || break
@@ -1485,21 +1531,6 @@ function route_alive(transport::HttpTransport, route)::Bool
     channel !== nothing && isopen(channel)
 end
 
-"""
-    close_response_route(transport::HttpTransport, route) -> Nothing
-
-Close a captured route's channel without delivering anything (the cancellation
-path): the connection handler drains whatever is already buffered, then ends the
-response stream and cleans up its registrations.
-"""
-function close_response_route(transport::HttpTransport, route)::Nothing
-    route === nothing && return nothing
-    channel = lock(transport.channels_lock) do
-        get(transport.response_channels, route, nothing)
-    end
-    channel === nothing || Base.close(channel)
-    nothing
-end
 
 """
     set_negotiated_version!(transport::HttpTransport, version::String) -> Nothing

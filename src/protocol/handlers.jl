@@ -1414,7 +1414,10 @@ function handle_notification(ctx::RequestContext, notification::JSONRPCNotificat
     method = notification.method
 
     if method == "notifications/initialized"
-        ctx.server.active = true
+        # Session-lifecycle state, NOT server.active: active is the loop-run flag
+        # owned by start!/stop!, and flipping it here would let a late initialized
+        # notification reactivate a server that stop! is shutting down
+        ctx.state.initialized = true
     elseif method == "notifications/cancelled"
         # An active subscriptions/listen stream is cancelled by its requestId — the
         # stdio cancellation path (an HTTP client cancels by closing the response

@@ -316,6 +316,11 @@ Stop a running MCP server: the server loop observes `active == false` on its nex
 iteration and exits with the transport still open, so shutdown can deliver each
 `subscriptions/listen` stream's graceful closing result before the transport closes.
 
+On HTTP this takes effect within the loop's bounded read wait. On stdio the loop
+blocks in `readline`, so `stop!` only takes effect when the next message — or EOF —
+arrives; the normal stdio lifecycle ends via stdin EOF, which runs the same
+graceful-closure path.
+
 # Arguments
 - `server::Server`: The server instance to stop
 

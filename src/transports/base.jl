@@ -151,24 +151,6 @@ HTTP overrides this to check whether the route's channel still exists and is ope
 route_alive(::Transport, ::Any)::Bool = true
 
 """
-    close_response_route(transport::Transport, route::Any) -> Nothing
-
-Release a captured response route WITHOUT delivering anything on it — used when a
-`subscriptions/listen` request is cancelled: per JSON-RPC a cancelled request gets
-no response, but the transport-side resources pinned by the route must still be
-freed. The default is a no-op (stream transports pin nothing per request); HTTP
-overrides this to close the route's channel, which ends its connection handler.
-
-# Arguments
-- `transport::Transport`: The transport instance
-- `route::Any`: The handle returned by `capture_response_route`
-
-# Returns
-- `Nothing`
-"""
-close_response_route(::Transport, ::Any) = nothing
-
-"""
     capture_response_route(transport::Transport) -> Any
 
 Capture a route handle for delivering the CURRENT request's response later, from
