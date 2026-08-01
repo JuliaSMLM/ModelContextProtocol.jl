@@ -101,6 +101,56 @@ notifications need no routing. HTTP overrides this with the current request's ID
 notification_route(::Transport) = nothing
 
 """
+    deliver_notification(transport::Transport, route::Any, message::String) -> Bool
+
+Deliver a notification on a route captured earlier with `capture_response_route`,
+used by `subscriptions/listen` streams (whose request never completes, so its route
+carries notifications instead). Returns whether delivery succeeded — `false` means
+the client is gone and the subscription should be pruned.
+
+The default writes to the shared stream (correct for stdio, where all messages share
+one channel and the `io.modelcontextprotocol/subscriptionId` tag demultiplexes them).
+Transports that route per request (HTTP) override this to push onto that request's
+response stream.
+
+# Arguments
+- `transport::Transport`: The transport instance
+- `route::Any`: The handle returned by `capture_response_route`
+- `message::String`: The serialized JSON-RPC notification
+
+# Returns
+- `Bool`: true when the notification was delivered
+"""
+function deliver_notification(transport::Transport, ::Any, message::String)::Bool
+    try
+        write_message(transport, message)
+        return true
+    catch e
+        @debug "Failed to deliver subscription notification" error=e
+        return false
+    end
+end
+
+"""
+    route_alive(transport::Transport, route::Any) -> Bool
+
+Whether the client behind a captured response route is still reachable — used by
+subscription broadcasts to sweep dead streams without writing anything to them.
+
+The default returns `true`: stream transports (stdio) have no per-request route
+whose death is observable here, and their delivery attempt reports failure itself.
+HTTP overrides this to check whether the route's channel still exists and is open.
+
+# Arguments
+- `transport::Transport`: The transport instance
+- `route::Any`: The handle returned by `capture_response_route`
+
+# Returns
+- `Bool`: true when the route may still deliver
+"""
+route_alive(::Transport, ::Any)::Bool = true
+
+"""
     capture_response_route(transport::Transport) -> Any
 
 Capture a route handle for delivering the CURRENT request's response later, from

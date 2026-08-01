@@ -16,6 +16,7 @@ Represent a running MCP server instance that manages resources, tools, and promp
 - `subscriptions::DefaultDict{String,Vector{Subscription}}`: Resource subscription registry
 - `progress_trackers::Dict{Union{String,Int},Progress}`: Progress tracking for operations
 - `tasks::TaskStore`: Registry of server-side tasks (MCP Tasks, experimental)
+- `listen_subscriptions::SubscriptionRegistry`: Active modern-era `subscriptions/listen` streams
 - `active::Bool`: Whether the server is currently active
 
 # Constructor
@@ -31,6 +32,7 @@ mutable struct Server
     subscriptions::DefaultDict{String,Vector{Subscription}}
     progress_trackers::Dict{Union{String,Int}, Progress}
     tasks::TaskStore
+    listen_subscriptions::SubscriptionRegistry
     active::Bool
 
     function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing)
@@ -44,6 +46,7 @@ mutable struct Server
             DefaultDict{String,Vector{Subscription}}(() -> Subscription[]),
             Dict{Union{String,Int}, Progress}(),
             TaskStore(),
+            SubscriptionRegistry(),
             false
         )
     end

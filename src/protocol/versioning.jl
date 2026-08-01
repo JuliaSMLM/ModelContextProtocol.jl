@@ -46,6 +46,7 @@ const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 const META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
+const META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId"
 
 """
 Minimum protocol version required for each feature.

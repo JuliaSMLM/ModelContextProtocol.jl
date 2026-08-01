@@ -71,6 +71,7 @@ mutable struct HttpTransport <: Transport
     auth::Union{AuthMiddleware,Nothing}  # OAuth Resource Server token validation (nothing = disabled)
     resource_metadata::Union{ProtectedResourceMetadata,Nothing}  # RFC 9728 Protected Resource Metadata
     channels_lock::ReentrantLock  # guards response_channels/active_streams (HTTP connection tasks + server loop + deferred-response waiters)
+    sse_keepalive_secs::Float64  # idle interval between SSE keepalive comments (a WRITE is the only way to notice a silently-dead peer)
 
     function HttpTransport(;
         host::String="127.0.0.1",
@@ -81,8 +82,16 @@ mutable struct HttpTransport <: Transport
         protocol_version::String=LATEST_PROTOCOL_VERSION,
         session_required::Bool=false,
         auth::Union{AuthMiddleware,Nothing}=nothing,
-        resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing
+        resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing,
+        sse_keepalive_secs::Real=15.0
     )
+        # The keepalive is what detects silently-dead SSE peers: Inf/NaN would
+        # disable that detection entirely, and non-positive values busy-write.
+        # Validate the CONVERTED value — a subnormal BigFloat is finite and
+        # positive but stores as 0.0, and a huge one stores as Inf.
+        keepalive = Float64(sse_keepalive_secs)
+        isfinite(keepalive) && keepalive > 0 ||
+            throw(ArgumentError("sse_keepalive_secs must be finite and positive, got $sse_keepalive_secs"))
         new(
             host,
             port,
@@ -108,7 +117,8 @@ mutable struct HttpTransport <: Transport
             allowed_hosts,
             auth,
             resource_metadata,
-            ReentrantLock()
+            ReentrantLock(),
+            keepalive
         )
     end
 end
@@ -155,6 +165,11 @@ end
 
 # Soft cap on pending out-of-band notifications when no GET SSE consumer drains them
 const NOTIFICATION_QUEUE_SOFTCAP = 1000
+
+# Max pending items on a subscriptions/listen response channel before the stream is
+# load-shed (see deliver_notification): listen streams live indefinitely, so their
+# backlog cannot be bounded by request lifetime like ordinary response channels.
+const LISTEN_BACKLOG_CAP = 256
 
 """
     parse_host_header(hostport::AbstractString) -> Union{String,Nothing}
@@ -391,6 +406,90 @@ function handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream
         # Clean up
         delete!(transport.sse_streams, stream_id)
     end
+end
+
+"""
+    split_outside_quotes(s::AbstractString, delim::Char) -> Vector{String}
+
+Split `s` on `delim` occurrences that lie OUTSIDE double-quoted strings, honoring
+backslash escapes inside quotes (RFC 9110 quoted-string). Header parameters may
+legally quote separator characters (`profile="a,b"`), so a naive `split` corrupts
+the ranges around them.
+
+# Arguments
+- `s::AbstractString`: The header text to split
+- `delim::Char`: The separator character
+
+# Returns
+- `Vector{String}`: The parts (quotes preserved verbatim)
+"""
+function split_outside_quotes(s::AbstractString, delim::Char)::Vector{String}
+    parts = String[]
+    buf = IOBuffer()
+    inq = false
+    esc = false
+    for c in s
+        if esc
+            write(buf, c)
+            esc = false
+        elseif inq && c == '\\'
+            write(buf, c)
+            esc = true
+        elseif c == '"'
+            inq = !inq
+            write(buf, c)
+        elseif c == delim && !inq
+            push!(parts, String(take!(buf)))
+        else
+            write(buf, c)
+        end
+    end
+    push!(parts, String(take!(buf)))
+    parts
+end
+
+"""
+    accepts_sse(accept_header::AbstractString) -> Bool
+
+Whether an `Accept` header admits a `text/event-stream` response, per media-range
+matching: comma-separated ranges, media types compared case-insensitively with
+parameters stripped, `text/*` and `*/*` admitted, and `q=0` a refusal. The MOST
+SPECIFIC matching range decides (RFC 9110 precedence): exact `text/event-stream`
+over `text/*` over `*/*` — so `text/event-stream;q=0, text/*;q=1` is a refusal
+even though a laxer range matches. A bare substring test gets all of this wrong.
+
+Pass the COMBINED value when the request repeats the `Accept` field (repeated
+fields are equivalent to their comma-joined concatenation).
+
+# Arguments
+- `accept_header::AbstractString`: The request's (combined) `Accept` header value
+
+# Returns
+- `Bool`: true when the client can consume an SSE response
+"""
+function accepts_sse(accept_header::AbstractString)::Bool
+    best_spec = -1
+    best_q = 0.0
+    for item in split_outside_quotes(accept_header, ',')
+        parts = split_outside_quotes(item, ';')
+        mt = lowercase(strip(parts[1]))
+        spec = mt == "text/event-stream" ? 2 : mt == "text/*" ? 1 : mt == "*/*" ? 0 : -1
+        spec == -1 && continue
+        q = 1.0
+        for p in parts[2:end]
+            kv = split(p, '='; limit = 2)
+            if length(kv) == 2 && lowercase(strip(kv[1])) == "q"
+                q = something(tryparse(Float64, strip(kv[2])), 0.0)
+            end
+        end
+        if spec > best_spec
+            best_spec = spec
+            best_q = q
+        elseif spec == best_spec
+            best_q = max(best_q, q)  # equal specificity: an accepting duplicate wins
+        end
+    end
+    best_spec >= 0 && best_q > 0
 end
 
 # Modern methods whose Mcp-Name header mirrors a body field (SEP-2243)
@@ -765,8 +864,11 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     end
     
     # Check Accept header per 2025-06-18 spec - SHOULD include both application/json and text/event-stream
-    # Made lenient to support clients like Claude Code that may not send correct Accept headers
-    accept_header = HTTP.header(request, "Accept", "")
+    # Made lenient to support clients like Claude Code that may not send correct Accept headers.
+    # Repeated Accept fields are combined (RFC 9110: equivalent to comma-joined) —
+    # HTTP.header would return only the first instance.
+    accept_header = join((String(v) for (k, v) in HTTP.headers(request)
+                          if lowercase(String(k)) == "accept"), ",")
     if !contains(accept_header, "application/json") || !contains(accept_header, "text/event-stream")
         @debug "Client Accept header doesn't meet spec requirements" accept=accept_header expected="application/json, text/event-stream"
         # Continue anyway - the spec requirement is relaxed for compatibility
@@ -914,6 +1016,31 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             end
         end
 
+        # subscriptions/listen opens a long-lived SSE response stream; a client
+        # whose Accept excludes text/event-stream could never read one, and its
+        # request-scoped notifications are dropped by design — the subscription
+        # would be a black hole. Reject up front, BEFORE the request registers a
+        # response route.
+        if parsed_msg !== nothing && get(parsed_msg, "method", "") == "subscriptions/listen" &&
+           !is_notification && !accepts_sse(accept_header)
+            error_response = JSON3.write(Dict{String,Any}(
+                "jsonrpc" => "2.0",
+                "error" => Dict{String,Any}(
+                    "code" => ErrorCodes.INVALID_REQUEST,
+                    "message" => "subscriptions/listen requires an Accept header including text/event-stream"
+                ),
+                "id" => get(parsed_msg, "id", nothing)
+            ))
+            HTTP.setstatus(stream, 400)
+            HTTP.setheader(stream, "Content-Type" => "application/json")
+            (modern_version !== nothing && modern_version in MODERN_PROTOCOL_VERSIONS) &&
+                HTTP.setheader(stream, "MCP-Protocol-Version" => modern_version)
+            HTTP.setheader(stream, "Content-Length" => string(ncodeunits(error_response)))
+            HTTP.startwrite(stream)
+            write(stream, error_response)
+            return nothing
+        end
+
         # Session validation - only check after we know if it's initialization.
         # Modern-era requests are exempt: the modern transport removed protocol
         # sessions, so a stateless request without a legacy session ID must not be
@@ -1031,7 +1158,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # a notification arriving first upgrades the response to SSE.
         try
             kind, payload = take!(response_channel)
-            client_accepts_sse = contains(HTTP.header(request, "Accept", ""), "text/event-stream")
+            client_accepts_sse = accepts_sse(accept_header)  # combined Accept from above
 
             if kind === :notification && !client_accepts_sse
                 # Client can't consume an SSE response; drop request-scoped
@@ -1074,19 +1201,50 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                     end
                 end
                 HTTP.startwrite(stream)
+                last_write = time()
                 while true
                     transport.event_counter += 1
                     write(stream, format_sse_event(payload, event="message", id=transport.event_counter))
                     Base.flush(stream)  # NOT bare flush: that resolves to this package's flush(::Transport)
+                    last_write = time()
                     kind === :response && break
-                    kind, payload = take!(response_channel)
+                    # Wait for the next item by POLLING, not a blocking take!: a
+                    # subscriptions/listen stream can idle indefinitely. isready is
+                    # checked before isopen so items already buffered on a closed
+                    # channel still drain (graceful shutdown results), and
+                    # isready-then-take! cannot race: this handler is the channel's
+                    # only consumer. isopen(stream) alone CANNOT see a peer that
+                    # vanished while idle (a FIN/RST is only observed on I/O), so
+                    # the loop also writes a periodic SSE comment as a keepalive —
+                    # invisible to event parsers, but the write is what surfaces a
+                    # dead socket, bounding a dead stream's lifetime to about two
+                    # keepalive intervals.
+                    got_next = false
+                    while isopen(stream)
+                        if isready(response_channel)
+                            kind, payload = take!(response_channel)
+                            got_next = true
+                            break
+                        end
+                        isopen(response_channel) || break
+                        if time() - last_write >= transport.sse_keepalive_secs
+                            write(stream, ": keepalive\n\n")
+                            Base.flush(stream)
+                            last_write = time()
+                        end
+                        sleep(0.05)
+                    end
+                    got_next || break
                 end
             end
 
         catch e
             if !(e isa InvalidStateException)
                 @debug "Error waiting for response" error=e
-                if !HTTP.iswritestarted(stream)
+                # nwritten starts at -1 and startwrite() sets it to 0, so this is
+                # HTTP.jl's own "response not started yet" signal (there is no
+                # public predicate for it) — only then is a 500 body still legal
+                if stream.nwritten < 0
                     HTTP.setstatus(stream, 500)
                     HTTP.setheader(stream, "Content-Type" => "application/json")
                     error_response = JSON3.write(Dict(
@@ -1117,7 +1275,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             @debug "Client disconnected while handling request" error=e
         else
             @error "Error handling request" error=e
-            if !HTTP.iswritestarted(stream)
+            if stream.nwritten < 0  # response not started (see comment above)
                 HTTP.setstatus(stream, 500)
                 HTTP.setheader(stream, "Content-Type" => "application/json")
                 error_response = JSON3.write(Dict(
@@ -1251,40 +1409,47 @@ end
 """
     read_message(transport::HttpTransport) -> Union{String,Nothing}
 
-Read a message from the request queue.
-Blocks until a request is available or the transport is disconnected.
+Read a message from the request queue. Waits a BOUNDED interval and returns
+`nothing` when no request arrives, so the server loop regularly re-checks its run
+condition: `stop!` must be able to end the loop while the transport is still open
+(graceful `subscriptions/listen` closure delivers on the open transport, then the
+transport is closed) — a blocking `take!` would pin the loop until the next request.
 
 # Arguments
 - `transport::HttpTransport`: The transport instance
 
 # Returns
-- `Union{String,Nothing}`: The message string, or nothing if disconnected
+- `Union{String,Nothing}`: The message string, or nothing when no request arrived
+  (or the transport disconnected)
 """
 function read_message(transport::HttpTransport)::Union{String,Nothing}
     if !transport.connected
         return nothing
     end
-    
-    try
-        # Block until request is available
-        env = take!(transport.request_queue)
 
-        # Store the current request ID for response correlation, and the
-        # per-request authenticated user (consumed by the single server loop via
-        # pending_auth_context before the next read — never shared across connections).
-        transport.current_request_id = env.id
-        transport.current_request_auth = env.user
+    deadline = time() + 0.2
+    while time() < deadline
+        if isready(transport.request_queue)
+            # The server loop is the queue's only consumer, so isready-then-take!
+            # cannot race another taker.
+            env = take!(transport.request_queue)
 
-        return env.body
-    catch e
-        if e isa InvalidStateException && !isopen(transport.request_queue)
-            # Channel is closed, transport is shutting down
+            # Store the current request ID for response correlation, and the
+            # per-request authenticated user (consumed by the single server loop via
+            # pending_auth_context before the next read — never shared across connections).
+            transport.current_request_id = env.id
+            transport.current_request_auth = env.user
+
+            return env.body
+        end
+        if !isopen(transport.request_queue)
+            # Queue closed and drained: transport is shutting down
             transport.connected = false
             return nothing
-        else
-            rethrow(e)
         end
+        sleep(0.01)
     end
+    nothing
 end
 
 """
@@ -1374,6 +1539,59 @@ function deliver_response(transport::HttpTransport, route::Union{String,Nothing}
     end
     nothing
 end
+
+"""
+    deliver_notification(transport::HttpTransport, route, message::String) -> Bool
+
+Push a notification onto the response stream of the request identified by `route`
+(captured via `capture_response_route`) — the delivery path for
+`subscriptions/listen` streams. Returns `false` when that route is gone (client
+disconnected), so the caller can prune the subscription.
+
+A listen stream lives arbitrarily long, so — unlike ordinary request channels,
+whose buffering is bounded by the request's own lifetime — its backlog must be
+capped: a reader that stopped draining would otherwise accumulate every
+notification forever. At `LISTEN_BACKLOG_CAP` pending items the stream is
+load-shed: its channel is closed (which ends the connection handler after it
+drains what is already buffered) and delivery is reported failed so the caller
+prunes the subscription.
+"""
+function deliver_notification(transport::HttpTransport, route, message::String)::Bool
+    route === nothing && return false
+    channel = lock(transport.channels_lock) do
+        get(transport.response_channels, route, nothing)
+    end
+    channel === nothing && return false
+    if Base.n_avail(channel) >= LISTEN_BACKLOG_CAP
+        @debug "subscriptions/listen backlog cap reached; load-shedding stream" route
+        Base.close(channel)
+        return false
+    end
+    try
+        put!(channel, (:notification, message))
+        return true
+    catch e
+        @debug "Subscription route closed" error=e
+        return false
+    end
+end
+
+"""
+    route_alive(transport::HttpTransport, route) -> Bool
+
+Whether a captured response route still has a live consumer: its channel is still
+registered and open. The connection handler unregisters and closes the channel when
+its client disconnects (or its stream is load-shed), so a dead route shows up here
+without anything being written to it.
+"""
+function route_alive(transport::HttpTransport, route)::Bool
+    route === nothing && return false
+    channel = lock(transport.channels_lock) do
+        get(transport.response_channels, route, nothing)
+    end
+    channel !== nothing && isopen(channel)
+end
+
 
 """
     set_negotiated_version!(transport::HttpTransport, version::String) -> Nothing

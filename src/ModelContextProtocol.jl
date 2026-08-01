@@ -67,6 +67,7 @@ include("transports/http.jl")
 
 # 3b. Task store for MCP Tasks (SEP-1686, experimental; Server holds a TaskStore)
 include("features/tasks.jl")
+include("features/subscriptions.jl")
 
 # 4. Server Type (depends on Transport)
 include("server_types.jl")
@@ -82,6 +83,7 @@ include("core/server.jl")
 include("core/init.jl")
 include("protocol/handlers.jl")
 include("protocol/modern.jl")
+include("protocol/subscriptions.jl")
 
 # 6. Serialization (needs all types)
 include("utils/serialization.jl")
@@ -121,7 +123,8 @@ export
     Server,  # For type annotations in user code
     send_progress,  # Progress reporting from tool handlers (RequestContext is intentionally not exported)
     task_cancelled,  # Cooperative cancellation check inside task-augmented tool handlers
-    subscribe!, unsubscribe!,  # Resource subscription management
+    subscribe!, unsubscribe!,  # Resource subscription management (legacy in-process callbacks)
+    notify_list_changed, notify_resource_updated,  # Announce changes to subscriptions/listen streams
     content2dict,  # Utility for debugging/testing
 
     # Protocol version negotiation and feature gating (MCP 2025-11-25)

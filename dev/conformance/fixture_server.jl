@@ -30,6 +30,10 @@ function make_wav()
     take!(io)
 end
 
+# The trigger tools mutate the server they belong to, so they need a handle to it;
+# filled in immediately after construction below.
+const SERVER_REF = Ref{Any}(nothing)
+
 tools = [
     MCPTool(
         name = "test_simple_text",
@@ -104,6 +108,40 @@ tools = [
             @warn "test_tool_with_logging: finishing"
             TextContent(text = "Logging test complete")
         end),
+    MCPTool(
+        name = "test_trigger_tool_change",
+        description = "Mutate the tool list and notify subscriptions/listen streams",
+        parameters = ToolParameter[],
+        handler = args -> begin
+            push!(SERVER_REF[].tools, MCPTool(
+                name = "test_added_tool_$(length(SERVER_REF[].tools))",
+                description = "Dynamically added",
+                parameters = ToolParameter[],
+                handler = a -> TextContent(text = "added")))
+            n = notify_list_changed(SERVER_REF[], :tools)
+            TextContent(text = "tools changed; notified $n stream(s)")
+        end),
+    MCPTool(
+        name = "test_trigger_prompt_change",
+        description = "Mutate the prompt list and notify subscriptions/listen streams",
+        parameters = ToolParameter[],
+        handler = args -> begin
+            push!(SERVER_REF[].prompts, MCPPrompt(
+                name = "test_added_prompt_$(length(SERVER_REF[].prompts))",
+                description = "Dynamically added",
+                arguments = PromptArgument[],
+                messages = [PromptMessage(content = TextContent(text = "added"))]))
+            n = notify_list_changed(SERVER_REF[], :prompts)
+            TextContent(text = "prompts changed; notified $n stream(s)")
+        end),
+    MCPTool(
+        name = "test_trigger_resource_update",
+        description = "Announce a resource update to subscriptions/listen streams",
+        parameters = ToolParameter[],
+        handler = args -> begin
+            n = notify_resource_updated(SERVER_REF[], "test://watched-resource")
+            TextContent(text = "resource updated; notified $n stream(s)")
+        end),
 ]
 
 resources = [
@@ -177,6 +215,12 @@ prompts = [
 ]
 
 server = mcp_server(
+    capabilities = ModelContextProtocol.Capability[
+        ModelContextProtocol.ToolCapability(list_changed = true),
+        ModelContextProtocol.PromptCapability(list_changed = true),
+        ModelContextProtocol.ResourceCapability(list_changed = true, subscribe = true),
+        ModelContextProtocol.LoggingCapability(),
+    ],
     name = "conformance-fixture-server",
     version = "0.1.0",
     description = "Fixture server for the official MCP conformance suite",
@@ -185,6 +229,8 @@ server = mcp_server(
     resource_templates = templates,
     prompts = prompts,
 )
+
+SERVER_REF[] = server
 
 transport = HttpTransport(host = "127.0.0.1", port = PORT)
 server.transport = transport

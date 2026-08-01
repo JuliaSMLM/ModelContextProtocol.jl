@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`subscriptions/listen` (2026-07-28).** The modern-era replacement for the legacy
+  GET SSE endpoint and `resources/subscribe`/`unsubscribe`: a long-lived POST response
+  stream carrying only the notification types the client opted into. The request never
+  completes normally — its response route is captured and notifications are pushed onto
+  it as changes occur, so the server loop stays free. `notifications/subscriptions/acknowledged`
+  is always the stream's first message and reports the honored subset of the requested
+  filter (types whose capability the server does not declare are omitted rather than
+  silently accepted); every message on the stream — acknowledgment, notifications, and
+  the closing result — carries `io.modelcontextprotocol/subscriptionId`, which is how
+  clients demultiplex concurrent subscriptions on stdio. Server shutdown ends each
+  stream gracefully by answering its listen request with an empty complete result, so
+  clients can distinguish an orderly close from a dropped connection. Filters cover
+  `toolsListChanged`, `promptsListChanged`, `resourcesListChanged`, and
+  `resourceSubscriptions` (per-URI `notifications/resources/updated`); a server never
+  sends a type the client did not request. `server/discover` now advertises the
+  `listChanged`/`subscribe` flags again, since there is finally a modern mechanism to
+  deliver them. Hardened for long-lived use: malformed filters are rejected with
+  `-32602` (they must not silently establish streams that can never deliver);
+  active subscriptions are capped (64, with 128-byte ids that must not duplicate an
+  active subscription's, and at most 256 watched resource URIs per stream); a stream
+  whose client stops reading is load-shed at a bounded backlog instead of buffering
+  forever; idle HTTP streams carry periodic SSE keepalive comments
+  (`HttpTransport(sse_keepalive_secs=...)`, default 15s) so a silently-dead peer is
+  detected within about two intervals, and dead records are swept both on broadcast
+  and at registration time (they never pin the cap or their id against a reconnect);
+  `notifications/cancelled` with the listen request's id cancels the subscription on
+  stdio only (HTTP clients close the response stream instead — honoring an in-band
+  cancellation there would let one client end another's stream by guessing its id);
+  and `stop!(server)` now ends the server loop with the transport still open, so
+  shutdown delivers each stream's graceful closing result before the connections
+  tear down.
+- **`notify_list_changed(server, kind)` and `notify_resource_updated(server, uri)`**
+  (exported): announce runtime changes to open subscription streams. Call them after
+  mutating `server.tools`/`server.prompts`/`server.resources` or a resource's contents;
+  each returns how many streams were notified. Streams whose client has gone away are
+  pruned automatically.
+
 - **Modern-era HTTP transport layer (2026-07-28).** Streamable HTTP now applies the
   modern transport rules to modern-marked requests, while legacy traffic keeps its
   existing behavior (dual-era): SEP-2243 standard header validation —

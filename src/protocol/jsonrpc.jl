@@ -7,6 +7,7 @@ const REQUEST_PARAMS_MAP = Dict{String,Type}(
     "resources/templates/list" => ListResourceTemplatesParams,
     "resources/subscribe" => SubscribeParams,
     "resources/unsubscribe" => UnsubscribeParams,
+    "subscriptions/listen" => SubscriptionsListenParams,
     "tools/call" => CallToolParams,
     "tools/list" => ListToolsParams,
     "prompts/list" => ListPromptsParams,

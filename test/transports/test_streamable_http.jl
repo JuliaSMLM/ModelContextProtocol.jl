@@ -590,6 +590,215 @@
         Base.close(timer)
     end
 
+    @testset "subscriptions/listen over live HTTP" begin
+        port = 20090 + rand(1:1000)
+        # Fast keepalives so idle-disconnect detection is observable in test time
+        transport = HttpTransport(port = port, sse_keepalive_secs = 0.3)
+        server = mcp_server(name = "listen-http", version = "1.0.0",
+            capabilities = ModelContextProtocol.Capability[
+                ModelContextProtocol.ToolCapability(list_changed = true),
+                ModelContextProtocol.PromptCapability(list_changed = true),
+                ModelContextProtocol.ResourceCapability(list_changed = true, subscribe = true)],
+            tools = [MCPTool(name = "noop", description = "noop", parameters = [],
+                             handler = args -> TextContent(text = "ok"))])
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        url = "http://127.0.0.1:$port/"
+        mmeta = Dict(
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities" => Dict())
+        listen_headers = ["Content-Type" => "application/json",
+                          "Accept" => "application/json, text/event-stream",
+                          "MCP-Protocol-Version" => "2026-07-28",
+                          "Mcp-Method" => "subscriptions/listen"]
+        listen_body(id) = JSON3.write(Dict(
+            "jsonrpc" => "2.0", "id" => id, "method" => "subscriptions/listen",
+            "params" => Dict("_meta" => mmeta,
+                             "notifications" => Dict("toolsListChanged" => true))))
+
+        # The listen response is a long-lived stream: collect it continuously and
+        # poll (never read to eof — a healthy stream stays open indefinitely). The
+        # listener records any exception instead of swallowing it: only teardown IO
+        # errors are acceptable, and that is asserted at the end.
+        lines = String[]
+        listen_err = Ref{Any}(nothing)
+        listen_task = @async begin
+            try
+                HTTP.open("POST", url, listen_headers) do io
+                    write(io, listen_body("sub-1"))
+                    HTTP.closewrite(io)
+                    HTTP.startread(io)
+                    while !eof(io)
+                        line = readline(io)
+                        isempty(line) || push!(lines, line)
+                    end
+                end
+            catch e
+                listen_err[] = e
+            end
+        end
+
+        seen(pat) = any(l -> occursin(pat, l), lines)
+        function waitfor(pred, secs = 10)
+            deadline = time() + secs
+            while time() < deadline && !pred()
+                sleep(0.05)
+            end
+            pred()
+        end
+
+        try
+            # A listen whose Accept cannot carry SSE is rejected up front — it
+            # could never read the stream it asks for
+            r = HTTP.post(url, ["Content-Type" => "application/json",
+                                "Accept" => "application/json",
+                                "MCP-Protocol-Version" => "2026-07-28",
+                                "Mcp-Method" => "subscriptions/listen"],
+                listen_body("sub-reject"); status_exception = false)
+            @test r.status == 400
+            @test JSON3.read(String(r.body))["error"]["code"] == -32600
+
+            # ...and q=0 is a refusal, not an acceptance (media-range matching,
+            # not a substring test)
+            r = HTTP.post(url, ["Content-Type" => "application/json",
+                                "Accept" => "text/event-stream;q=0, application/json",
+                                "MCP-Protocol-Version" => "2026-07-28",
+                                "Mcp-Method" => "subscriptions/listen"],
+                listen_body("sub-reject-q0"); status_exception = false)
+            @test r.status == 400
+
+
+            # The acknowledgment MUST be the stream's first message, tagged with the id
+            @test waitfor(() -> seen("notifications/subscriptions/acknowledged"))
+            first_data = findfirst(l -> startswith(l, "data:"), lines)
+            @test first_data !== nothing &&
+                  occursin("notifications/subscriptions/acknowledged", lines[first_data])
+            @test seen("io.modelcontextprotocol/subscriptionId")
+            @test seen("sub-1")
+
+            # A subscribed change is delivered on the open stream, tagged
+            @test notify_list_changed(server, :tools) == 1
+            @test waitfor(() -> seen("notifications/tools/list_changed"))
+            tools_line = lines[findfirst(l -> occursin("notifications/tools/list_changed", l), lines)]
+            @test occursin("sub-1", tools_line)
+
+            # An UNsubscribed change must not leak onto this stream
+            before = count(l -> occursin("prompts/list_changed", l), lines)
+            @test notify_list_changed(server, :prompts) == 0
+            sleep(1)
+            @test count(l -> occursin("prompts/list_changed", l), lines) == before
+
+            # Ordinary requests still work while the stream is open (the loop was not
+            # blocked by the deferred listen request)
+            r = HTTP.post(url, ["Content-Type" => "application/json",
+                                "Accept" => "application/json, text/event-stream",
+                                "MCP-Protocol-Version" => "2026-07-28",
+                                "Mcp-Method" => "tools/list"],
+                JSON3.write(Dict("jsonrpc" => "2.0", "id" => 9, "method" => "tools/list",
+                                 "params" => Dict("_meta" => mmeta)));
+                status_exception = false)
+            @test r.status == 200
+
+            # The live stream receives periodic keepalive comments while idle —
+            # the write is what surfaces a dead socket, so this is also the
+            # disconnect-detection mechanism under test below
+            @test waitfor(() -> any(l -> startswith(l, ": keepalive"), lines))
+
+            # A second subscriber that disconnects while idle is detected WITHOUT
+            # any broadcast: the keepalive write fails on the dead socket and the
+            # connection handler dies, freeing the route. The registry record is
+            # inert from that moment (its route is gone) and is swept by the next
+            # broadcast or registration. Raw TCP so the client can vanish abruptly
+            # (an HTTP.open exit would block draining the endless stream).
+            # (The two Accept LINES also prove repeated fields are combined per
+            # RFC 9110 — SSE is named only in the second one, and the request
+            # must not be rejected.)
+            body2 = listen_body("sub-2")
+            sock = HTTP.Sockets.connect("127.0.0.1", port)
+            write(sock,
+                "POST / HTTP/1.1\r\n" *
+                "Host: 127.0.0.1:$port\r\n" *
+                "Content-Type: application/json\r\n" *
+                "Accept: application/json\r\n" *
+                "Accept: text/event-stream\r\n" *
+                "MCP-Protocol-Version: 2026-07-28\r\n" *
+                "Mcp-Method: subscriptions/listen\r\n" *
+                "Content-Length: $(ncodeunits(body2))\r\n\r\n" * body2)
+            @test waitfor(() -> length(server.listen_subscriptions.subs) == 2)
+            open_routes() = lock(transport.channels_lock) do
+                length(transport.response_channels)
+            end
+            @test open_routes() == 2  # sub-1 and sub-2 streams
+            Base.close(sock)  # never read the response: unread data makes this an abrupt reset
+            @test waitfor(() -> open_routes() == 1, 5)  # keepalive surfaced the dead socket
+            # One broadcast then sweeps the stale record and reaches only the live stream
+            @test notify_list_changed(server, :tools) == 1
+            @test length(server.listen_subscriptions.subs) == 1
+
+            # stop! must end the server loop while the transport is STILL open, so
+            # the graceful closing result reaches the stream before the response
+            # channels are torn down (the loop checks server.active)
+            stop!(server)
+            @test waitfor(() -> seen("\"result\""))
+            @test waitfor(() -> istaskdone(server_task), 5)
+            @test isempty(server.listen_subscriptions.subs)
+        finally
+            server.active = false
+            ModelContextProtocol.close(transport)
+            timer = Timer(2)
+            while !(istaskdone(server_task) && istaskdone(listen_task)) && isopen(timer)
+                sleep(0.1)
+            end
+            Base.close(timer)
+        end
+
+        # The listener must have ended cleanly (or with a teardown IO error) — a
+        # logic error must fail the test, not vanish into a blanket catch
+        @test istaskdone(listen_task)
+        @test listen_err[] === nothing ||
+              listen_err[] isa Union{EOFError,Base.IOError,HTTP.Exceptions.RequestError,HTTP.Exceptions.HTTPError}
+    end
+
+    @testset "Accept media-range matching for SSE" begin
+        ok = ModelContextProtocol.accepts_sse
+        @test ok("text/event-stream")
+        @test ok("application/json, text/event-stream")
+        @test ok("TEXT/EVENT-STREAM")                       # case-insensitive
+        @test ok("text/event-stream; charset=utf-8")        # params stripped
+        @test ok("text/*")
+        @test ok("*/*")
+        @test ok("text/event-stream;q=0.5")
+        @test !ok("text/event-stream;q=0")                  # q=0 is a refusal
+        @test !ok("text/event-stream; q=0.0, application/json")
+        @test !ok("application/x-text/event-stream")        # different media type
+        @test !ok("application/json")
+        @test !ok("")
+        # The MOST SPECIFIC matching range decides (RFC 9110 precedence)
+        @test !ok("text/event-stream;q=0, text/*;q=1")      # exact refusal beats wildcard
+        @test !ok("text/*;q=0, */*;q=1")
+        @test ok("text/event-stream, text/*;q=0")           # exact acceptance beats wildcard refusal
+        @test ok("text/event-stream;q=0, text/event-stream")  # equal specificity: acceptance wins
+        # Separators inside quoted parameter values do not split ranges/params
+        @test !ok("text/event-stream;profile=\"a,b\";q=0")  # quoted comma: still ONE refused range
+        @test ok("text/event-stream;profile=\"a;q=0\"")     # quoted semicolon: q was never set
+    end
+
+    @testset "HttpTransport keepalive validation" begin
+        # Inf/NaN would silently disable dead-peer detection; non-positive busy-writes
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = 0)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = -1.0)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = Inf)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = NaN)
+        # Validation applies to the CONVERTED Float64: a subnormal BigFloat is
+        # finite and positive but would store as 0.0 (and a huge one as Inf)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = big"1e-10000")
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = big"1e10000")
+        @test HttpTransport(port = 18995, sse_keepalive_secs = 0.5).sse_keepalive_secs == 0.5
+    end
+
     @testset "SEP-2243 header value decoding (strict)" begin
         dec = ModelContextProtocol.decode_mcp_header_value
         @test dec("plain-value") == "plain-value"
