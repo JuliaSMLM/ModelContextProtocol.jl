@@ -670,6 +670,7 @@
                 listen_body("sub-reject-q0"); status_exception = false)
             @test r.status == 400
 
+
             # The acknowledgment MUST be the stream's first message, tagged with the id
             @test waitfor(() -> seen("notifications/subscriptions/acknowledged"))
             first_data = findfirst(l -> startswith(l, "data:"), lines)
@@ -712,13 +713,17 @@
             # inert from that moment (its route is gone) and is swept by the next
             # broadcast or registration. Raw TCP so the client can vanish abruptly
             # (an HTTP.open exit would block draining the endless stream).
+            # (The two Accept LINES also prove repeated fields are combined per
+            # RFC 9110 — SSE is named only in the second one, and the request
+            # must not be rejected.)
             body2 = listen_body("sub-2")
             sock = HTTP.Sockets.connect("127.0.0.1", port)
             write(sock,
                 "POST / HTTP/1.1\r\n" *
                 "Host: 127.0.0.1:$port\r\n" *
                 "Content-Type: application/json\r\n" *
-                "Accept: application/json, text/event-stream\r\n" *
+                "Accept: application/json\r\n" *
+                "Accept: text/event-stream\r\n" *
                 "MCP-Protocol-Version: 2026-07-28\r\n" *
                 "Mcp-Method: subscriptions/listen\r\n" *
                 "Content-Length: $(ncodeunits(body2))\r\n\r\n" * body2)
@@ -771,6 +776,20 @@
         @test !ok("application/x-text/event-stream")        # different media type
         @test !ok("application/json")
         @test !ok("")
+        # The MOST SPECIFIC matching range decides (RFC 9110 precedence)
+        @test !ok("text/event-stream;q=0, text/*;q=1")      # exact refusal beats wildcard
+        @test !ok("text/*;q=0, */*;q=1")
+        @test ok("text/event-stream, text/*;q=0")           # exact acceptance beats wildcard refusal
+        @test ok("text/event-stream;q=0, text/event-stream")  # equal specificity: acceptance wins
+    end
+
+    @testset "HttpTransport keepalive validation" begin
+        # Inf/NaN would silently disable dead-peer detection; non-positive busy-writes
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = 0)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = -1.0)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = Inf)
+        @test_throws ArgumentError HttpTransport(port = 18995, sse_keepalive_secs = NaN)
+        @test HttpTransport(port = 18995, sse_keepalive_secs = 0.5).sse_keepalive_secs == 0.5
     end
 
     @testset "SEP-2243 header value decoding (strict)" begin

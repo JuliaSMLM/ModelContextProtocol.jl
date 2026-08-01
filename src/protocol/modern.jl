@@ -429,7 +429,8 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
             )
         )
     elseif result.deferred
-        # No modern method defers today (core tasks are legacy-only); kept for shape
+        # subscriptions/listen defers: its route is captured and the stream is
+        # served out-of-loop, so there is no response to emit here
         nothing
     else
         response = modern_result_envelope(result.response, server)

@@ -85,6 +85,10 @@ mutable struct HttpTransport <: Transport
         resource_metadata::Union{ProtectedResourceMetadata,Nothing}=nothing,
         sse_keepalive_secs::Real=15.0
     )
+        # The keepalive is what detects silently-dead SSE peers: Inf/NaN would
+        # disable that detection entirely, and non-positive values busy-write
+        isfinite(sse_keepalive_secs) && sse_keepalive_secs > 0 ||
+            throw(ArgumentError("sse_keepalive_secs must be finite and positive, got $sse_keepalive_secs"))
         new(
             host,
             port,
@@ -406,22 +410,28 @@ end
 
 Whether an `Accept` header admits a `text/event-stream` response, per media-range
 matching: comma-separated ranges, media types compared case-insensitively with
-parameters stripped, `text/*` and `*/*` accepted, and a range with `q=0`
-explicitly NOT acceptable. A bare substring test gets all of those wrong
-(`text/event-stream;q=0` is a refusal, `application/x-text/event-stream` is a
-different type, and case variants are legal).
+parameters stripped, `text/*` and `*/*` admitted, and `q=0` a refusal. The MOST
+SPECIFIC matching range decides (RFC 9110 precedence): exact `text/event-stream`
+over `text/*` over `*/*` — so `text/event-stream;q=0, text/*;q=1` is a refusal
+even though a laxer range matches. A bare substring test gets all of this wrong.
+
+Pass the COMBINED value when the request repeats the `Accept` field (repeated
+fields are equivalent to their comma-joined concatenation).
 
 # Arguments
-- `accept_header::AbstractString`: The request's `Accept` header value
+- `accept_header::AbstractString`: The request's (combined) `Accept` header value
 
 # Returns
 - `Bool`: true when the client can consume an SSE response
 """
 function accepts_sse(accept_header::AbstractString)::Bool
+    best_spec = -1
+    best_q = 0.0
     for item in split(accept_header, ',')
         parts = split(item, ';')
         mt = lowercase(strip(parts[1]))
-        mt in ("text/event-stream", "text/*", "*/*") || continue
+        spec = mt == "text/event-stream" ? 2 : mt == "text/*" ? 1 : mt == "*/*" ? 0 : -1
+        spec == -1 && continue
         q = 1.0
         for p in parts[2:end]
             kv = split(p, '='; limit = 2)
@@ -429,9 +439,14 @@ function accepts_sse(accept_header::AbstractString)::Bool
                 q = something(tryparse(Float64, strip(kv[2])), 0.0)
             end
         end
-        q > 0 && return true
+        if spec > best_spec
+            best_spec = spec
+            best_q = q
+        elseif spec == best_spec
+            best_q = max(best_q, q)  # equal specificity: an accepting duplicate wins
+        end
     end
-    false
+    best_spec >= 0 && best_q > 0
 end
 
 # Modern methods whose Mcp-Name header mirrors a body field (SEP-2243)
@@ -806,8 +821,11 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     end
     
     # Check Accept header per 2025-06-18 spec - SHOULD include both application/json and text/event-stream
-    # Made lenient to support clients like Claude Code that may not send correct Accept headers
-    accept_header = HTTP.header(request, "Accept", "")
+    # Made lenient to support clients like Claude Code that may not send correct Accept headers.
+    # Repeated Accept fields are combined (RFC 9110: equivalent to comma-joined) —
+    # HTTP.header would return only the first instance.
+    accept_header = join((String(v) for (k, v) in HTTP.headers(request)
+                          if lowercase(String(k)) == "accept"), ",")
     if !contains(accept_header, "application/json") || !contains(accept_header, "text/event-stream")
         @debug "Client Accept header doesn't meet spec requirements" accept=accept_header expected="application/json, text/event-stream"
         # Continue anyway - the spec requirement is relaxed for compatibility
@@ -1097,7 +1115,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # a notification arriving first upgrades the response to SSE.
         try
             kind, payload = take!(response_channel)
-            client_accepts_sse = accepts_sse(HTTP.header(request, "Accept", ""))
+            client_accepts_sse = accepts_sse(accept_header)  # combined Accept from above
 
             if kind === :notification && !client_accepts_sse
                 # Client can't consume an SSE response; drop request-scoped
