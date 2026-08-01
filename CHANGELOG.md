@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MRTR / `input_required` (SEP-2322, 2026-07-28).** The modern era's replacement
+  for server-initiated requests, which finally makes elicitation implementable on
+  the serial loop: a tool handler that needs client input returns
+  `InputRequired(Dict(key => elicit_request(...)/sampling_request(...)/roots_request());
+  state=...)` and the server answers with an `InputRequiredResult`
+  (`resultType: "input_required"`, the `inputRequests` map, and an opaque
+  `requestState`). The client retries with a new id, the ORIGINAL params, its
+  `inputResponses`, and the echoed `requestState`; the handler simply runs again,
+  reading `input_responses(ctx)` and `input_state(ctx)` (all exported). A still-
+  missing response re-issues the `InputRequiredResult` rather than erroring, per
+  spec. Capability enforcement: input requests whose capability
+  (`elicitation`/`sampling`/`roots`) the request's `_meta` capabilities did not
+  declare are rejected with `-32021 MissingRequiredClientCapability`
+  (`error.data.requiredCapabilities` is a ClientCapabilities object, HTTP 400).
+  `requestState` is treated as attacker-controlled input: it is HMAC-SHA256-signed
+  over a payload embedding issue time + TTL (10 min), the authenticated principal,
+  and a canonical sorted-key digest of the original params — signature
+  (constant-time), expiry, principal, and params-digest are all verified before any
+  handler runs (`-32602` on any mismatch), with a per-server ephemeral signing key.
+  Scope: `tools/call` handlers (sync only — `input_required` inside task-augmented
+  executions fails the task pending the tasks extension, and legacy sessions get an
+  error since they have no wire shape for it); `resources/read`/`prompts/get`
+  retry-field parsing is in place for when their providers gain the return type.
+  With this, the draft `server-stateless` conformance scenario passes completely
+  (30/30).
+
 - **`subscriptions/listen` (2026-07-28).** The modern-era replacement for the legacy
   GET SSE endpoint and `resources/subscribe`/`unsubscribe`: a long-lived POST response
   stream carrying only the notification types the client opted into. The request never

@@ -197,6 +197,9 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 - `auto_register_dir`: Directory to auto-register components from
 - `title::Union{String,Nothing}`: Optional human-friendly display name for the server
 - `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for the server
+- `mrtr_state_key::Union{Vector{UInt8},Nothing}`: Optional MRTR `requestState`
+  signing key (≥32 bytes) shared across replicas so retries survive re-routing;
+  defaults to a random per-server key (single-instance safe)
 
 # Returns
 - `Server`: A configured server instance ready to handle MCP client connections
@@ -230,7 +233,8 @@ function mcp_server(;
     capabilities::Vector{Capability} = default_capabilities(),
     auto_register_dir::Union{String, Nothing} = nothing,
     title::Union{String, Nothing} = nothing,
-    icons::Union{Vector{MCPIcon}, Nothing} = nothing
+    icons::Union{Vector{MCPIcon}, Nothing} = nothing,
+    mrtr_state_key::Union{Vector{UInt8}, Nothing} = nothing
 )
     # Create server config
     config = ServerConfig(
@@ -244,7 +248,7 @@ function mcp_server(;
     )
     
     # Create server
-    server = Server(config)
+    server = Server(config; mrtr_state_key = mrtr_state_key)
     
     # Register tools if provided
     if !isnothing(tools)

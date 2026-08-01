@@ -81,6 +81,7 @@ include("protocol/jsonrpc.jl")
 include("core/capabilities.jl")
 include("core/server.jl")
 include("core/init.jl")
+include("protocol/mrtr.jl")
 include("protocol/handlers.jl")
 include("protocol/modern.jl")
 include("protocol/subscriptions.jl")
@@ -125,6 +126,8 @@ export
     task_cancelled,  # Cooperative cancellation check inside task-augmented tool handlers
     subscribe!, unsubscribe!,  # Resource subscription management (legacy in-process callbacks)
     notify_list_changed, notify_resource_updated,  # Announce changes to subscriptions/listen streams
+    InputRequired, elicit_request, sampling_request, roots_request,  # MRTR (2026-07-28): handlers requesting client input
+    input_responses, input_state,  # MRTR retry accessors for ctx-aware handlers
     content2dict,  # Utility for debugging/testing
 
     # Protocol version negotiation and feature gating (MCP 2025-11-25)

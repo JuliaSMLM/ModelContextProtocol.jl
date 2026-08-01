@@ -28,6 +28,8 @@ Base.@kwdef mutable struct RequestContext
     authenticated_user::Union{AuthenticatedUser,Nothing} = nothing  # per-request identity from HTTP auth, else nothing; treat as read-only (may be shared from a validator cache)
     task::Union{TaskRecord,Nothing} = nothing  # set for task-augmented executions (MCP Tasks); enables task_cancelled(ctx)
     protocol_version::Union{String,Nothing} = nothing  # modern-era per-request version from _meta; nothing on legacy requests (which use state.protocol_version)
+    input_responses::Union{Nothing,Dict{String,Any}} = nothing  # MRTR retry responses (read via input_responses(ctx))
+    input_state::Any = nothing  # handler state from a VERIFIED MRTR requestState (read via input_state(ctx))
 end
 
 """
@@ -97,7 +99,39 @@ task_cancelled(ctx::RequestContext)::Bool =
     ctx.task !== nothing && ctx.task.cancel_requested[]
 
 """
-    HandlerResult(; response::Union{Response,Nothing}=nothing, 
+    input_responses(ctx) -> Dict{String,Any}
+
+The client's `inputResponses` from an MRTR retry (2026-07-28), keyed like the
+`inputRequests` the server issued. Empty on a first (non-retry) request — a handler
+asks for input by returning [`InputRequired`](@ref) when the response it needs is
+absent.
+
+# Arguments
+- `ctx`: The request context passed to a ctx-aware handler
+
+# Returns
+- `Dict{String,Any}`: The responses (empty when none)
+"""
+input_responses(ctx::RequestContext)::Dict{String,Any} =
+    ctx.input_responses === nothing ? Dict{String,Any}() : ctx.input_responses
+
+"""
+    input_state(ctx) -> Any
+
+The handler state carried through the verified `requestState` of an MRTR retry
+(whatever the handler put in `InputRequired(...; state=...)`), or `nothing` on a
+first request.
+
+# Arguments
+- `ctx`: The request context passed to a ctx-aware handler
+
+# Returns
+- The carried state, or `nothing`
+"""
+input_state(ctx::RequestContext) = ctx.input_state
+
+"""
+    HandlerResult(; response::Union{Response,Nothing}=nothing,
                 error::Union{ErrorInfo,Nothing}=nothing)
 
 Represent the result of handling a request.
@@ -934,6 +968,15 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
     outcome = execute_tool_call(tool, args, ctx)
     if outcome isa ErrorInfo
         HandlerResult(error=outcome)
+    elseif outcome isa InputRequired && ctx.protocol_version === nothing
+        # Legacy sessions have no wire shape for input_required (MRTR is
+        # 2026-07-28); the modern layer converts the value, legacy rejects it
+        HandlerResult(
+            error=ErrorInfo(
+                code=ErrorCodes.INVALID_REQUEST,
+                message="Tool requires additional client input (input_required), which needs protocol 2026-07-28 or later"
+            )
+        )
     else
         HandlerResult(
             response=JSONRPCResponse(
@@ -949,12 +992,13 @@ end
         -> Union{CallToolResult,ErrorInfo}
 
 Run a tool handler and normalize its return value to a `CallToolResult` (applying the
-documented convenience conversions and `return_type` validation), or an `ErrorInfo`
-when execution throws. Shared by the synchronous `tools/call` path and background
+documented convenience conversions and `return_type` validation), an `InputRequired`
+(passed through verbatim for the MRTR layer to convert), or an `ErrorInfo` when
+execution throws. Shared by the synchronous `tools/call` path and background
 task-augmented executions.
 """
 function execute_tool_call(tool::MCPTool, args::AbstractDict,
-                           ctx::RequestContext)::Union{CallToolResult,ErrorInfo}
+                           ctx::RequestContext)::Union{CallToolResult,ErrorInfo,InputRequired}
     try
         # Call the tool handler. Handlers may opt into a context-aware form
         # `handler(args, ctx)` to access the RequestContext — `ctx.authenticated_user`,
@@ -966,6 +1010,11 @@ function execute_tool_call(tool::MCPTool, args::AbstractDict,
         # Check if the handler returned a complete CallToolResult
         if result isa CallToolResult
             # Handler returned a complete result, use it directly
+            return result
+        end
+
+        # The handler needs client input (MRTR): pass through untouched
+        if result isa InputRequired
             return result
         end
 
@@ -1106,6 +1155,12 @@ function spawn_task_execution!(ctx::RequestContext, tool::MCPTool, args::Abstrac
             # execute_tool_call catches handler errors itself; this guards the glue
             ErrorInfo(code=ErrorCodes.INTERNAL_ERROR, message="Tool execution failed: $(e)")
         end
+        # input_required inside a task belongs to the tasks EXTENSION
+        # (tasks/update), which is not implemented — fail the task rather than
+        # storing an unrepresentable outcome
+        outcome isa InputRequired && (outcome = ErrorInfo(
+            code=ErrorCodes.INVALID_REQUEST,
+            message="input_required is not supported in task-augmented executions"))
         if finish_task!(server.tasks, record, outcome)
             notify_task_status(server, record)
         end

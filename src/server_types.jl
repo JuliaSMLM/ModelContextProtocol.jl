@@ -33,9 +33,17 @@ mutable struct Server
     progress_trackers::Dict{Union{String,Int}, Progress}
     tasks::TaskStore
     listen_subscriptions::SubscriptionRegistry
+    mrtr_state_key::Vector{UInt8}  # HMAC key for MRTR requestState tokens (ephemeral, per-server)
     active::Bool
 
-    function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing)
+    function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing,
+                    mrtr_state_key::Union{Vector{UInt8},Nothing}=nothing)
+        # The MRTR requestState signing key: random-per-server by default (safe for
+        # a single instance — a restart just invalidates in-flight retries), or a
+        # deployment-shared key so retries survive routing across replicas
+        if mrtr_state_key !== nothing && length(mrtr_state_key) < 32
+            throw(ArgumentError("mrtr_state_key must be at least 32 bytes"))
+        end
         new(
             config,
             transport,
@@ -47,6 +55,7 @@ mutable struct Server
             Dict{Union{String,Int}, Progress}(),
             TaskStore(),
             SubscriptionRegistry(),
+            something(mrtr_state_key, rand(RandomDevice(), UInt8, 32)),
             false
         )
     end
