@@ -28,9 +28,14 @@ Base.@kwdef struct RequestMeta
     client_capabilities::Any = nothing
     client_info::Any = nothing
     # MRTR (2026-07-28) retry fields, harvested from raw params on modern
-    # tools/call, resources/read, and prompts/get requests
+    # tools/call, resources/read, and prompts/get requests. Presence is tracked
+    # separately from the typed value: a present-but-mistyped field must be
+    # REJECTED (-32602), not silently treated as absent — otherwise a numeric
+    # requestState would bypass verification entirely.
     input_responses::Union{Nothing,Dict{String,Any}} = nothing
     request_state::Union{Nothing,String} = nothing
+    has_input_responses::Bool = false
+    has_request_state::Bool = false
     params_digest::Union{Nothing,String} = nothing  # canonical digest of the params sans _meta/retry fields
 end
 

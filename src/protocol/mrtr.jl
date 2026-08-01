@@ -56,20 +56,28 @@ end
 """
     elicit_request(message::String; requested_schema=nothing) -> InputRequest
 
-Build an elicitation input request (`elicitation/create`): ask the user a question,
-optionally constraining the answer with a requested schema.
+Build a form-mode elicitation input request (`elicitation/create`): ask the user a
+question, constraining the answer with a requested schema. The schema is REQUIRED
+on the wire (`ElicitRequestFormParams.requestedSchema`, an object schema with
+`properties`), so when none is given a minimal empty-object schema is synthesized —
+a schema-validating client would reject the request otherwise.
 
 # Arguments
 - `message::String`: The message to present to the user
-- `requested_schema`: Optional JSON schema (Dict) for the expected response content
+- `requested_schema`: JSON schema (Dict) for the expected response content; must be
+  an object schema. Defaults to `{"type": "object", "properties": {}}`
 
 # Returns
 - `InputRequest`: The request for an `InputRequired` return
 """
 function elicit_request(message::String; requested_schema=nothing)::InputRequest
-    params = LittleDict{String,Any}("message" => message)
-    requested_schema === nothing || (params["requestedSchema"] = requested_schema)
-    InputRequest("elicitation/create", params)
+    schema = requested_schema === nothing ?
+        LittleDict{String,Any}("type" => "object", "properties" => LittleDict{String,Any}()) :
+        requested_schema
+    InputRequest("elicitation/create", LittleDict{String,Any}(
+        "message" => message,
+        "requestedSchema" => schema,
+    ))
 end
 
 """
@@ -111,6 +119,10 @@ Only meaningful on modern-era `tools/call` (legacy sessions have no wire shape f
 it and get an error). If a needed response is still missing on the retry, return
 another `InputRequired` — the spec says re-issue, not error.
 
+A valid `requestState` can be replayed within its TTL (one-time semantics would
+require server-side shared state, which the stateless design avoids), so handlers
+should stay idempotent across retries.
+
 # Fields
 - `requests::LittleDict{String,InputRequest}`: server-assigned unique keys → input requests
 - `state::Any`: JSON-serializable handler state to carry to the retry, delivered
@@ -134,30 +146,78 @@ struct InputRequired <: ResponseResult
     end
 end
 
-"""
-    missing_capabilities(ir::InputRequired, client_capabilities) -> Vector{String}
+# Fetch a capability value by String or Symbol key; `nothing` when absent
+function _capability_value(caps, name::String)
+    caps isa AbstractDict || return nothing
+    haskey(caps, name) && return caps[name]
+    haskey(caps, Symbol(name)) && return caps[Symbol(name)]
+    nothing
+end
 
-The client capabilities `ir`'s input requests need but `client_capabilities` (this
-request's declared `_meta` capabilities object) does not include. A server MUST NOT
-send inputRequests the client did not declare support for — a non-empty return
-means the request must be rejected with -32021.
+"""
+    capability_satisfied(client_capabilities, r::InputRequest) -> Bool
+
+Whether this request's declared `_meta` client capabilities cover input request
+`r`. Declaration means the capability VALUE is an object (a `null` or scalar value
+declares nothing), and for form-mode elicitation the modes are honored: an
+`elicitation` object that names modes must name `form` (a `url`-only declaration
+does NOT cover a form request), while one naming no modes declares generic
+elicitation support.
+
+# Arguments
+- `client_capabilities`: The request's declared client capabilities (any JSON value)
+- `r::InputRequest`: The input request to check
+
+# Returns
+- `Bool`: true when `r` may be sent to this client
+"""
+function capability_satisfied(client_capabilities, r::InputRequest)::Bool
+    if r.method == "elicitation/create"
+        e = _capability_value(client_capabilities, "elicitation")
+        e isa AbstractDict || return false
+        form = _capability_value(e, "form")
+        form !== nothing && return form isa AbstractDict
+        return _capability_value(e, "url") === nothing  # url-only excludes form
+    elseif r.method == "sampling/createMessage"
+        return _capability_value(client_capabilities, "sampling") isa AbstractDict
+    elseif r.method == "roots/list"
+        return _capability_value(client_capabilities, "roots") isa AbstractDict
+    end
+    false
+end
+
+"""
+    undeclared_capability_requirements(ir::InputRequired, client_capabilities)
+        -> LittleDict{String,Any}
+
+The `requiredCapabilities` object for the capabilities `ir`'s input requests need
+but this request did not declare — a ClientCapabilities-shaped object (e.g.
+`{"sampling": {}}`, or `{"elicitation": {"form": {}}}` for a form elicitation). A
+server MUST NOT send inputRequests the client did not declare support for: a
+non-empty return means the request must be rejected with -32021 carrying this
+object as `error.data.requiredCapabilities`.
 
 # Arguments
 - `ir::InputRequired`: The handler's input-required value
 - `client_capabilities`: The request's declared client capabilities (any JSON value)
 
 # Returns
-- `Vector{String}`: Sorted capability keys that are required but undeclared
+- `LittleDict{String,Any}`: The missing requirements (empty when all declared)
 """
-function missing_capabilities(ir::InputRequired, client_capabilities)::Vector{String}
-    declared(cap) = client_capabilities isa AbstractDict &&
-        (haskey(client_capabilities, cap) || haskey(client_capabilities, Symbol(cap)))
-    missing = Set{String}()
+function undeclared_capability_requirements(ir::InputRequired,
+                                            client_capabilities)::LittleDict{String,Any}
+    req = LittleDict{String,Any}()
     for (_, r) in ir.requests
-        cap = MRTR_REQUEST_CAPABILITIES[r.method]
-        declared(cap) || push!(missing, cap)
+        capability_satisfied(client_capabilities, r) && continue
+        if r.method == "elicitation/create"
+            req["elicitation"] = LittleDict{String,Any}("form" => LittleDict{String,Any}())
+        elseif r.method == "sampling/createMessage"
+            req["sampling"] = LittleDict{String,Any}()
+        elseif r.method == "roots/list"
+            req["roots"] = LittleDict{String,Any}()
+        end
     end
-    sort!(collect(missing))
+    req
 end
 
 """
@@ -230,15 +290,20 @@ function _ct_eq(a::AbstractVector{UInt8}, b::AbstractVector{UInt8})::Bool
 end
 
 """
-    issue_request_state(server::Server, params_digest, principal::String, handler_state) -> String
+    issue_request_state(server::Server, method::String, params_digest,
+                        principal::String, handler_state) -> String
 
 Mint an integrity-protected `requestState` token: an HMAC-SHA256-signed payload
-embedding issue time + TTL, the principal, the canonical digest of the original
-request params, and the handler's carried state. Signed with the per-server
-ephemeral key, so a token survives neither tampering nor a server restart.
+embedding issue time + TTL, the principal, the ORIGINATING METHOD, the canonical
+digest of the original request params, and the handler's carried state. Signed with
+the per-server key, so a token survives neither tampering nor (with the default
+ephemeral key) a server restart. Binding the method prevents cross-method state
+confusion: `tools/call` and `prompts/get` params can be structurally identical, and
+a token issued for one must not resume the other.
 
 # Arguments
 - `server::Server`: The server (holds the signing key)
+- `method::String`: The request method the state was issued for
 - `params_digest`: The request's canonical params digest (from `RequestMeta`)
 - `principal::String`: The requesting principal (`mrtr_principal`)
 - `handler_state`: The handler's JSON-serializable state (may be `nothing`)
@@ -246,13 +311,14 @@ ephemeral key, so a token survives neither tampering nor a server restart.
 # Returns
 - `String`: The token (`base64(payload).base64(mac)`)
 """
-function issue_request_state(server::Server, params_digest, principal::String,
-                             handler_state)::String
+function issue_request_state(server::Server, method::String, params_digest,
+                             principal::String, handler_state)::String
     payload = JSON3.write(LittleDict{String,Any}(
         "v" => 1,
         "iat" => round(Int, time()),
         "ttl" => MRTR_STATE_TTL_SECS,
         "sub" => principal,
+        "mth" => method,
         "dig" => something(params_digest, ""),
         "st" => handler_state,
     ))
@@ -261,25 +327,26 @@ function issue_request_state(server::Server, params_digest, principal::String,
 end
 
 """
-    verify_request_state(server::Server, token::AbstractString, params_digest,
-                         principal::String) -> Tuple{Bool,Any}
+    verify_request_state(server::Server, token::AbstractString, method::String,
+                         params_digest, principal::String) -> Tuple{Bool,Any}
 
 Verify a retry's `requestState` BEFORE any handler runs: signature (constant-time),
-TTL, principal, and original-params digest must all hold — the token is
-attacker-controlled input. Returns `(true, handler_state)` on success or
+TTL, principal, originating method, and original-params digest must all hold — the
+token is attacker-controlled input. Returns `(true, handler_state)` on success or
 `(false, reason)` on any failure.
 
 # Arguments
 - `server::Server`: The server (holds the signing key)
 - `token::AbstractString`: The offered `requestState`
+- `method::String`: THIS request's method (must equal the issuing method)
 - `params_digest`: THIS request's canonical params digest (must equal the original's)
 - `principal::String`: THIS request's principal
 
 # Returns
 - `Tuple{Bool,Any}`: `(ok, handler_state_or_reason)`
 """
-function verify_request_state(server::Server, token::AbstractString, params_digest,
-                              principal::String)::Tuple{Bool,Any}
+function verify_request_state(server::Server, token::AbstractString, method::String,
+                              params_digest, principal::String)::Tuple{Bool,Any}
     parts = split(token, '.')
     length(parts) == 2 || return (false, "malformed token")
     payload_json, mac = try
@@ -300,32 +367,35 @@ function verify_request_state(server::Server, token::AbstractString, params_dige
     (iat isa Integer && ttl isa Integer && time() <= iat + ttl) ||
         return (false, "expired")
     String(get(payload, :sub, "")) == principal || return (false, "principal mismatch")
+    String(get(payload, :mth, "")) == method || return (false, "method mismatch")
     String(get(payload, :dig, "")) == something(params_digest, "") ||
         return (false, "params do not match the original request")
     (true, get(payload, :st, nothing))
 end
 
 """
-    input_required_envelope(server::Server, ir::InputRequired, params_digest,
-                            principal::String) -> LittleDict{String,Any}
+    input_required_envelope(server::Server, ir::InputRequired, method::String,
+                            params_digest, principal::String) -> LittleDict{String,Any}
 
 Build the `InputRequiredResult` wire shape for a handler's `InputRequired` value:
 `resultType: "input_required"`, the `inputRequests` map (each entry
-`{method, params?}`), and a freshly minted `requestState`. Capability checking is
-the caller's job (`missing_capabilities`) — it must reject with -32021 BEFORE
-building this envelope.
+`{method, params?}`), and a freshly minted `requestState` bound to this method,
+principal, and params digest. Capability checking is the caller's job
+(`undeclared_capability_requirements`) — it must reject with -32021 BEFORE building
+this envelope.
 
 # Arguments
 - `server::Server`: The server
 - `ir::InputRequired`: The handler's value
+- `method::String`: The request method (bound into the state token)
 - `params_digest`: The request's canonical params digest
 - `principal::String`: The requesting principal
 
 # Returns
 - `LittleDict{String,Any}`: The result object
 """
-function input_required_envelope(server::Server, ir::InputRequired, params_digest,
-                                 principal::String)::LittleDict{String,Any}
+function input_required_envelope(server::Server, ir::InputRequired, method::String,
+                                 params_digest, principal::String)::LittleDict{String,Any}
     reqs = LittleDict{String,Any}()
     for (k, r) in ir.requests
         entry = LittleDict{String,Any}("method" => r.method)
@@ -335,7 +405,7 @@ function input_required_envelope(server::Server, ir::InputRequired, params_diges
     LittleDict{String,Any}(
         "resultType" => "input_required",
         "inputRequests" => reqs,
-        "requestState" => issue_request_state(server, params_digest, principal, ir.state),
+        "requestState" => issue_request_state(server, method, params_digest, principal, ir.state),
     )
 end
 

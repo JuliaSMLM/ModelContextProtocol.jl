@@ -17,14 +17,26 @@
     end
 
     @testset "capability requirements" begin
+        req = ModelContextProtocol.undeclared_capability_requirements
         ir = InputRequired(Dict("a" => elicit_request("Q?"),
                                 "b" => sampling_request(Dict("maxTokens" => 4))))
-        @test ModelContextProtocol.missing_capabilities(ir, Dict()) == ["elicitation", "sampling"]
-        @test ModelContextProtocol.missing_capabilities(ir, Dict("elicitation" => Dict())) == ["sampling"]
-        @test isempty(ModelContextProtocol.missing_capabilities(ir,
-            Dict("elicitation" => Dict(), "sampling" => Dict())))
+        r = req(ir, Dict())
+        @test haskey(r, "elicitation") && haskey(r, "sampling")
+        @test r["elicitation"]["form"] isa AbstractDict  # mode-precise requirement
+        @test collect(keys(req(ir, Dict("elicitation" => Dict())))) == ["sampling"]
+        @test isempty(req(ir, Dict("elicitation" => Dict(), "sampling" => Dict())))
         # A non-object capabilities value declares nothing
-        @test ModelContextProtocol.missing_capabilities(ir, "junk") == ["elicitation", "sampling"]
+        @test length(req(ir, "junk")) == 2
+        # A null/scalar capability VALUE declares nothing either
+        @test haskey(req(ir, Dict("sampling" => nothing, "elicitation" => Dict())), "sampling")
+        @test haskey(req(ir, Dict("sampling" => true, "elicitation" => Dict())), "sampling")
+        # Elicitation modes are honored: url-only does NOT cover a form request...
+        e = InputRequired(Dict("a" => elicit_request("Q?")))
+        @test haskey(req(e, Dict("elicitation" => Dict("url" => Dict()))), "elicitation")
+        # ...form (alone or alongside url) does, as does a modeless declaration
+        @test isempty(req(e, Dict("elicitation" => Dict("form" => Dict()))))
+        @test isempty(req(e, Dict("elicitation" => Dict("form" => Dict(), "url" => Dict()))))
+        @test isempty(req(e, Dict("elicitation" => Dict())))
     end
 
     @testset "canonical params digest" begin
@@ -37,30 +49,44 @@
     end
 
     @testset "requestState tokens" begin
+        issue = ModelContextProtocol.issue_request_state
+        verify = ModelContextProtocol.verify_request_state
         server = mcp_server(name = "state-t", version = "1.0.0")
-        tok = ModelContextProtocol.issue_request_state(server, "digest-1", "alice", Dict("step" => 2))
-        ok, st = ModelContextProtocol.verify_request_state(server, tok, "digest-1", "alice")
+        tok = issue(server, "tools/call", "digest-1", "alice", Dict("step" => 2))
+        ok, st = verify(server, tok, "tools/call", "digest-1", "alice")
         @test ok && st["step"] == 2
-        # Every binding is enforced: signature, principal, digest
-        @test !ModelContextProtocol.verify_request_state(server, tok * "x", "digest-1", "alice")[1]
-        @test !ModelContextProtocol.verify_request_state(server, tok, "digest-1", "mallory")[1]
-        @test !ModelContextProtocol.verify_request_state(server, tok, "digest-2", "alice")[1]
-        @test !ModelContextProtocol.verify_request_state(server, "garbage", "digest-1", "alice")[1]
-        # Another server's key cannot verify it (ephemeral per-server key)
+        # Every binding is enforced: signature, principal, METHOD, digest
+        @test !verify(server, tok * "x", "tools/call", "digest-1", "alice")[1]
+        @test !verify(server, tok, "tools/call", "digest-1", "mallory")[1]
+        @test !verify(server, tok, "prompts/get", "digest-1", "alice")[1]  # cross-method confusion
+        @test !verify(server, tok, "tools/call", "digest-2", "alice")[1]
+        @test !verify(server, "garbage", "tools/call", "digest-1", "alice")[1]
+        # Another server's random key cannot verify it...
         other = mcp_server(name = "state-o", version = "1.0.0")
-        @test !ModelContextProtocol.verify_request_state(other, tok, "digest-1", "alice")[1]
+        @test !verify(other, tok, "tools/call", "digest-1", "alice")[1]
+        # ...but a deployment-shared key makes retries survive re-routing
+        key = rand(UInt8, 32)
+        a = mcp_server(name = "replica-a", version = "1.0.0", mrtr_state_key = key)
+        b = mcp_server(name = "replica-b", version = "1.0.0", mrtr_state_key = key)
+        tok2 = issue(a, "tools/call", "d", "", nothing)
+        @test verify(b, tok2, "tools/call", "d", "")[1]
+        @test_throws ArgumentError mcp_server(name = "short-key", version = "1.0.0",
+                                              mrtr_state_key = rand(UInt8, 16))
         # Expiry: a hand-signed payload with an old iat is rejected
         old = JSON3.write(Dict("v" => 1, "iat" => round(Int, time()) - 10_000, "ttl" => 600,
-                               "sub" => "alice", "dig" => "digest-1", "st" => nothing))
+                               "sub" => "alice", "mth" => "tools/call",
+                               "dig" => "digest-1", "st" => nothing))
         mac = ModelContextProtocol.hmac_sha256(server.mrtr_state_key, old)
         expired = string(Base64.base64encode(old), ".", Base64.base64encode(mac))
-        okx, why = ModelContextProtocol.verify_request_state(server, expired, "digest-1", "alice")
+        okx, why = verify(server, expired, "tools/call", "digest-1", "alice")
         @test !okx && occursin("expired", why)
     end
 
     @testset "wire flow: elicit, retry, complete" begin
+        executions = Ref(0)
         tool = MCPTool(name = "confirm_tool", description = "d", parameters = ToolParameter[],
             handler = (args, ctx) -> begin
+                executions[] += 1
                 resp = get(input_responses(ctx), "confirm", nothing)
                 resp === nothing && return InputRequired(
                     Dict("confirm" => elicit_request("Really?")); state = Dict("n" => 41))
@@ -76,12 +102,15 @@
         @test r["error"]["code"] == -32021
         @test r["error"]["data"]["requiredCapabilities"]["elicitation"] isa JSON3.Object
 
-        # Declared -> InputRequiredResult with the full envelope
+        # Declared -> InputRequiredResult with the full envelope, including the
+        # REQUIRED (and defaulted) object schema on the form elicitation
         caps = Dict("elicitation" => Dict())
         r = call(2, Dict("name" => "confirm_tool", "arguments" => Dict(), "_meta" => mmeta(caps)))
         @test r["result"]["resultType"] == "input_required"
         @test r["result"]["inputRequests"]["confirm"]["method"] == "elicitation/create"
         @test r["result"]["inputRequests"]["confirm"]["params"]["message"] == "Really?"
+        schema = r["result"]["inputRequests"]["confirm"]["params"]["requestedSchema"]
+        @test schema["type"] == "object" && haskey(schema, "properties")
         @test haskey(r["result"]["_meta"], "io.modelcontextprotocol/serverInfo")
         tok = r["result"]["requestState"]
         @test tok isa String && !isempty(tok)
@@ -110,6 +139,22 @@
                          "inputResponses" => Dict("confirm" => Dict("action" => "accept")),
                          "requestState" => tok))
         @test r["error"]["code"] == -32602
+
+        # A PRESENT but mistyped retry field must be rejected BEFORE the handler
+        # runs — a numeric requestState must not bypass verification, and a scalar
+        # inputResponses must not silently re-elicit
+        before = executions[]
+        for bad_state in (7, [1, 2], Dict("a" => 1), nothing)
+            r = call(7, Dict("name" => "confirm_tool", "arguments" => Dict(),
+                             "_meta" => mmeta(caps),
+                             "inputResponses" => Dict("confirm" => Dict("action" => "accept")),
+                             "requestState" => bad_state))
+            @test r["error"]["code"] == -32602
+        end
+        r = call(8, Dict("name" => "confirm_tool", "arguments" => Dict(),
+                         "_meta" => mmeta(caps), "inputResponses" => "junk"))
+        @test r["error"]["code"] == -32602
+        @test executions[] == before  # the handler never ran for any of them
         task_local_storage(:mcp_suppress_log_notifications, false)
     end
 

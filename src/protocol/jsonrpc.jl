@@ -195,13 +195,17 @@ function parse_request(raw::JSON3.Object)::Request
     # digest is what binds an issued requestState to the exact request it resumes.
     input_responses = nothing
     request_state = nothing
+    has_input_responses = false
+    has_request_state = false
     params_digest = nothing
     if protocol_version !== nothing && method in MRTR_METHODS &&
        haskey(raw, :params) && raw.params isa JSON3.Object
+        has_input_responses = haskey(raw.params, :inputResponses)
         ir = get(raw.params, :inputResponses, nothing)
         if ir isa JSON3.Object
             input_responses = Dict{String,Any}(String(k) => v for (k, v) in pairs(ir))
         end
+        has_request_state = haskey(raw.params, :requestState)
         rs = get(raw.params, :requestState, nothing)
         rs isa AbstractString && (request_state = String(rs))
         params_digest = canonical_json_digest(LittleDict{String,Any}(
@@ -240,6 +244,8 @@ function parse_request(raw::JSON3.Object)::Request
             client_info = client_info,
             input_responses = input_responses,
             request_state = request_state,
+            has_input_responses = has_input_responses,
+            has_request_state = has_request_state,
             params_digest = params_digest
         )
     )

@@ -392,10 +392,32 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
     end
 
     # MRTR retry: an offered requestState is ATTACKER-CONTROLLED and must verify
-    # (signature, TTL, principal, original-params digest) BEFORE any handler runs
+    # (signature, TTL, principal, method, original-params digest) BEFORE any
+    # handler runs. A PRESENT but mistyped retry field is rejected, never treated
+    # as absent — a numeric requestState must not bypass verification, and a
+    # scalar inputResponses must not silently re-elicit.
+    if request.meta.has_request_state && request.meta.request_state === nothing
+        return JSONRPCError(
+            id = request.id,
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_PARAMS,
+                message = "Invalid requestState: must be a string"
+            )
+        )
+    end
+    if request.meta.has_input_responses && request.meta.input_responses === nothing
+        return JSONRPCError(
+            id = request.id,
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_PARAMS,
+                message = "Invalid inputResponses: must be an object"
+            )
+        )
+    end
     mrtr_state = nothing
     if request.meta.request_state !== nothing
         ok, payload = verify_request_state(server, request.meta.request_state,
+                                           request.method,
                                            request.meta.params_digest,
                                            mrtr_principal(authenticated_user))
         ok || return JSONRPCError(
@@ -457,19 +479,19 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         # the -32021 rejection — otherwise answer with the InputRequiredResult
         # (resultType input_required + inputRequests + a minted requestState).
         ir = result.response.result
-        undeclared = missing_capabilities(ir, request.meta.client_capabilities)
-        if !isempty(undeclared)
+        required = undeclared_capability_requirements(ir, request.meta.client_capabilities)
+        if !isempty(required)
             JSONRPCError(
                 id = ctx.request_id,
                 error = ErrorInfo(
                     code = ErrorCodes.MISSING_REQUIRED_CLIENT_CAPABILITY,
-                    message = "Request requires undeclared client capabilities: $(join(undeclared, ", "))",
-                    data = Dict{String,Any}("requiredCapabilities" =>
-                        Dict{String,Any}(cap => Dict{String,Any}() for cap in undeclared))
+                    message = "Request requires undeclared client capabilities: $(join(keys(required), ", "))",
+                    data = Dict{String,Any}("requiredCapabilities" => required)
                 )
             )
         else
-            envelope = input_required_envelope(server, ir, request.meta.params_digest,
+            envelope = input_required_envelope(server, ir, request.method,
+                                               request.meta.params_digest,
                                                mrtr_principal(authenticated_user))
             modern_result_envelope(JSONRPCResponse(id = ctx.request_id, result = envelope), server)
         end
