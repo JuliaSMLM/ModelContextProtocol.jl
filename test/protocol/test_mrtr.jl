@@ -41,6 +41,9 @@
         # form support (only the empty elicitation object implies it)
         @test haskey(req(e, Dict("elicitation" => Dict("form" => nothing))), "elicitation")
         @test haskey(req(e, Dict("elicitation" => Dict("url" => nothing))), "elicitation")
+        # ...and ONLY the bare empty object implies form: an unknown future mode
+        # set excludes it too
+        @test haskey(req(e, Dict("elicitation" => Dict("futureMode" => Dict()))), "elicitation")
 
         # Tool-enabled sampling needs sampling.tools, not just sampling
         st = InputRequired(Dict("s" => sampling_request(Dict(
@@ -49,6 +52,12 @@
         @test r["sampling"]["tools"] isa AbstractDict  # requirement names the subfeature
         @test isempty(req(st, Dict("sampling" => Dict("tools" => Dict()))))
         @test haskey(req(st, Dict("sampling" => Dict("tools" => nothing))), "sampling")
+        # toolChoice alone is also tool-enabled sampling (the schema ties both
+        # fields to sampling.tools)
+        tc = InputRequired(Dict("s" => sampling_request(Dict(
+            "maxTokens" => 4, "toolChoice" => Dict("mode" => "none")))))
+        @test req(tc, Dict("sampling" => Dict()))["sampling"]["tools"] isa AbstractDict
+        @test isempty(req(tc, Dict("sampling" => Dict("tools" => Dict()))))
         # Plain sampling stays satisfied by a bare object...
         sp = InputRequired(Dict("s" => sampling_request(Dict("maxTokens" => 4))))
         @test isempty(req(sp, Dict("sampling" => Dict())))

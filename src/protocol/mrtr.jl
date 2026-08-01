@@ -159,10 +159,13 @@ end
 _capability_present(caps, name::String)::Bool =
     caps isa AbstractDict && (haskey(caps, name) || haskey(caps, Symbol(name)))
 
-# Whether a sampling/createMessage input request asks for tool-enabled sampling
-# (its params include `tools`) — that needs the client's sampling.tools declared
+# Whether a sampling/createMessage input request asks for tool-enabled sampling —
+# either `tools` or `toolChoice` in its params requires the client's
+# sampling.tools declared (the schema ties both fields to that capability)
 _sampling_wants_tools(r::InputRequest)::Bool =
-    r.params isa AbstractDict && (haskey(r.params, "tools") || haskey(r.params, :tools))
+    r.params isa AbstractDict &&
+    (haskey(r.params, "tools") || haskey(r.params, :tools) ||
+     haskey(r.params, "toolChoice") || haskey(r.params, :toolChoice))
 
 """
     capability_satisfied(client_capabilities, r::InputRequest) -> Bool
@@ -172,11 +175,11 @@ Whether this request's declared `_meta` client capabilities cover input request
 declares nothing — including MODE values: `{"elicitation": {"form": null}}`
 declares no form support), and subfeatures are honored:
 
-- form-mode elicitation: an `elicitation` object that names modes must name `form`
-  with an object value (a `url`-only declaration does NOT cover a form request);
-  one naming no modes declares generic elicitation support
-- tool-enabled sampling (`params.tools` present): requires `sampling.tools`
-  declared as an object, not just `sampling`
+- form-mode elicitation: `form` declared with an object value covers it, and ONLY
+  the bare empty `elicitation` object implies it — any other declared mode set
+  (`url`, or modes from a future revision) excludes form
+- tool-enabled sampling (`params.tools` OR `params.toolChoice` present): requires
+  `sampling.tools` declared as an object, not just `sampling`
 
 # Arguments
 - `client_capabilities`: The request's declared client capabilities (any JSON value)
@@ -190,7 +193,10 @@ function capability_satisfied(client_capabilities, r::InputRequest)::Bool
         e = _capability_value(client_capabilities, "elicitation")
         e isa AbstractDict || return false
         _capability_present(e, "form") && return _capability_value(e, "form") isa AbstractDict
-        return !_capability_present(e, "url")  # url-only (even url: null) excludes form
+        # Without an explicit form mode, ONLY the bare empty object implies form
+        # support — any other declared mode set (url, or modes from a future
+        # revision) excludes it
+        return isempty(e)
     elseif r.method == "sampling/createMessage"
         s = _capability_value(client_capabilities, "sampling")
         s isa AbstractDict || return false
