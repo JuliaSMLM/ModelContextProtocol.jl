@@ -450,10 +450,14 @@ Modern-era HTTP is in place too: SEP-2243 header validation (`Mcp-Method`/`Mcp-N
 mirroring the body, -32020), status mapping (404/-32601, 400/-32022), session-ignore
 and 405 on GET. `subscriptions/listen` replaces the GET stream and
 `resources/subscribe` (ack-first, `subscriptionId`-tagged, filtered; announce changes
-with the exported `notify_list_changed` / `notify_resource_updated`).
-Still pending for the modern era: per-request `logLevel`, the tasks extension, MRTR
-(elicitation/sampling/roots via `InputRequiredResult`), and `x-mcp-header` parameter
-mirroring.
+with the exported `notify_list_changed` / `notify_resource_updated`). MRTR
+(SEP-2322) is in: tool handlers return `InputRequired` (built from
+`elicit_request`/`sampling_request`/`roots_request`) and re-run on the client's
+retry with `input_responses(ctx)`/`input_state(ctx)`; undeclared capabilities →
+-32021 with `requiredCapabilities`; `requestState` is HMAC-bound to principal +
+TTL + original-params digest. The draft `server-stateless` conformance scenario
+passes 30/30. Still pending for the modern era: per-request `logLevel`, the tasks
+extension, and `x-mcp-header` parameter mirroring.
 
 ### ✅ Implemented
 
@@ -497,7 +501,8 @@ mirroring.
 
 - **OAuth Authorization Server** (token issuance — DCR, PKCE; tracked in issue #51) and
   remaining RS hardening (per-tool scopes, SSE principal binding)
-- **Elicitation**; **client-side features** (roots, sampling, completion)
+- **Legacy-era elicitation** (server-initiated requests; the modern era covers this
+  via MRTR `input_required` instead); **completion** (`completion/complete`)
 - **Stream resumption** (Last-Event-ID); **concurrent SYNC request handling** (Tasks give
   long calls background execution, but plain requests still go through the single serialized
   server loop today)

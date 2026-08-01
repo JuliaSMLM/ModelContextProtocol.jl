@@ -142,6 +142,28 @@ tools = [
             n = notify_resource_updated(SERVER_REF[], "test://watched-resource")
             TextContent(text = "resource updated; notified $n stream(s)")
         end),
+    MCPTool(
+        name = "test_missing_capability",
+        description = "MRTR diagnostic: needs the client's sampling capability (undeclared -> -32021)",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            resp = get(input_responses(ctx), "sample", nothing)
+            resp === nothing && return InputRequired(Dict("sample" => sampling_request(Dict(
+                "messages" => [Dict("role" => "user",
+                                    "content" => Dict("type" => "text", "text" => "Say ok"))],
+                "maxTokens" => 8))))
+            TextContent(text = "sampled")
+        end),
+    MCPTool(
+        name = "test_streaming_elicitation",
+        description = "MRTR diagnostic: elicits a confirmation via input_required on the response stream",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            resp = get(input_responses(ctx), "confirm", nothing)
+            resp === nothing && return InputRequired(
+                Dict("confirm" => elicit_request("Proceed with the diagnostic?")))
+            TextContent(text = "confirmed")
+        end),
 ]
 
 resources = [

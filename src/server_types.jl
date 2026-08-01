@@ -33,6 +33,7 @@ mutable struct Server
     progress_trackers::Dict{Union{String,Int}, Progress}
     tasks::TaskStore
     listen_subscriptions::SubscriptionRegistry
+    mrtr_state_key::Vector{UInt8}  # HMAC key for MRTR requestState tokens (ephemeral, per-server)
     active::Bool
 
     function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing)
@@ -47,6 +48,7 @@ mutable struct Server
             Dict{Union{String,Int}, Progress}(),
             TaskStore(),
             SubscriptionRegistry(),
+            rand(RandomDevice(), UInt8, 32),
             false
         )
     end

@@ -391,6 +391,23 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         )
     end
 
+    # MRTR retry: an offered requestState is ATTACKER-CONTROLLED and must verify
+    # (signature, TTL, principal, original-params digest) BEFORE any handler runs
+    mrtr_state = nothing
+    if request.meta.request_state !== nothing
+        ok, payload = verify_request_state(server, request.meta.request_state,
+                                           request.meta.params_digest,
+                                           mrtr_principal(authenticated_user))
+        ok || return JSONRPCError(
+            id = request.id,
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_PARAMS,
+                message = "Invalid requestState: $payload"
+            )
+        )
+        mrtr_state = payload
+    end
+
     # Fresh state: modern requests are stateless, and handlers (including ctx-aware
     # tool handlers) must not see or mutate the legacy session's ServerState
     ctx = RequestContext(
@@ -399,7 +416,9 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         request_id = request.id,
         progress_token = request.meta.progress_token,
         authenticated_user = authenticated_user,
-        protocol_version = version
+        protocol_version = version,
+        input_responses = request.meta.input_responses,
+        input_state = mrtr_state
     )
 
     request_start = time()
@@ -432,6 +451,28 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         # subscriptions/listen defers: its route is captured and the stream is
         # served out-of-loop, so there is no response to emit here
         nothing
+    elseif !isnothing(result.response) && result.response.result isa InputRequired
+        # MRTR: the handler needs client input. A server MUST NOT send
+        # inputRequests whose capability this request did not declare — that is
+        # the -32021 rejection — otherwise answer with the InputRequiredResult
+        # (resultType input_required + inputRequests + a minted requestState).
+        ir = result.response.result
+        undeclared = missing_capabilities(ir, request.meta.client_capabilities)
+        if !isempty(undeclared)
+            JSONRPCError(
+                id = ctx.request_id,
+                error = ErrorInfo(
+                    code = ErrorCodes.MISSING_REQUIRED_CLIENT_CAPABILITY,
+                    message = "Request requires undeclared client capabilities: $(join(undeclared, ", "))",
+                    data = Dict{String,Any}("requiredCapabilities" =>
+                        Dict{String,Any}(cap => Dict{String,Any}() for cap in undeclared))
+                )
+            )
+        else
+            envelope = input_required_envelope(server, ir, request.meta.params_digest,
+                                               mrtr_principal(authenticated_user))
+            modern_result_envelope(JSONRPCResponse(id = ctx.request_id, result = envelope), server)
+        end
     else
         response = modern_result_envelope(result.response, server)
         # CacheableResult fields are REQUIRED on complete results of the cacheable

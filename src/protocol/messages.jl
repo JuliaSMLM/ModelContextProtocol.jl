@@ -27,6 +27,11 @@ Base.@kwdef struct RequestMeta
     protocol_version::Union{String,Nothing} = nothing
     client_capabilities::Any = nothing
     client_info::Any = nothing
+    # MRTR (2026-07-28) retry fields, harvested from raw params on modern
+    # tools/call, resources/read, and prompts/get requests
+    input_responses::Union{Nothing,Dict{String,Any}} = nothing
+    request_state::Union{Nothing,String} = nothing
+    params_digest::Union{Nothing,String} = nothing  # canonical digest of the params sans _meta/retry fields
 end
 
 """

@@ -189,6 +189,26 @@ function parse_request(raw::JSON3.Object)::Request
         end
     end
 
+    # MRTR (2026-07-28): on modern requests to the three methods that may answer
+    # input_required, harvest the retry fields and compute the canonical digest of
+    # the ORIGINAL params (everything except _meta and the retry fields) — the
+    # digest is what binds an issued requestState to the exact request it resumes.
+    input_responses = nothing
+    request_state = nothing
+    params_digest = nothing
+    if protocol_version !== nothing && method in MRTR_METHODS &&
+       haskey(raw, :params) && raw.params isa JSON3.Object
+        ir = get(raw.params, :inputResponses, nothing)
+        if ir isa JSON3.Object
+            input_responses = Dict{String,Any}(String(k) => v for (k, v) in pairs(ir))
+        end
+        rs = get(raw.params, :requestState, nothing)
+        rs isa AbstractString && (request_state = String(rs))
+        params_digest = canonical_json_digest(LittleDict{String,Any}(
+            String(k) => v for (k, v) in pairs(raw.params)
+            if !(k in (:_meta, :inputResponses, :requestState))))
+    end
+
     params_type = get_params_type(method)
     typed_params = if !isnothing(params_type) && haskey(raw, :params) && raw.params isa JSON3.Object
         if isempty(raw.params)
@@ -217,7 +237,10 @@ function parse_request(raw::JSON3.Object)::Request
             progress_token = progress_token,
             protocol_version = protocol_version,
             client_capabilities = client_capabilities,
-            client_info = client_info
+            client_info = client_info,
+            input_responses = input_responses,
+            request_state = request_state,
+            params_digest = params_digest
         )
     )
 end
