@@ -531,6 +531,17 @@
         @test !occursin("child-leak-probe", wire)
         @test !occursin("notifications/message", wire)
 
+        # Same leak probe on an OS-thread child: Threads.@spawn inherits logstate
+        # exactly like @async, and the delivery lock is what keeps the cross-thread
+        # case safe
+        wire, resp = run_child_probe(level = nothing,
+            tool_handler = args -> begin
+                fetch(Threads.@spawn @warn "spawn-leak-probe")
+                TextContent(text = "ok")
+            end)
+        @test resp["result"]["resultType"] == "complete"
+        @test !occursin("spawn-leak-probe", wire)
+
         # Opt-in at "emergency": a child-task error is below the requested level
         wire, resp = run_child_probe(level = "emergency",
             tool_handler = args -> begin
@@ -571,6 +582,41 @@
         @test !occursin("foreign-probe", String(take!(foreign_out)))
         @test !occursin("foreign-probe", wire)
 
+        # A foreign ACTIVE logger installed as the CURRENT logger (two servers in
+        # one process — the last-started server's global_logger wins in both
+        # loops): serving a modern request on server A must install a wire-silent
+        # scope around server B's logger, or an @async child (which inherits the
+        # logstate but not the suppression task-local) delivers A's records
+        # through B's legacy-activated transport
+        serverA = modern_server()
+        push!(serverA.tools, MCPTool(name = "child_tool", description = "spawns",
+            parameters = [], handler = args -> begin
+                fetch(@async @warn "foreign-active-probe")
+                TextContent(text = "ok")
+            end))
+        outA = IOBuffer()
+        serverA.transport = ModelContextProtocol.StdioTransport(
+            input = IOBuffer(), output = outA)
+        outB = IOBuffer()
+        transportB = ModelContextProtocol.StdioTransport(
+            input = IOBuffer(), output = outB)
+        loggerB = MCPLogger(IOBuffer(), Logging.Info)
+        loggerB.transport = transportB
+        loggerB.transport_active[] = true
+        task_local_storage(:mcp_suppress_log_notifications, true)
+        m = modern_meta()
+        m["io.modelcontextprotocol/logLevel"] = "info"
+        raw = with_logger(loggerB) do
+            process_message(serverA, ServerState(), JSON3.write(Dict(
+                "jsonrpc" => "2.0", "id" => 31, "method" => "tools/call",
+                "params" => Dict("name" => "child_tool", "arguments" => Dict(),
+                                 "_meta" => m))))
+        end
+        task_local_storage(:mcp_suppress_log_notifications, false)
+        @test JSON3.read(raw)["result"]["resultType"] == "complete"
+        @test !occursin("foreign-active-probe", String(take!(outB)))
+        @test !occursin("foreign-active-probe", String(take!(outA)))
+
         # Post-response: a late child record is dropped once the scope is closed
         late_out = IOBuffer()
         late_transport = ModelContextProtocol.StdioTransport(
@@ -581,12 +627,28 @@
         with_logger(rl) do
             @info "before-close"
         end
-        rl.closed[] = true
+        ModelContextProtocol.close_scope!(rl)
         with_logger(rl) do
             @info "after-close"
         end
         late_wire = String(take!(late_out))
         @test occursin("before-close", late_wire)
         @test !occursin("after-close", late_wire)
+
+        # HTTP log delivery must never load-shed the response channel away: past
+        # the backlog cap the RECORD is dropped and the channel stays open (the
+        # final response still has to travel it) — unlike listen streams, which
+        # deliver_notification closes under the same pressure
+        ht = ModelContextProtocol.HttpTransport(host = "127.0.0.1", port = 59999)
+        ch = Channel{Tuple{Symbol,String}}(Inf)
+        ht.response_channels["r1"] = ch
+        for _ in 1:ModelContextProtocol.NOTIFICATION_QUEUE_SOFTCAP
+            put!(ch, (:notification, "x"))
+        end
+        @test !ModelContextProtocol.deliver_log_notification(ht, "r1", "overflow")
+        @test isopen(ch)
+        while isready(ch); take!(ch); end
+        @test ModelContextProtocol.deliver_log_notification(ht, "r1", "fits")
+        @test take!(ch) == (:notification, "fits")
     end
 end

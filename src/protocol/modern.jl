@@ -466,14 +466,18 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
     # `subscriptions/listen` (its response stream IS the subscription stream,
     # where notifications/message is forbidden); otherwise the scope is
     # wire-silent — which is also what confines child-task records of NON-opted-in
-    # requests. The wrapper is bound to the CURRENT logger only when that logger
-    # serves this server's transport (two servers in one process — same rule as
-    # handle_initialize's activation); rebuilding the logstate here is also what
-    # lets a debug opt-in generate records below the operator's installed level,
-    # without mutating any global state.
+    # requests. EVERY MCPLogger gets a scope: one wired to this server's transport
+    # may carry the opt-in level, while one serving a DIFFERENT server (two servers
+    # in one process, last-installed global logger wins in both loops) gets a
+    # wire-silent scope — falling through unwrapped would let an @async child,
+    # which inherits the logstate but not the suppression task-local, deliver this
+    # request's records through the foreign server's legacy-activated transport.
+    # Rebuilding the logstate here is also what lets a debug opt-in generate
+    # records below the operator's installed level, without mutating any global
+    # state.
     lg = Logging.current_logger()
-    if lg isa MCPLogger && lg.transport === server.transport
-        level = request.meta.log_level
+    if lg isa MCPLogger
+        level = lg.transport === server.transport ? request.meta.log_level : nothing
         if level !== nothing && (request.method == "subscriptions/listen" ||
                                  !any(c -> c isa LoggingCapability, server.config.capabilities))
             level = nothing
@@ -486,8 +490,9 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
             end
         finally
             # The response is on its way: late child-task records must drop to the
-            # operator stream, not trail the response on the wire
-            rl.closed[] = true
+            # operator stream, not trail the response on the wire. close_scope!
+            # waits out any in-flight delivery under the scope's lock.
+            close_scope!(rl)
         end
     end
     serve_modern(server, request, version, mrtr_state, authenticated_user)

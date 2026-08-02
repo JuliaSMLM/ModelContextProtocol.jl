@@ -263,6 +263,10 @@ Undelivered records fall back to the operator's `inner.stream` under `inner`'s o
 - `level::Union{String,Nothing}`: The validated requested MCP level, or `nothing`
   for a wire-silent scope
 - `closed::Base.RefValue{Bool}`: Set once the request's response is under way
+- `lk::ReentrantLock`: Serializes delivery against closure — `close_scope!` takes it
+  to flip `closed`, so a child task's in-flight delivery either completes before
+  the final response or observes `closed` and drops; the check-then-deliver window
+  is never open across teardown
 """
 struct ModernRequestLogger <: AbstractLogger
     inner::MCPLogger
@@ -270,10 +274,31 @@ struct ModernRequestLogger <: AbstractLogger
     route::Any
     level::Union{String,Nothing}
     closed::Base.RefValue{Bool}
+    lk::ReentrantLock
 end
 
 ModernRequestLogger(inner::MCPLogger, transport, route, level::Union{String,Nothing}) =
-    ModernRequestLogger(inner, transport, route, level, Ref(false))
+    ModernRequestLogger(inner, transport, route, level, Ref(false), ReentrantLock())
+
+"""
+    close_scope!(logger::ModernRequestLogger) -> Nothing
+
+End a request's logging scope: after this, no record is delivered on the request's
+response stream. Taking the delivery lock makes closure wait out any in-flight
+delivery, so a notification can never trail the final response.
+
+# Arguments
+- `logger::ModernRequestLogger`: The scope to close
+
+# Returns
+- `Nothing`
+"""
+function close_scope!(logger::ModernRequestLogger)
+    lock(logger.lk) do
+        logger.closed[] = true
+    end
+    nothing
+end
 
 # A debug opt-in must generate records below the operator's installed level; the
 # with_logger installation rebuilds Julia's cached LogState from this value.
@@ -305,15 +330,23 @@ function Logging.handle_message(logger::ModernRequestLogger, level, message, _mo
 
     mcp_level, serialized = format_log_notification(level, message, _module, filepath, line; kwargs...)
 
-    if logger.level !== nothing && !logger.closed[] &&
+    if logger.level !== nothing &&
        mcp_level_severity(mcp_level) >= mcp_level_severity(logger.level)
-        try
-            # deliver_notification returns false when the route is gone (client
-            # disconnected / response already completed on HTTP) — drop to the
-            # fallback stream, never divert to another stream
-            deliver_notification(logger.transport, logger.route, serialized) && return nothing
+        # The lock pairs the closed check with the delivery: close_scope! (taken
+        # under the same lock) either waits for this delivery to finish or is
+        # already visible here, so a record can never trail the final response.
+        # deliver_log_notification returns false when the route is gone (client
+        # disconnected / response already completed on HTTP) or its backlog is
+        # full — drop to the fallback stream, never divert to another stream.
+        delivered = try
+            lock(logger.lk) do
+                !logger.closed[] &&
+                    deliver_log_notification(logger.transport, logger.route, serialized)
+            end
         catch
+            false
         end
+        delivered && return nothing
     end
 
     # Operator fallback under the INSTALLED level: records that exist only because
