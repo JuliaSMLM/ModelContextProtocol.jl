@@ -247,18 +247,23 @@ rules as the serving task's.
 
 Semantics per SEP-2575: with a requested `level`, records at or above it (RFC-5424)
 are delivered as `notifications/message` on the ORIGINATING request's response
-stream — the `route` captured at construction, pushed via `deliver_notification`
-on the `transport` the arming site verified — never on the standalone GET stream,
-a `subscriptions/listen` stream, or another server's transport. Without a `level`
-(the request did not opt in, or the server declares no logging capability), nothing
-is ever delivered. Delivery ends when `closed` is set (the final response is on its
-way) or the response channel is gone — late records are dropped, not diverted.
-Undelivered records fall back to the operator's `inner.stream` under `inner`'s own
-`min_level`, so a `debug` opt-in below the operator's level never spams stderr.
+stream — the `route` captured at construction, pushed via `deliver_log_notification`
+(which never closes the request's response channel under backlog pressure) on the
+serving `transport` — never on the standalone GET stream, a `subscriptions/listen`
+stream, or another server's transport. A `level` is only ever set when the arming
+site verified the current logger serves this server's transport; an
+identity-MISMATCHED `MCPLogger` (another server's) still gets a scope, but a
+wire-silent one (`level = nothing`), so child tasks cannot deliver through the
+foreign transport either. Without a `level` (no opt-in, no logging capability, or
+that mismatch), nothing is ever delivered. Delivery ends when `closed` is set (the
+final response is on its way) or the response channel is gone — late records are
+dropped, not diverted. Undelivered records fall back to the operator's
+`inner.stream` under `inner`'s own `min_level`, so a `debug` opt-in below the
+operator's level never spams stderr.
 
 # Fields
 - `inner::MCPLogger`: The server's installed logger (fallback stream + operator level)
-- `transport::Any`: The serving transport (verified `=== inner.transport` at arming)
+- `transport::Any`: The serving server's transport
 - `route::Any`: The request's captured notification route
 - `level::Union{String,Nothing}`: The validated requested MCP level, or `nothing`
   for a wire-silent scope
