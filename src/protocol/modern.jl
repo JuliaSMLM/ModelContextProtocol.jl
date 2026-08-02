@@ -348,10 +348,10 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
     # Suppress notifications/message from here through the END of this loop
     # iteration (the loop re-arms the flag per message): parser/dispatch/post-
     # dispatch log records must not reach a modern client that set no logLevel,
-    # even when a legacy client previously enabled debug delivery. The per-request
-    # level is likewise reset — it is only set below, after the request validates.
+    # even when a legacy client previously enabled debug delivery. (A validated
+    # logLevel opt-in is served by the ModernRequestLogger scope below, which
+    # ignores this flag — it never delivers through MCPLogger's ambient gates.)
     task_local_storage(:mcp_suppress_log_notifications, true)
-    task_local_storage(:mcp_request_log_level, nothing)
 
     version = request.meta.protocol_version
 
@@ -457,25 +457,37 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
     # Per-request log opt-in (SEP-2575), applied only once the request has fully
     # validated: notifications preceding an error response would SSE-upgrade the
     # POST and defeat the modern HTTP status mapping (404/400 ride the plain-JSON
-    # branch). Requires the server to declare the logging capability (a MUST for
-    # emitters); subscriptions/listen is excluded — its response stream is the
-    # subscription stream, where notifications/message is forbidden. An MCPLogger
-    # wired to a DIFFERENT server's transport must not be armed (two servers in
-    # one process — same rule as handle_initialize's activation). The serve path
-    # is re-scoped under the current logger because Julia's LogState caches
-    # `min_enabled_level` at install time: rebuilding it here (with the task-local
-    # level set) is what lets a debug opt-in generate records below the operator's
-    # installed level, without mutating any global state.
-    if request.meta.log_level !== nothing &&
-       request.method != "subscriptions/listen" &&
-       any(c -> c isa LoggingCapability, server.config.capabilities)
-        lg = Logging.current_logger()
-        if !(lg isa MCPLogger) || lg.transport === server.transport
-            task_local_storage(:mcp_request_log_level, request.meta.log_level)
-            task_local_storage(:mcp_suppress_log_notifications, false)
-            return with_logger(lg) do
+    # branch). The serve path runs under a request-scoped ModernRequestLogger
+    # (installed with `with_logger`, so handler-spawned CHILD TASKS inherit it —
+    # task-local flags do not propagate to children, logstate does), carrying the
+    # requested level, the request's captured response route, and the serving
+    # transport. The opt-in level is honored only when the server declares the
+    # logging capability (a MUST for emitters) and the method is not
+    # `subscriptions/listen` (its response stream IS the subscription stream,
+    # where notifications/message is forbidden); otherwise the scope is
+    # wire-silent — which is also what confines child-task records of NON-opted-in
+    # requests. The wrapper is bound to the CURRENT logger only when that logger
+    # serves this server's transport (two servers in one process — same rule as
+    # handle_initialize's activation); rebuilding the logstate here is also what
+    # lets a debug opt-in generate records below the operator's installed level,
+    # without mutating any global state.
+    lg = Logging.current_logger()
+    if lg isa MCPLogger && lg.transport === server.transport
+        level = request.meta.log_level
+        if level !== nothing && (request.method == "subscriptions/listen" ||
+                                 !any(c -> c isa LoggingCapability, server.config.capabilities))
+            level = nothing
+        end
+        route = get(task_local_storage(), :mcp_notification_route, nothing)
+        rl = ModernRequestLogger(lg, server.transport, route, level)
+        try
+            return with_logger(rl) do
                 serve_modern(server, request, version, mrtr_state, authenticated_user)
             end
+        finally
+            # The response is on its way: late child-task records must drop to the
+            # operator stream, not trail the response on the wire
+            rl.closed[] = true
         end
     end
     serve_modern(server, request, version, mrtr_state, authenticated_user)

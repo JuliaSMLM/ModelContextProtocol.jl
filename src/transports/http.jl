@@ -1647,13 +1647,6 @@ function send_notification(transport::HttpTransport, notification::String)::Noth
         end
     end
 
-    # A modern per-request log opt-in is scoped to its own response stream (the
-    # spec forbids delivering notifications/message on any other stream): when that
-    # stream is gone, the record is dropped, never diverted to the legacy GET stream.
-    if get(task_local_storage(), :mcp_request_log_level, nothing) !== nothing
-        return nothing
-    end
-
     # Out-of-band delivery: the standalone GET SSE notification stream. The queue is
     # unbounded (put! must never block the single server loop — the GET consumer is
     # optional per spec and may simply not exist), so enforce a soft cap here by

@@ -192,12 +192,7 @@ function run_server_loop(server::Server, state::ServerState)
             # iteration, covering pre-parse and post-dispatch @debug lines alike.
             # (Cost: the pre-parse "Processing message" debug line is stderr-only
             # even for legacy debug sessions — era is genuinely unknown there.)
-            # The per-request log level (modern logLevel opt-in) is likewise reset
-            # per message AND cleared after the iteration: a validated opt-in
-            # leaves it set, and records logged between iterations (route already
-            # cleared) must not inherit its lowered enablement.
             task_local_storage(:mcp_suppress_log_notifications, true)
-            task_local_storage(:mcp_request_log_level, nothing)
             task_local_storage(:mcp_notification_route, notification_route(transport))
             try
                 @debug "Processing message" raw=message
@@ -213,7 +208,6 @@ function run_server_loop(server::Server, state::ServerState)
                 end
             finally
                 task_local_storage(:mcp_notification_route, nothing)
-                task_local_storage(:mcp_request_log_level, nothing)
             end
         catch e
             if e isa InterruptException

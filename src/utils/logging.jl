@@ -5,12 +5,16 @@
 
 Define a custom logger for MCP server that formats messages according to protocol requirements.
 
-Once the server is initialized, log records are delivered to the client as MCP
+Once a LEGACY session is initialized, log records are delivered to the client as MCP
 `notifications/message` notifications via the server's transport (`send_notification`):
 stdio writes them to stdout alongside responses; Streamable HTTP delivers them on the
 originating request's SSE response stream (or the standalone notification stream when
 no request is being handled). Before initialization — or if transport delivery fails —
-records fall back to `stream` as JSON lines.
+records fall back to `stream` as JSON lines. Modern-era (2026-07-28+) requests never
+deliver through these ambient gates: a request that opted in via
+`io.modelcontextprotocol/logLevel` is served under a request-scoped
+`ModernRequestLogger` wrapping this logger, and every other modern request keeps the
+loop-armed suppression flag, so its records reach only the fallback stream.
 
 # Fields
 - `stream::IO`: Fallback output stream for log messages (used before the client
@@ -78,16 +82,11 @@ function mcp_level_severity(level::String)::Int
     idx === nothing ? length(MCP_LOG_LEVELS) : idx
 end
 
-# The per-request log level (modern era, io.modelcontextprotocol/logLevel) is
-# task-local: handle_modern_request sets it for the duration of one validated
-# request on the serial loop task, and the loop clears it with the notification
-# route. It lowers the logger's effective enablement so a debug-requesting client
-# can receive records below the operator's min_level — handle_message filters
-# delivery by MCP severity and keeps the fallback stream at min_level.
-function effective_min_level(logger::MCPLogger)::LogLevel
-    lvl = get(task_local_storage(), :mcp_request_log_level, nothing)
-    lvl isa String ? min(logger.min_level, mcp_level_to_julia(lvl)) : logger.min_level
-end
+# HTTP.jl's internal connection-loop logging must not be relayed into the MCP
+# notification stream: on every client disconnect HTTP.jl logs the `closeread`
+# EOF at error level — transport-internal teardown noise, not an application log.
+_http_internal_record(_module) =
+    _module !== nothing && nameof(Base.moduleroot(_module)) === :HTTP
 
 """
     MCPLogger(stream::IO=stderr, level::LogLevel=Info) -> MCPLogger
@@ -106,20 +105,67 @@ function MCPLogger(stream::IO=stderr, level::LogLevel=Info)
 end
 
 function Logging.shouldlog(logger::MCPLogger, level, _module, group, id)
-    level >= effective_min_level(logger) || return false
-    # Do not relay HTTP.jl's internal connection-loop logging into the MCP notification
-    # stream. On every client disconnect HTTP.jl logs the `closeread` EOF at error level
-    # ("handle_connection handler error") — transport-internal teardown noise, not an MCP
-    # application log. The package's own transport errors (logged from this module) pass.
-    if _module !== nothing && nameof(Base.moduleroot(_module)) === :HTTP
-        return false
-    end
-    return true
+    level >= logger.min_level || return false
+    # The package's own transport errors (logged from this module) pass; HTTP.jl
+    # internals do not.
+    return !_http_internal_record(_module)
 end
 
-Logging.min_enabled_level(logger::MCPLogger) = effective_min_level(logger)
+Logging.min_enabled_level(logger::MCPLogger) = logger.min_level
 
 Logging.catch_exceptions(logger::MCPLogger) = false
+
+"""
+    format_log_notification(level, message, _module, filepath, line; kwargs...) -> (String, String)
+
+Build the wire form of a log record as an MCP `notifications/message`.
+
+# Arguments
+- `level`: The Julia `LogLevel` of the record
+- `message`: The log message content
+- `_module`: The module where the log was generated
+- `filepath`: The source file path
+- `line`: The source line number
+- `kwargs...`: Additional context, stringified into the metadata
+
+# Returns
+- `Tuple{String,String}`: The MCP level name and the serialized JSON-RPC notification
+"""
+function format_log_notification(level, message, _module, filepath, line; kwargs...)
+    mcp_level = if level >= Error
+        "error"
+    elseif level >= Warn
+        "warning"
+    elseif level >= Info
+        "info"
+    else
+        "debug"
+    end
+
+    log_message = LittleDict{String,Any}(
+        "jsonrpc" => "2.0",
+        "method" => "notifications/message",
+        "params" => LittleDict{String,Any}(
+            "level" => mcp_level,
+            "data" => LittleDict{String,Any}(
+                "message" => string(message),
+                "timestamp" => Dates.format(now(), "yyyy-mm-ddTHH:MM:SS"),
+                "metadata" => LittleDict{String,Any}(
+                    "module" => string(_module),
+                    "file" => string(filepath),
+                    "line" => line
+                )
+            )
+        )
+    )
+    if !isempty(kwargs)
+        log_message["params"]["data"]["metadata"]["context"] = Dict(string(k) => string(v) for (k,v) in kwargs)
+    end
+
+    buf = IOBuffer()
+    JSON3.write(buf, log_message)
+    (mcp_level, String(take!(buf)))
+end
 
 """
     Logging.handle_message(logger::MCPLogger, level, message, _module, group, id, filepath, line; kwargs...) -> Nothing
@@ -145,11 +191,14 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
     # Reentrancy guard FIRST: everything below — string(message), string(v) on kwarg
     # values, JSON3.write, is_connected, the transport send — can invoke user-defined
     # show methods or transport code that logs, re-entering this function. A recursive
-    # record gets a minimal fixed fallback line: no formatting of user values, no
-    # transport delivery, so the recursion terminates at depth one.
+    # record gets a minimal fixed fallback line (still gated by the operator's level:
+    # a record that would not have printed must not leave a marker either): no
+    # formatting of user values, no transport delivery, so the recursion terminates
+    # at depth one.
     if get(task_local_storage(), :mcp_logger_reentry, false)
         try
-            println(logger.stream, "{\"mcp_logger\":\"recursive log record suppressed\"}")
+            level >= logger.min_level &&
+                println(logger.stream, "{\"mcp_logger\":\"recursive log record suppressed\"}")
         catch
         end
         return nothing
@@ -157,62 +206,16 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
     task_local_storage(:mcp_logger_reentry, true)
     try
 
-    # Convert log level to MCP protocol level
-    mcp_level = if level >= Error
-        "error"
-    elseif level >= Warn
-        "warning"
-    elseif level >= Info
-        "info"
-    else
-        "debug"
-    end
-    
-    # Create JSON-RPC formatted log message
-    buf = IOBuffer()
-    log_message = LittleDict{String,Any}(
-        "jsonrpc" => "2.0",
-        "method" => "notifications/message",
-        "params" => LittleDict{String,Any}(
-            "level" => mcp_level,
-            "data" => LittleDict{String,Any}(
-                "message" => string(message),
-                "timestamp" => Dates.format(now(), "yyyy-mm-ddTHH:MM:SS"),
-                "metadata" => LittleDict{String,Any}(
-                    "module" => string(_module),
-                    "file" => string(filepath),
-                    "line" => line
-                )
-            )
-        )
-    )
-    
-    # Add any additional context from kwargs
-    if !isempty(kwargs)
-        log_message["params"]["data"]["metadata"]["context"] = Dict(string(k) => string(v) for (k,v) in kwargs)
-    end
-    
-    # Write to buffer
-    JSON3.write(buf, log_message)
-    serialized = String(take!(buf))
+    _, serialized = format_log_notification(level, message, _module, filepath, line; kwargs...)
 
     # Deliver to the client as a notifications/message over the transport once the
-    # session is initialized (recursion from the send path is handled by the
-    # entry guard above). Modern-era (2026-07-28+) request handling sets the
-    # suppression flag: notifications/message MUST NOT be emitted for a request
-    # that did not opt in via io.modelcontextprotocol/logLevel. When a request DID
-    # opt in, the task-local per-request level filters delivery to records at or
-    # above it (RFC-5424 severity), independent of the operator's min_level.
-    request_level = get(task_local_storage(), :mcp_request_log_level, nothing)
-    deliverable = !(request_level isa String) ||
-                  mcp_level_severity(mcp_level) >= mcp_level_severity(request_level)
-    # transport_active is the LEGACY never-before-initialize rule; the modern era
-    # has no initialization, so a validated per-request opt-in (which also proved
-    # the logger belongs to the serving transport before arming the task-local)
-    # delivers on a connected transport regardless of it.
-    active = logger.transport_active[] || request_level isa String
+    # LEGACY session is initialized (recursion from the send path is handled by the
+    # entry guard above). Modern-era (2026-07-28+) requests never deliver through
+    # this path: the loop arms the suppression flag per message, and a validated
+    # per-request logLevel opt-in is served by a `ModernRequestLogger` scope (which
+    # child tasks inherit) instead of this logger's ambient gates.
     t = logger.transport
-    if deliverable && t !== nothing && active && is_connected(t) &&
+    if t !== nothing && logger.transport_active[] && is_connected(t) &&
        !get(task_local_storage(), :mcp_suppress_log_notifications, false)
         try
             send_notification(t, serialized)
@@ -222,12 +225,102 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
         end
     end
 
-    # Fallback: write to the configured stream (stderr by default). Records that
-    # only exist because a per-request logLevel lowered the effective enablement
-    # stay off the operator's stream — min_level still governs it.
-    if level >= logger.min_level
-        println(logger.stream, serialized)
-        Base.flush(logger.stream)
+    # Fallback: write to the configured stream (stderr by default)
+    println(logger.stream, serialized)
+    Base.flush(logger.stream)
+
+    finally
+        task_local_storage(:mcp_logger_reentry, false)
+    end
+    nothing
+end
+
+"""
+    ModernRequestLogger(inner::MCPLogger, transport, route,
+                        level::Union{String,Nothing}) <: AbstractLogger
+
+The logging scope of ONE modern-era (2026-07-28+) request. `handle_modern_request`
+installs it around the serve path with `with_logger`, which is what makes every
+guarantee task-inheritance-proof: child tasks a handler spawns inherit the logstate
+(unlike task-local storage), so their records land here too, subject to the same
+rules as the serving task's.
+
+Semantics per SEP-2575: with a requested `level`, records at or above it (RFC-5424)
+are delivered as `notifications/message` on the ORIGINATING request's response
+stream — the `route` captured at construction, pushed via `deliver_notification`
+on the `transport` the arming site verified — never on the standalone GET stream,
+a `subscriptions/listen` stream, or another server's transport. Without a `level`
+(the request did not opt in, or the server declares no logging capability), nothing
+is ever delivered. Delivery ends when `closed` is set (the final response is on its
+way) or the response channel is gone — late records are dropped, not diverted.
+Undelivered records fall back to the operator's `inner.stream` under `inner`'s own
+`min_level`, so a `debug` opt-in below the operator's level never spams stderr.
+
+# Fields
+- `inner::MCPLogger`: The server's installed logger (fallback stream + operator level)
+- `transport::Any`: The serving transport (verified `=== inner.transport` at arming)
+- `route::Any`: The request's captured notification route
+- `level::Union{String,Nothing}`: The validated requested MCP level, or `nothing`
+  for a wire-silent scope
+- `closed::Base.RefValue{Bool}`: Set once the request's response is under way
+"""
+struct ModernRequestLogger <: AbstractLogger
+    inner::MCPLogger
+    transport::Any
+    route::Any
+    level::Union{String,Nothing}
+    closed::Base.RefValue{Bool}
+end
+
+ModernRequestLogger(inner::MCPLogger, transport, route, level::Union{String,Nothing}) =
+    ModernRequestLogger(inner, transport, route, level, Ref(false))
+
+# A debug opt-in must generate records below the operator's installed level; the
+# with_logger installation rebuilds Julia's cached LogState from this value.
+function Logging.min_enabled_level(logger::ModernRequestLogger)
+    logger.level === nothing ? logger.inner.min_level :
+        min(logger.inner.min_level, mcp_level_to_julia(logger.level))
+end
+
+function Logging.shouldlog(logger::ModernRequestLogger, level, _module, group, id)
+    level >= Logging.min_enabled_level(logger) || return false
+    return !_http_internal_record(_module)
+end
+
+Logging.catch_exceptions(logger::ModernRequestLogger) = false
+
+function Logging.handle_message(logger::ModernRequestLogger, level, message, _module,
+                                group, id, filepath, line; kwargs...)
+    # Same reentrancy termination as MCPLogger (delivery and formatting can log)
+    if get(task_local_storage(), :mcp_logger_reentry, false)
+        try
+            level >= logger.inner.min_level &&
+                println(logger.inner.stream, "{\"mcp_logger\":\"recursive log record suppressed\"}")
+        catch
+        end
+        return nothing
+    end
+    task_local_storage(:mcp_logger_reentry, true)
+    try
+
+    mcp_level, serialized = format_log_notification(level, message, _module, filepath, line; kwargs...)
+
+    if logger.level !== nothing && !logger.closed[] &&
+       mcp_level_severity(mcp_level) >= mcp_level_severity(logger.level)
+        try
+            # deliver_notification returns false when the route is gone (client
+            # disconnected / response already completed on HTTP) — drop to the
+            # fallback stream, never divert to another stream
+            deliver_notification(logger.transport, logger.route, serialized) && return nothing
+        catch
+        end
+    end
+
+    # Operator fallback under the INSTALLED level: records that exist only because
+    # the opt-in lowered the effective enablement stay off the operator's stream
+    if level >= logger.inner.min_level
+        println(logger.inner.stream, serialized)
+        Base.flush(logger.inner.stream)
     end
 
     finally

@@ -22,13 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suppression, now the spec's MUST); an unrecognized level value is rejected
   with `-32602`. Delivery requires the server to declare the logging capability
   (a spec MUST for emitters, on by default), which `server/discover` now
-  advertises. A `debug` opt-in delivers records below the operator's installed
-  logger level for the request's duration — the serve path is re-scoped under
-  the current logger so Julia's cached `LogState` enablement is rebuilt with the
-  per-request level, without mutating any global state — while the operator's
-  fallback stream stays governed by the installed level. Works for pure modern
-  stateless sessions: the legacy initialize-activation gate does not apply to
-  the per-request opt-in.
+  advertises. Every guarantee is carried by a request-scoped
+  `ModernRequestLogger` installed with `with_logger` around the serve path —
+  logstate, unlike task-local storage, is inherited by handler-spawned child
+  tasks, so suppression, severity filtering, and stream confinement hold for
+  `@async`/`@spawn` records too, and delivery authorization is bound to the
+  serving transport rather than ambient state (an `MCPLogger` wired to a
+  different server keeps its own legacy gates). Records arriving after the
+  response is under way are dropped, not delivered late. A `debug` opt-in
+  delivers records below the operator's installed logger level for the
+  request's duration — the wrapper's installation rebuilds Julia's cached
+  `LogState` enablement with the per-request level, without mutating any global
+  state — while the operator's fallback stream stays governed by the installed
+  level. Works for pure modern stateless sessions: the legacy
+  initialize-activation gate does not apply to the per-request opt-in.
 
 - **MRTR / `input_required` (SEP-2322, 2026-07-28).** The modern era's replacement
   for server-initiated requests, which finally makes elicitation implementable on

@@ -379,13 +379,11 @@
             logger.transport_active[] = true
             state = ServerState()
             task_local_storage(:mcp_suppress_log_notifications, true)
-            task_local_storage(:mcp_request_log_level, nothing)
             raw = try
                 with_logger(logger) do
                     process_message(server, state, JSON3.write(msg))
                 end
             finally
-                task_local_storage(:mcp_request_log_level, nothing)
                 task_local_storage(:mcp_suppress_log_notifications, false)
             end
             (String(take!(out)), String(take!(fallback)),
@@ -456,22 +454,139 @@
         @test !haskey(resp["result"]["capabilities"], "logging")
 
         # subscriptions/listen never honors the opt-in: its response stream IS the
-        # subscription stream. The request defers (no immediate response) and the
-        # per-request level must NOT have been applied.
+        # subscription stream. The request defers, the ack rides the stream, and
+        # even a debug opt-in with a live activated logger delivers no
+        # notifications/message onto it.
         listen_server = loglevel_server()
-        listen_server.transport = ModelContextProtocol.StdioTransport(
-            input = IOBuffer(), output = IOBuffer())
+        listen_out = IOBuffer()
+        listen_transport = ModelContextProtocol.StdioTransport(
+            input = IOBuffer(), output = listen_out)
+        listen_server.transport = listen_transport
+        llogger = MCPLogger(IOBuffer(), Logging.Debug)
+        llogger.transport = listen_transport
+        llogger.transport_active[] = true
         listen_state = ServerState()
         task_local_storage(:mcp_suppress_log_notifications, true)
-        task_local_storage(:mcp_request_log_level, nothing)
         listen_msg = Dict(
             "jsonrpc" => "2.0", "id" => 23, "method" => "subscriptions/listen",
             "params" => Dict("notifications" => Dict("toolsListChanged" => true),
                              "_meta" => meta_with_level("debug")))
-        raw = process_message(listen_server, listen_state, JSON3.write(listen_msg))
-        @test raw === nothing  # deferred: the stream is served out-of-loop
-        @test task_local_storage(:mcp_request_log_level) === nothing
-        @test task_local_storage(:mcp_suppress_log_notifications) === true
+        raw = with_logger(llogger) do
+            process_message(listen_server, listen_state, JSON3.write(listen_msg))
+        end
         task_local_storage(:mcp_suppress_log_notifications, false)
+        @test raw === nothing  # deferred: the stream is served out-of-loop
+        listen_wire = String(take!(listen_out))
+        @test occursin("subscriptions/acknowledged", listen_wire)
+        @test !occursin("notifications/message", listen_wire)
+    end
+
+    @testset "logLevel guards survive handler-spawned child tasks" begin
+        # Task-local flags do not propagate into @async/@spawn children, but the
+        # logstate DOES — the ModernRequestLogger scope is what carries every
+        # guarantee (suppression, severity, routing) into child tasks.
+        meta_with_level(level) = begin
+            m = modern_meta()
+            m["io.modelcontextprotocol/logLevel"] = level
+            m
+        end
+
+        function run_child_probe(; level, tool_handler)
+            server = modern_server()
+            push!(server.tools, MCPTool(name = "child_tool", description = "spawns",
+                                        parameters = [], handler = tool_handler))
+            out = IOBuffer()
+            transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = out)
+            server.transport = transport
+            logger = MCPLogger(IOBuffer(), Logging.Info)
+            logger.transport = transport
+            # The worst case: a LEGACY client has initialized, so the ambient
+            # logger is activated — a child-task record must still not reach a
+            # modern request that did not opt in
+            logger.transport_active[] = true
+            state = ServerState()
+            task_local_storage(:mcp_suppress_log_notifications, true)
+            raw = try
+                with_logger(logger) do
+                    m = level === nothing ? modern_meta() : meta_with_level(level)
+                    process_message(server, state, JSON3.write(Dict(
+                        "jsonrpc" => "2.0", "id" => 30, "method" => "tools/call",
+                        "params" => Dict("name" => "child_tool", "arguments" => Dict(),
+                                         "_meta" => m))))
+                end
+            finally
+                task_local_storage(:mcp_suppress_log_notifications, false)
+            end
+            (String(take!(out)), JSON3.read(raw))
+        end
+
+        # No opt-in: an awaited child-task record must NOT reach the wire even
+        # with the transport activated by a legacy session
+        wire, resp = run_child_probe(level = nothing,
+            tool_handler = args -> begin
+                fetch(@async @warn "child-leak-probe")
+                TextContent(text = "ok")
+            end)
+        @test resp["result"]["resultType"] == "complete"
+        @test !occursin("child-leak-probe", wire)
+        @test !occursin("notifications/message", wire)
+
+        # Opt-in at "emergency": a child-task error is below the requested level
+        wire, resp = run_child_probe(level = "emergency",
+            tool_handler = args -> begin
+                fetch(@async @error "child-error-probe")
+                TextContent(text = "ok")
+            end)
+        @test resp["result"]["resultType"] == "complete"
+        @test !occursin("child-error-probe", wire)
+
+        # Opt-in at "info": the child-task record IS delivered (inheritance works
+        # in the positive direction too)
+        wire, resp = run_child_probe(level = "info",
+            tool_handler = args -> begin
+                fetch(@async @info "child-info-probe")
+                TextContent(text = "ok")
+            end)
+        @test resp["result"]["resultType"] == "complete"
+        @test occursin("child-info-probe", wire)
+        @test occursin("notifications/message", wire)
+
+        # A handler that installs a FOREIGN server's logger cannot turn the opt-in
+        # into cross-server delivery: the foreign logger's own legacy gates hold
+        # (not activated -> its fallback stream, never its transport)
+        foreign_out = IOBuffer()
+        foreign_transport = ModelContextProtocol.StdioTransport(
+            input = IOBuffer(), output = foreign_out)
+        foreign = MCPLogger(IOBuffer(), Logging.Info)
+        foreign.transport = foreign_transport
+        foreign.transport_active[] = false
+        wire, resp = run_child_probe(level = "info",
+            tool_handler = args -> begin
+                with_logger(foreign) do
+                    @info "foreign-probe"
+                end
+                TextContent(text = "ok")
+            end)
+        @test resp["result"]["resultType"] == "complete"
+        @test !occursin("foreign-probe", String(take!(foreign_out)))
+        @test !occursin("foreign-probe", wire)
+
+        # Post-response: a late child record is dropped once the scope is closed
+        late_out = IOBuffer()
+        late_transport = ModelContextProtocol.StdioTransport(
+            input = IOBuffer(), output = late_out)
+        inner = MCPLogger(IOBuffer(), Logging.Info)
+        inner.transport = late_transport
+        rl = ModelContextProtocol.ModernRequestLogger(inner, late_transport, nothing, "info")
+        with_logger(rl) do
+            @info "before-close"
+        end
+        rl.closed[] = true
+        with_logger(rl) do
+            @info "after-close"
+        end
+        late_wire = String(take!(late_out))
+        @test occursin("before-close", late_wire)
+        @test !occursin("after-close", late_wire)
     end
 end
