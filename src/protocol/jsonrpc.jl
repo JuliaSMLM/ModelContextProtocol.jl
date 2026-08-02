@@ -168,6 +168,8 @@ function parse_request(raw::JSON3.Object)::Request
     protocol_version = nothing
     client_capabilities = nothing
     client_info = nothing
+    log_level = nothing
+    has_log_level = false
     if haskey(raw, :params) && raw.params isa JSON3.Object && haskey(raw.params, :_meta)
         meta = raw.params._meta
         if meta isa JSON3.Object
@@ -185,6 +187,11 @@ function parse_request(raw::JSON3.Object)::Request
             if haskey(meta, Symbol(META_CLIENT_INFO))
                 info = meta[Symbol(META_CLIENT_INFO)]
                 info isa JSON3.Object && (client_info = info)
+            end
+            if haskey(meta, Symbol(META_LOG_LEVEL))
+                has_log_level = true
+                lv = meta[Symbol(META_LOG_LEVEL)]
+                lv isa AbstractString && (log_level = String(lv))
             end
         end
     end
@@ -242,6 +249,8 @@ function parse_request(raw::JSON3.Object)::Request
             protocol_version = protocol_version,
             client_capabilities = client_capabilities,
             client_info = client_info,
+            log_level = log_level,
+            has_log_level = has_log_level,
             input_responses = input_responses,
             request_state = request_state,
             has_input_responses = has_input_responses,

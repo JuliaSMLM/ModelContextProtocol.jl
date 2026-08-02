@@ -52,7 +52,9 @@
         @test haskey(result["capabilities"], "tools")
         # Legacy-only capabilities are withheld from the modern era
         @test !haskey(result["capabilities"], "tasks")
-        @test !haskey(result["capabilities"], "logging")
+        # logging IS modern-era (per-request logLevel opt-in) and default servers
+        # declare it — a MUST for servers that emit notifications/message
+        @test haskey(result["capabilities"], "logging")
     end
 
     @testset "modern envelope on shared handlers" begin
@@ -343,5 +345,133 @@
         legacy_out = String(take!(out))
         @test occursin("notifications/message", legacy_out)
         @test occursin("modern-suppression-probe", legacy_out)
+    end
+
+    @testset "per-request logLevel (modern logging opt-in)" begin
+        meta_with_level(level) = begin
+            m = modern_meta()
+            m["io.modelcontextprotocol/logLevel"] = level
+            m
+        end
+
+        function loglevel_server()
+            server = modern_server()
+            log_tool = MCPTool(name = "log_tool", description = "logs", parameters = [],
+                handler = args -> begin
+                    @info "loglevel-info-probe"
+                    @warn "loglevel-warn-probe"
+                    TextContent(text = "ok")
+                end)
+            push!(server.tools, log_tool)
+            server
+        end
+
+        # Wire an in-memory stdio transport + live MCPLogger, mimic the server
+        # loop's per-message arm/clear of the log task-locals, and return
+        # (transport output, fallback-stream output, parsed response-or-nothing)
+        function run_logged(server, msg; min_level = Logging.Info)
+            out = IOBuffer()
+            fallback = IOBuffer()
+            transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = out)
+            server.transport = transport
+            logger = MCPLogger(fallback, min_level)
+            logger.transport = transport
+            logger.transport_active[] = true
+            state = ServerState()
+            task_local_storage(:mcp_suppress_log_notifications, true)
+            task_local_storage(:mcp_request_log_level, nothing)
+            raw = try
+                with_logger(logger) do
+                    process_message(server, state, JSON3.write(msg))
+                end
+            finally
+                task_local_storage(:mcp_request_log_level, nothing)
+                task_local_storage(:mcp_suppress_log_notifications, false)
+            end
+            (String(take!(out)), String(take!(fallback)),
+             raw === nothing ? nothing : JSON3.read(raw))
+        end
+
+        call_log_tool(level; id = 20) = Dict(
+            "jsonrpc" => "2.0", "id" => id, "method" => "tools/call",
+            "params" => Dict("name" => "log_tool", "arguments" => Dict(),
+                             "_meta" => level === nothing ? modern_meta() : meta_with_level(level)))
+
+        # Invalid level values -> -32602 (present-but-invalid is rejected, never
+        # treated as absent)
+        server = loglevel_server()
+        state = ServerState()
+        for bad in ("verbose", 3, true)
+            m = modern_meta()
+            m["io.modelcontextprotocol/logLevel"] = bad
+            resp = roundtrip(server, state, Dict(
+                "jsonrpc" => "2.0", "id" => 21, "method" => "tools/call",
+                "params" => Dict("name" => "log_tool", "arguments" => Dict(), "_meta" => m)))
+            @test resp["error"]["code"] == -32602
+            @test occursin("logLevel", resp["error"]["message"])
+        end
+
+        # Opt-in at "info": both probes delivered as notifications/message on the
+        # request's stream, and the response still completes
+        transport_out, fallback_out, resp = run_logged(loglevel_server(), call_log_tool("info"))
+        @test resp["result"]["resultType"] == "complete"
+        @test occursin("notifications/message", transport_out)
+        @test occursin("loglevel-info-probe", transport_out)
+        @test occursin("loglevel-warn-probe", transport_out)
+
+        # Severity filter: "error" excludes both info and warning records
+        transport_out, _, resp = run_logged(loglevel_server(), call_log_tool("error"))
+        @test resp["result"]["resultType"] == "complete"
+        @test !occursin("notifications/message", transport_out)
+
+        # "notice" excludes info but admits warning (RFC-5424 ordering)
+        transport_out, _, _ = run_logged(loglevel_server(), call_log_tool("notice"))
+        @test !occursin("loglevel-info-probe", transport_out)
+        @test occursin("loglevel-warn-probe", transport_out)
+
+        # "debug" lowers the effective enablement below the operator's min_level:
+        # lifecycle @debug records reach the client but stay OFF the operator's
+        # fallback stream
+        transport_out, fallback_out, _ = run_logged(loglevel_server(), call_log_tool("debug");
+                                                    min_level = Logging.Info)
+        @test occursin("request completed", transport_out)
+        @test !occursin("request completed", fallback_out)
+
+        # No opt-in -> no delivery (the pre-existing suppression), same server
+        transport_out, _, _ = run_logged(loglevel_server(), call_log_tool(nothing))
+        @test !occursin("notifications/message", transport_out)
+
+        # A server without the logging capability accepts the level but emits
+        # nothing (capability declaration is a MUST for emitters)
+        quiet = loglevel_server()
+        filter!(c -> !(c isa ModelContextProtocol.LoggingCapability), quiet.config.capabilities)
+        transport_out, _, resp = run_logged(quiet, call_log_tool("debug"))
+        @test resp["result"]["resultType"] == "complete"
+        @test !occursin("notifications/message", transport_out)
+
+        # discover withholds logging when the capability is not declared
+        resp = roundtrip(quiet, ServerState(), Dict(
+            "jsonrpc" => "2.0", "id" => 22, "method" => "server/discover",
+            "params" => Dict("_meta" => modern_meta())))
+        @test !haskey(resp["result"]["capabilities"], "logging")
+
+        # subscriptions/listen never honors the opt-in: its response stream IS the
+        # subscription stream. The request defers (no immediate response) and the
+        # per-request level must NOT have been applied.
+        listen_server = loglevel_server()
+        listen_server.transport = ModelContextProtocol.StdioTransport(
+            input = IOBuffer(), output = IOBuffer())
+        listen_state = ServerState()
+        task_local_storage(:mcp_suppress_log_notifications, true)
+        task_local_storage(:mcp_request_log_level, nothing)
+        listen_msg = Dict(
+            "jsonrpc" => "2.0", "id" => 23, "method" => "subscriptions/listen",
+            "params" => Dict("notifications" => Dict("toolsListChanged" => true),
+                             "_meta" => meta_with_level("debug")))
+        raw = process_message(listen_server, listen_state, JSON3.write(listen_msg))
+        @test raw === nothing  # deferred: the stream is served out-of-loop
+        @test task_local_storage(:mcp_request_log_level) === nothing
+        @test task_local_storage(:mcp_suppress_log_notifications) === true
+        task_local_storage(:mcp_suppress_log_notifications, false)
     end
 end

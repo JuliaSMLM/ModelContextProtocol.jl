@@ -61,6 +61,35 @@ function mcp_level_to_julia(level::String)::LogLevel
 end
 
 """
+    mcp_level_severity(level::String) -> Int
+
+The RFC-5424 severity rank of an MCP log level (1 = debug, lowest … 8 = emergency,
+highest), for at-or-above comparisons.
+
+# Arguments
+- `level::String`: One of `MCP_LOG_LEVELS`
+
+# Returns
+- `Int`: The 1-based rank within `MCP_LOG_LEVELS` (unrecognized levels rank highest,
+  so they never widen delivery)
+"""
+function mcp_level_severity(level::String)::Int
+    idx = findfirst(==(level), MCP_LOG_LEVELS)
+    idx === nothing ? length(MCP_LOG_LEVELS) : idx
+end
+
+# The per-request log level (modern era, io.modelcontextprotocol/logLevel) is
+# task-local: handle_modern_request sets it for the duration of one validated
+# request on the serial loop task, and the loop clears it with the notification
+# route. It lowers the logger's effective enablement so a debug-requesting client
+# can receive records below the operator's min_level — handle_message filters
+# delivery by MCP severity and keeps the fallback stream at min_level.
+function effective_min_level(logger::MCPLogger)::LogLevel
+    lvl = get(task_local_storage(), :mcp_request_log_level, nothing)
+    lvl isa String ? min(logger.min_level, mcp_level_to_julia(lvl)) : logger.min_level
+end
+
+"""
     MCPLogger(stream::IO=stderr, level::LogLevel=Info) -> MCPLogger
 
 Create a new MCPLogger instance with specified stream and level.
@@ -77,7 +106,7 @@ function MCPLogger(stream::IO=stderr, level::LogLevel=Info)
 end
 
 function Logging.shouldlog(logger::MCPLogger, level, _module, group, id)
-    level >= logger.min_level || return false
+    level >= effective_min_level(logger) || return false
     # Do not relay HTTP.jl's internal connection-loop logging into the MCP notification
     # stream. On every client disconnect HTTP.jl logs the `closeread` EOF at error level
     # ("handle_connection handler error") — transport-internal teardown noise, not an MCP
@@ -88,7 +117,7 @@ function Logging.shouldlog(logger::MCPLogger, level, _module, group, id)
     return true
 end
 
-Logging.min_enabled_level(logger::MCPLogger) = logger.min_level
+Logging.min_enabled_level(logger::MCPLogger) = effective_min_level(logger)
 
 Logging.catch_exceptions(logger::MCPLogger) = false
 
@@ -171,9 +200,19 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
     # session is initialized (recursion from the send path is handled by the
     # entry guard above). Modern-era (2026-07-28+) request handling sets the
     # suppression flag: notifications/message MUST NOT be emitted for a request
-    # that did not opt in via io.modelcontextprotocol/logLevel.
+    # that did not opt in via io.modelcontextprotocol/logLevel. When a request DID
+    # opt in, the task-local per-request level filters delivery to records at or
+    # above it (RFC-5424 severity), independent of the operator's min_level.
+    request_level = get(task_local_storage(), :mcp_request_log_level, nothing)
+    deliverable = !(request_level isa String) ||
+                  mcp_level_severity(mcp_level) >= mcp_level_severity(request_level)
+    # transport_active is the LEGACY never-before-initialize rule; the modern era
+    # has no initialization, so a validated per-request opt-in (which also proved
+    # the logger belongs to the serving transport before arming the task-local)
+    # delivers on a connected transport regardless of it.
+    active = logger.transport_active[] || request_level isa String
     t = logger.transport
-    if t !== nothing && logger.transport_active[] && is_connected(t) &&
+    if deliverable && t !== nothing && active && is_connected(t) &&
        !get(task_local_storage(), :mcp_suppress_log_notifications, false)
         try
             send_notification(t, serialized)
@@ -183,9 +222,13 @@ function Logging.handle_message(logger::MCPLogger, level, message, _module, grou
         end
     end
 
-    # Fallback: write to the configured stream (stderr by default)
-    println(logger.stream, serialized)
-    Base.flush(logger.stream)
+    # Fallback: write to the configured stream (stderr by default). Records that
+    # only exist because a per-request logLevel lowered the effective enablement
+    # stay off the operator's stream — min_level still governs it.
+    if level >= logger.min_level
+        println(logger.stream, serialized)
+        Base.flush(logger.stream)
+    end
 
     finally
         task_local_storage(:mcp_logger_reentry, false)

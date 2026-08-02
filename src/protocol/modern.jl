@@ -170,10 +170,11 @@ spec requires on discovery results. `resultType` and `serverInfo` are attached b
 the modern envelope.
 
 Capabilities carry only what the modern era actually serves: the features present,
-their `listChanged`/`subscribe` flags (delivered via `subscriptions/listen`), and no
-legacy-only `tasks`/`logging` — and never the legacy builder's embedded resource
-listings, which would leak resource metadata into shared caches and do not match the
-modern ServerCapabilities shape.
+their `listChanged`/`subscribe` flags (delivered via `subscriptions/listen`),
+`logging` when declared (per-request `logLevel` opt-in — a MUST for servers that
+emit `notifications/message`), and no legacy-only `tasks` — and never the legacy
+builder's embedded resource listings, which would leak resource metadata into
+shared caches and do not match the modern ServerCapabilities shape.
 
 # Arguments
 - `ctx::RequestContext`: The current request context
@@ -197,6 +198,8 @@ function handle_discover(ctx::RequestContext)::HandlerResult
             d = LittleDict{String,Any}()
             c.list_changed && (d["listChanged"] = true)
             caps["prompts"] = d
+        elseif c isa LoggingCapability
+            caps["logging"] = LittleDict{String,Any}()
         end
     end
 
@@ -318,13 +321,18 @@ Validation, in order (per the spec):
 - unsupported `protocolVersion` → `UnsupportedProtocolVersionError` (-32022) with
   `data.supported`/`data.requested`
 - missing `clientCapabilities` → -32602 Invalid params (a required `_meta` field)
+- present but unrecognized `logLevel` → -32602 Invalid params (the spec's SHOULD;
+  presence-aware — a mistyped value is rejected, never treated as absent)
 - method not on the modern surface (or its capability undeclared) → -32601
 
-`notifications/message` is never emitted for modern requests: the spec forbids it
-for requests that did not set `io.modelcontextprotocol/logLevel`, and per-request
-log level support is not yet implemented (emission is a MAY). The suppression flag
-is set for the remainder of the loop iteration — the server loop re-arms it per
-message — so the loop's own post-dispatch lifecycle records are covered too.
+`notifications/message` follows the per-request opt-in: a request that set a valid
+`io.modelcontextprotocol/logLevel` (and passed all validation) gets records at or
+above that level on its own response stream, provided the server declares the
+logging capability; every other modern request gets none — the suppression flag
+the loop armed stays set through the iteration, covering the loop's own
+post-dispatch lifecycle records too. `subscriptions/listen` never honors the
+opt-in: its response stream IS the subscription stream, and the spec forbids
+`notifications/message` there.
 
 # Arguments
 - `server::Server`: The MCP server instance
@@ -340,8 +348,10 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
     # Suppress notifications/message from here through the END of this loop
     # iteration (the loop re-arms the flag per message): parser/dispatch/post-
     # dispatch log records must not reach a modern client that set no logLevel,
-    # even when a legacy client previously enabled debug delivery.
+    # even when a legacy client previously enabled debug delivery. The per-request
+    # level is likewise reset — it is only set below, after the request validates.
     task_local_storage(:mcp_suppress_log_notifications, true)
+    task_local_storage(:mcp_request_log_level, nothing)
 
     version = request.meta.protocol_version
 
@@ -377,6 +387,20 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
             error = ErrorInfo(
                 code = ErrorCodes.INVALID_PARAMS,
                 message = "Missing required _meta field: $(META_CLIENT_CAPABILITIES)"
+            )
+        )
+    end
+
+    # A present logLevel must be a recognized level (spec: SHOULD reject with
+    # Invalid params). Presence-aware: a non-string or unknown value is an error,
+    # never "absent" — silently ignoring it would drop delivery the client asked for.
+    if request.meta.has_log_level &&
+       (request.meta.log_level === nothing || !(request.meta.log_level in MCP_LOG_LEVELS))
+        return JSONRPCError(
+            id = request.id,
+            error = ErrorInfo(
+                code = ErrorCodes.INVALID_PARAMS,
+                message = "Invalid $(META_LOG_LEVEL): must be one of $(join(MCP_LOG_LEVELS, ", "))"
             )
         )
     end
@@ -430,6 +454,54 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         mrtr_state = payload
     end
 
+    # Per-request log opt-in (SEP-2575), applied only once the request has fully
+    # validated: notifications preceding an error response would SSE-upgrade the
+    # POST and defeat the modern HTTP status mapping (404/400 ride the plain-JSON
+    # branch). Requires the server to declare the logging capability (a MUST for
+    # emitters); subscriptions/listen is excluded — its response stream is the
+    # subscription stream, where notifications/message is forbidden. An MCPLogger
+    # wired to a DIFFERENT server's transport must not be armed (two servers in
+    # one process — same rule as handle_initialize's activation). The serve path
+    # is re-scoped under the current logger because Julia's LogState caches
+    # `min_enabled_level` at install time: rebuilding it here (with the task-local
+    # level set) is what lets a debug opt-in generate records below the operator's
+    # installed level, without mutating any global state.
+    if request.meta.log_level !== nothing &&
+       request.method != "subscriptions/listen" &&
+       any(c -> c isa LoggingCapability, server.config.capabilities)
+        lg = Logging.current_logger()
+        if !(lg isa MCPLogger) || lg.transport === server.transport
+            task_local_storage(:mcp_request_log_level, request.meta.log_level)
+            task_local_storage(:mcp_suppress_log_notifications, false)
+            return with_logger(lg) do
+                serve_modern(server, request, version, mrtr_state, authenticated_user)
+            end
+        end
+    end
+    serve_modern(server, request, version, mrtr_state, authenticated_user)
+end
+
+"""
+    serve_modern(server::Server, request::Request, version::String, mrtr_state,
+                 authenticated_user) -> Union{Response,Nothing}
+
+Dispatch a fully validated modern-era request and build its response (envelope,
+CacheableResult fields, MRTR input_required handling). Split out of
+`handle_modern_request` so the per-request log opt-in can re-scope the logger
+around the whole serve path.
+
+# Arguments
+- `server::Server`: The MCP server instance
+- `request::Request`: The validated request
+- `version::String`: The request's protocol version
+- `mrtr_state`: The verified MRTR state payload, or `nothing`
+- `authenticated_user`: Per-request identity from HTTP auth, else `nothing`
+
+# Returns
+- `Union{Response,Nothing}`: The response to send (`nothing` when deferred)
+"""
+function serve_modern(server::Server, request::Request, version::String, mrtr_state,
+                      authenticated_user::Union{AuthenticatedUser,Nothing})::Union{Response,Nothing}
     # Fresh state: modern requests are stateless, and handlers (including ctx-aware
     # tool handlers) must not see or mutate the legacy session's ServerState
     ctx = RequestContext(

@@ -21,12 +21,21 @@ A non-`nothing` `protocol_version` marks the request as modern-era (stateless, n
   no re-encoding copy is made
 - `client_info::Any`: `io.modelcontextprotocol/clientInfo` (optional), kept as the
   raw parsed JSON object
+- `log_level::Union{String,Nothing}`: `io.modelcontextprotocol/logLevel` (optional) —
+  the client's per-request opt-in to `notifications/message` delivery. Only string
+  values are stored; validation against the recognized levels happens in
+  `handle_modern_request`
+- `has_log_level::Bool`: Whether the `logLevel` key was present at all. Presence is
+  tracked separately from the typed value so a present-but-invalid level is
+  REJECTED (-32602 per the spec), never silently treated as absent
 """
 Base.@kwdef struct RequestMeta
     progress_token::Union{ProgressToken,Nothing} = nothing
     protocol_version::Union{String,Nothing} = nothing
     client_capabilities::Any = nothing
     client_info::Any = nothing
+    log_level::Union{String,Nothing} = nothing
+    has_log_level::Bool = false
     # MRTR (2026-07-28) retry fields, harvested from raw params on modern
     # tools/call, resources/read, and prompts/get requests. Presence is tracked
     # separately from the typed value: a present-but-mistyped field must be
