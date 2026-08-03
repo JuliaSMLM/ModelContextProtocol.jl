@@ -16,6 +16,7 @@ const REQUEST_PARAMS_MAP = Dict{String,Type}(
     "tasks/get" => GetTaskParams,
     "tasks/result" => TaskResultParams,
     "tasks/cancel" => CancelTaskParams,
+    "tasks/update" => UpdateTaskParams,
     "tasks/list" => ListTasksParams,
     "notifications/progress" => ProgressParams
 )
@@ -223,7 +224,15 @@ function parse_request(raw::JSON3.Object)::Request
     params_type = get_params_type(method)
     typed_params = if !isnothing(params_type) && haskey(raw, :params) && raw.params isa JSON3.Object
         if isempty(raw.params)
-            params_type()  # Construct default instance instead of nothing
+            # Construct default instance instead of nothing. A type with required
+            # fields (e.g. UpdateTaskParams) has no zero-arg constructor — fall to
+            # nothing so era dispatch answers (-32601 on legacy, -32602 on modern)
+            # instead of the construction error aborting the parse
+            try
+                params_type()
+            catch
+                nothing
+            end
         elseif protocol_version !== nothing
             # Modern-era request: typed-param failures must not abort parsing with
             # a raw exception — the era handler owns validation and answers -32601

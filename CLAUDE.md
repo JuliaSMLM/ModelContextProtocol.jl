@@ -461,9 +461,24 @@ whose `_meta` sets `io.modelcontextprotocol/logLevel` receives
 (unrecognized level → -32602; no opt-in → none, the modern MUST; requires the
 logging capability, which `server/discover` advertises; a `debug` opt-in
 re-scopes the logger so records below the operator's installed level flow for
-that request without touching global state). The draft `server-stateless`
-conformance scenario passes 30/30. Still pending for the modern era: the tasks
-extension and `x-mcp-header` parameter mirroring.
+that request without touching global state). The **tasks extension core**
+(SEP-2663, `io.modelcontextprotocol/tasks`) is in: server-directed task creation
+from `tools/call` via the exported `task_detach(ctx)` (handler runs off-loop;
+flat `CreateTaskResult` with `resultType:"task"`/`ttlMs`/`pollIntervalMs`),
+`tasks/get` with inlined terminal `result`/`error` (isError → completed; failed
+reserved for JSON-RPC errors), ack-only idempotent `tasks/cancel`, `tasks/update`
+(ack; ignores not-outstanding keys), -32021 gating on undeclared clients
+(`:required` tools reject pre-handler; `:optional` fall through to sync),
+`capabilities.extensions` advertisement in `server/discover`, `Mcp-Name` =
+`params.taskId` on HTTP, era-tagged store isolation from legacy SEP-1686 tasks,
+and MRTR→task composition (InputRequired before detach = the MRTR round). The
+conformance `tasks-*` scenarios pass all substantive checks (the suite's
+wire-schema validator lacks the extension's CreateTaskResult shape — upstream
+harness gap; one dispatch check needs the PR-B `confirm_delete` fixture). The
+draft `server-stateless` conformance scenario passes 30/30. Still pending for
+the modern era: the tasks extension's mid-task input flow (`input_required` +
+`tasks/update` delivery + `task_await_input`), `notifications/tasks` over
+`subscriptions/listen` `taskIds`, and `x-mcp-header` parameter mirroring.
 
 ### ✅ Implemented
 
@@ -491,6 +506,10 @@ extension and `x-mcp-header` parameter mirroring.
   on unauthenticated HTTP; capability only advertised to 2025-11-25 sessions (older
   sessions: task metadata ignored, sync execution per spec); `task_cancelled(ctx)` for
   cooperative cancellation
+- **Tasks extension core (SEP-2663, modern era)**: `task_detach(ctx)` server-directed
+  handoff, `tasks/get`/`tasks/update`/`tasks/cancel` with -32021 capability gating,
+  era-isolated from the legacy store (see the compliance-status paragraph above for
+  the full delta list); mid-task input flow and `notifications/tasks` pending
 - **logging/setLevel** (eight RFC-5424 levels) + per-request lifecycle `@debug` log
   (method/id/duration_ms/ok), runtime-enableable
 - **OAuth Resource Server** (2025-11-25 authorization): bearer validation (`JWKSValidator`

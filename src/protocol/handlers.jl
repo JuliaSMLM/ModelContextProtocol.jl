@@ -30,6 +30,9 @@ Base.@kwdef mutable struct RequestContext
     protocol_version::Union{String,Nothing} = nothing  # modern-era per-request version from _meta; nothing on legacy requests (which use state.protocol_version)
     input_responses::Union{Nothing,Dict{String,Any}} = nothing  # MRTR retry responses (read via input_responses(ctx))
     input_state::Any = nothing  # handler state from a VERIFIED MRTR requestState (read via input_state(ctx))
+    client_capabilities::Any = nothing  # modern-era _meta clientCapabilities (raw parsed view); nothing on legacy requests
+    params_digest::Union{Nothing,String} = nothing  # canonical params digest of a modern MRTR-method request
+    detach::Union{Nothing,TaskDetachState} = nothing  # set for detachable modern tool calls (tasks extension); enables task_detach(ctx)
 end
 
 """
@@ -52,14 +55,18 @@ Emit an MCP `notifications/progress` for the current request. A tool handler tha
 accepts the `RequestContext` (its second argument) can call this during a long
 operation to report progress.
 
-Returns `false` (a no-op) when the client did not supply a `progressToken` or no
-transport is connected, so it is always safe to call. Send an increasing
-`progress`; include `total` for a determinate bar and `message` for a status line.
+Returns `false` (a no-op) when the client did not supply a `progressToken`, no
+transport is connected, or the call is a detachable modern-era task call (tasks
+extension: `notifications/progress` is not supported on tasks, and the spawned
+handler has no request stream to route them to), so it is always safe to call.
+Send an increasing `progress`; include `total` for a determinate bar and
+`message` for a status line.
 """
 function send_progress(ctx::RequestContext, progress::Real;
                        total::Union{Real,Nothing}=nothing,
                        message::Union{String,Nothing}=nothing)::Bool
-    (ctx.progress_token === nothing || ctx.server.transport === nothing) && return false
+    (ctx.progress_token === nothing || ctx.server.transport === nothing ||
+     ctx.detach !== nothing) && return false
     params = Dict{String,Any}(
         "progressToken" => ctx.progress_token,
         "progress" => Float64(progress),
@@ -891,9 +898,13 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
     # (`authenticated_user === nothing`, i.e. auth not configured) the check is skipped —
     # the server performs no authorization, matching how the global
     # `OAuthConfig.required_scopes` is only enforced when a validator runs. Checked before
-    # the task/sync split so both execution paths are gated.
-    if !isempty(tool.required_scopes) && ctx.authenticated_user !== nothing
-        missing_scopes = setdiff(tool.required_scopes, ctx.authenticated_user.scopes)
+    # the task/sync split so both execution paths are gated. The snapshot taken here is
+    # the ONE set this request is authorized against — it is also what a detached task
+    # records for its per-request re-authorization, so a registry mutation between the
+    # check and task creation cannot widen or narrow a task's requirement.
+    tool_scopes = copy(tool.required_scopes)
+    if !isempty(tool_scopes) && ctx.authenticated_user !== nothing
+        missing_scopes = setdiff(tool_scopes, ctx.authenticated_user.scopes)
         if !isempty(missing_scopes)
             return HandlerResult(
                 error=ErrorInfo(
@@ -912,6 +923,25 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
         if !isnothing(param.default) && !haskey(args, param.name)
             args[param.name] = param.default
         end
+    end
+
+    # Tasks EXTENSION (SEP-2663, modern era). Server-directed: with the extension
+    # declared in this request's _meta clientCapabilities, a task-capable tool runs
+    # off-loop and may hand off to a task via task_detach(ctx). Without the
+    # declaration, a :required tool is rejected (-32021 with the required extension
+    # named) and an :optional tool falls through to ordinary synchronous execution;
+    # the legacy `task` request param is ignored in the modern era either way.
+    if ctx.protocol_version !== nothing && tool.task_support in (:optional, :required)
+        declared = tasks_extension_declared(ctx.client_capabilities)
+        if !declared && tool.task_support === :required
+            return HandlerResult(error = tasks_extension_required_error())
+        end
+        if declared && ctx.server.transport !== nothing
+            return spawn_detachable_tool_call!(ctx, tool, args, tool_scopes)
+        end
+        # Declared but transportless (in-process/unit use): there is no route to
+        # deliver a deferred response on, so run synchronously — task_detach sees
+        # no detach state and returns false
     end
 
     # Task augmentation (MCP Tasks, experimental). The tool-level rules apply only
@@ -1083,9 +1113,9 @@ with a `TaskCapability` AND the client negotiated a protocol version with task s
 """
 function tasks_supported(ctx::RequestContext)::Bool
     v = request_protocol_version(ctx)
-    # Modern-era (2026-07-28+) requests have no core tasks: they moved to the
-    # io.modelcontextprotocol/tasks EXTENSION, which this server does not yet
-    # advertise — so task metadata on modern requests is ignored, per spec.
+    # Modern-era (2026-07-28+) requests have no core tasks: they use the
+    # io.modelcontextprotocol/tasks EXTENSION (protocol/tasks_ext.jl), gated on
+    # the request's declared extension capability — never on this predicate.
     v !== nothing &&
         !(v in MODERN_PROTOCOL_VERSIONS) &&
         supports(v, :tasks) &&

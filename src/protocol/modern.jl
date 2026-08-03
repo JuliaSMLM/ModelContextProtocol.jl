@@ -13,11 +13,14 @@
 Methods served in the modern era, each gated on the capability that provides it
 (`nothing` = always available). Methods REMOVED from the modern era — `ping`,
 `logging/setLevel`, `resources/subscribe`/`unsubscribe` (replaced by
-`subscriptions/listen`), and the core `tasks/*` family (moved to the
-`io.modelcontextprotocol/tasks` extension) — return METHOD_NOT_FOUND on modern
-requests even though the legacy era serves them. A method whose capability the
-server does not declare is equally METHOD_NOT_FOUND: the advertised capability set
-and the callable surface must agree.
+`subscriptions/listen`), and the legacy core tasks methods `tasks/result` and
+`tasks/list` — return METHOD_NOT_FOUND on modern requests even though the legacy
+era serves them. `tasks/get`, `tasks/update`, and `tasks/cancel` belong to the
+`io.modelcontextprotocol/tasks` EXTENSION (SEP-2663): always dispatchable, but
+gated in-handler on the request's declared extension capability (-32021 for
+non-declaring clients, per the extension's error rules — not -32601). A method
+whose capability the server does not declare is equally METHOD_NOT_FOUND: the
+advertised capability set and the callable surface must agree.
 """
 const MODERN_METHODS = Dict{String,Union{DataType,Nothing}}(
     "server/discover" => nothing,
@@ -29,6 +32,9 @@ const MODERN_METHODS = Dict{String,Union{DataType,Nothing}}(
     "prompts/list" => PromptCapability,
     "prompts/get" => PromptCapability,
     "subscriptions/listen" => nothing,
+    "tasks/get" => nothing,
+    "tasks/update" => nothing,
+    "tasks/cancel" => nothing,
 )
 
 """
@@ -202,6 +208,13 @@ function handle_discover(ctx::RequestContext)::HandlerResult
             caps["logging"] = LittleDict{String,Any}()
         end
     end
+    # Extensions live under capabilities.extensions (never a legacy-style
+    # capabilities.tasks slot): the tasks extension surface (tasks/get, /update,
+    # /cancel and server-directed CreateTaskResult) is uniformly available, so it
+    # is advertised unconditionally
+    caps["extensions"] = LittleDict{String,Any}(
+        TASKS_EXTENSION_ID => LittleDict{String,Any}()
+    )
 
     result = LittleDict{String,Any}(
         "supportedVersions" => vcat(MODERN_PROTOCOL_VERSIONS, SUPPORTED_PROTOCOL_VERSIONS),
@@ -274,6 +287,22 @@ function dispatch_modern(ctx::RequestContext, request::Request)::HandlerResult
     elseif request.method == "subscriptions/listen"
         request.params isa SubscriptionsListenParams || return modern_invalid_params(ctx, request.method)
         handle_subscriptions_listen(ctx, request.params)
+    elseif request.method in ("tasks/get", "tasks/update", "tasks/cancel")
+        # Capability gating comes FIRST: a non-declaring client gets -32021 even
+        # with malformed params (the extension's error rules take precedence over
+        # params validation; the handlers re-check as defense-in-depth)
+        tasks_extension_declared(ctx.client_capabilities) ||
+            return HandlerResult(error = tasks_extension_required_error())
+        if request.method == "tasks/get"
+            request.params isa GetTaskParams || return modern_invalid_params(ctx, request.method)
+            handle_ext_get_task(ctx, request.params)
+        elseif request.method == "tasks/update"
+            request.params isa UpdateTaskParams || return modern_invalid_params(ctx, request.method)
+            handle_ext_update_task(ctx, request.params)
+        else
+            request.params isa CancelTaskParams || return modern_invalid_params(ctx, request.method)
+            handle_ext_cancel_task(ctx, request.params)
+        end
     else
         HandlerResult(
             error = ErrorInfo(
@@ -491,11 +520,70 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         finally
             # The response is on its way: late child-task records must drop to the
             # operator stream, not trail the response on the wire. close_scope!
-            # waits out any in-flight delivery under the scope's lock.
-            close_scope!(rl)
+            # waits out any in-flight delivery under the scope's lock. EXCEPT when
+            # the request was handed off to a detachable-tool-call worker (tasks
+            # extension): the response has NOT gone out yet — the worker owns the
+            # scope and closes it at its own response boundary (before delivering
+            # the sync/MRTR response, or at CreateTaskResult delivery), so an
+            # opted-in handler's records still reach the request stream.
+            if get(task_local_storage(), :mcp_detached_call, false)
+                task_local_storage(:mcp_detached_call, false)
+            else
+                close_scope!(rl)
+            end
         end
     end
-    serve_modern(server, request, version, mrtr_state, authenticated_user)
+    try
+        serve_modern(server, request, version, mrtr_state, authenticated_user)
+    finally
+        # No logger scope existed to hand off; just clear the worker flag (even on
+        # a throw) so it cannot leak into a later request on this loop task and
+        # make that request skip its own scope closure
+        task_local_storage(:mcp_detached_call, false)
+    end
+end
+
+"""
+    modern_input_required_response(server::Server, ir::InputRequired, id,
+                                   method::String, client_capabilities,
+                                   params_digest, principal::String) -> Response
+
+Build the modern-era response for a handler's `InputRequired` (MRTR): the -32021
+MissingRequiredClientCapability error when the request did not declare a capability
+the input requests need, otherwise the enveloped InputRequiredResult (resultType
+`input_required` + `inputRequests` + a minted `requestState`). Shared by the
+in-loop serve path and off-loop detachable tool calls (tasks extension), so both
+build byte-identical responses.
+
+# Arguments
+- `server::Server`: The MCP server instance
+- `ir::InputRequired`: The handler's input-required value
+- `id`: The request id to respond with
+- `method::String`: The request method (bound into the requestState)
+- `client_capabilities`: The request's declared `_meta` client capabilities
+- `params_digest`: The request's canonical params digest
+- `principal::String`: The MRTR principal (see `mrtr_principal`)
+
+# Returns
+- `Response`: The error or enveloped result response
+"""
+function modern_input_required_response(server::Server, ir::InputRequired, id,
+                                        method::String, client_capabilities,
+                                        params_digest, principal::String)::Response
+    required = undeclared_capability_requirements(ir, client_capabilities)
+    if !isempty(required)
+        JSONRPCError(
+            id = id,
+            error = ErrorInfo(
+                code = ErrorCodes.MISSING_REQUIRED_CLIENT_CAPABILITY,
+                message = "Request requires undeclared client capabilities: $(join(keys(required), ", "))",
+                data = Dict{String,Any}("requiredCapabilities" => required)
+            )
+        )
+    else
+        envelope = input_required_envelope(server, ir, method, params_digest, principal)
+        modern_result_envelope(JSONRPCResponse(id = id, result = envelope), server)
+    end
 end
 
 """
@@ -529,7 +617,9 @@ function serve_modern(server::Server, request::Request, version::String, mrtr_st
         authenticated_user = authenticated_user,
         protocol_version = version,
         input_responses = request.meta.input_responses,
-        input_state = mrtr_state
+        input_state = mrtr_state,
+        client_capabilities = request.meta.client_capabilities,
+        params_digest = request.meta.params_digest
     )
 
     request_start = time()
@@ -546,6 +636,16 @@ function serve_modern(server::Server, request::Request, version::String, mrtr_st
         )
     end
 
+    if result.deferred
+        # The request was handed off out-of-loop (a subscriptions/listen stream,
+        # or a detachable tool-call worker that now owns the response). Return
+        # IMMEDIATELY: nothing may run on this path that could throw and
+        # synthesize a second response for a request another task answers —
+        # including the lifecycle log line below, whose logger is caller-supplied
+        # and may itself throw.
+        return nothing
+    end
+
     @debug "request completed" method=request.method id=request.id era="modern" duration_ms=round((time() - request_start) * 1000; digits=2) ok=isnothing(result.error)
 
     if !isnothing(result.error)
@@ -558,32 +658,15 @@ function serve_modern(server::Server, request::Request, version::String, mrtr_st
                 data = err.data
             )
         )
-    elseif result.deferred
-        # subscriptions/listen defers: its route is captured and the stream is
-        # served out-of-loop, so there is no response to emit here
-        nothing
     elseif !isnothing(result.response) && result.response.result isa InputRequired
         # MRTR: the handler needs client input. A server MUST NOT send
         # inputRequests whose capability this request did not declare — that is
         # the -32021 rejection — otherwise answer with the InputRequiredResult
         # (resultType input_required + inputRequests + a minted requestState).
-        ir = result.response.result
-        required = undeclared_capability_requirements(ir, request.meta.client_capabilities)
-        if !isempty(required)
-            JSONRPCError(
-                id = ctx.request_id,
-                error = ErrorInfo(
-                    code = ErrorCodes.MISSING_REQUIRED_CLIENT_CAPABILITY,
-                    message = "Request requires undeclared client capabilities: $(join(keys(required), ", "))",
-                    data = Dict{String,Any}("requiredCapabilities" => required)
-                )
-            )
-        else
-            envelope = input_required_envelope(server, ir, request.method,
-                                               request.meta.params_digest,
-                                               mrtr_principal(authenticated_user))
-            modern_result_envelope(JSONRPCResponse(id = ctx.request_id, result = envelope), server)
-        end
+        modern_input_required_response(server, result.response.result, ctx.request_id,
+                                       request.method, request.meta.client_capabilities,
+                                       request.meta.params_digest,
+                                       mrtr_principal(authenticated_user))
     else
         response = modern_result_envelope(result.response, server)
         # CacheableResult fields are REQUIRED on complete results of the cacheable

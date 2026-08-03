@@ -310,6 +310,24 @@ Base.@kwdef struct ListTasksParams <: RequestParams
     cursor::Union{String,Nothing} = nothing
 end
 
+"""
+    UpdateTaskParams(; taskId::String, inputResponses::Dict{String,Any}) <: RequestParams
+
+Parameters for a `tasks/update` request (tasks extension, SEP-2663): the client's
+responses to outstanding `inputRequests` surfaced by `tasks/get` on an
+`input_required` task. Both fields are required — a request missing either fails
+typed parsing and is rejected with -32602.
+
+# Fields
+- `taskId::String`: The task identifier to update
+- `inputResponses::Dict{String,Any}`: Responses keyed to match the server-issued
+  `inputRequests` keys
+"""
+Base.@kwdef struct UpdateTaskParams <: RequestParams
+    taskId::String
+    inputResponses::Dict{String,Any}
+end
+
 #= Prompt-Related Messages =#
 
 """
