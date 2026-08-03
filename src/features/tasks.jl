@@ -22,6 +22,28 @@ const TASK_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 const RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task"
 
 """
+    PendingTaskInput(method::String, params, channel::Channel{Any})
+
+One outstanding mid-task input request on an extension-era task (SEP-2663): the
+request the client sees under the task's `inputRequests` (as `{method, params?}`
+on `tasks/get`), paired with the channel the blocked `task_await_input` waiter
+takes the client's `tasks/update` response from. The channel is buffered (size 1)
+and receives exactly one value — the key is removed from the pending map in the
+same critical section that delivers, so a key can never be answered twice.
+
+# Fields
+- `method::String`: The input request's method (e.g. `elicitation/create`)
+- `params::Any`: The input request's params (a Dict, or `nothing` for none)
+- `channel::Channel{Any}`: Delivery channel to the blocked handler; closed (never
+  fed) when the task is cancelled, unwinding the waiter
+"""
+struct PendingTaskInput
+    method::String
+    params::Any
+    channel::Channel{Any}
+end
+
+"""
     TaskRecord
 
 Mutable record of one server-side task (a task-augmented request execution).
@@ -48,6 +70,13 @@ Mutable record of one server-side task (a task-augmented request execution).
 - `done::Base.Event`: Set exactly once when the task reaches a terminal status
 - `cancel_requested::Threads.Atomic{Bool}`: Set once tasks/cancel is accepted; atomic so
   handlers can poll it lock-free from worker threads via `task_cancelled(ctx)`
+- `pending_inputs::LittleDict{String,PendingTaskInput}`: Outstanding mid-task input
+  requests keyed by server-minted id (extension era only; insertion-ordered, so
+  `inputRequests` serializes in issue order). Non-empty exactly while the task is
+  `input_required`
+- `input_key_counter::Int`: Monotone counter minting `pending_inputs` keys — a key is
+  never reused over the task's lifetime, even after its request is answered (SEP-2663
+  key-uniqueness rule)
 
 All mutation goes through the owning `TaskStore` under its lock.
 """
@@ -67,6 +96,8 @@ mutable struct TaskRecord
     error::Union{ErrorInfo,Nothing}
     done::Base.Event
     cancel_requested::Threads.Atomic{Bool}
+    pending_inputs::LittleDict{String,PendingTaskInput}
+    input_key_counter::Int
 end
 
 """
@@ -143,7 +174,9 @@ function create_task!(store::TaskStore, method::String;
         nothing,
         nothing,
         Base.Event(),
-        Threads.Atomic{Bool}(false)
+        Threads.Atomic{Bool}(false),
+        LittleDict{String,PendingTaskInput}(),
+        0
     )
     lock(store.lock) do
         sweep_expired!(store)
@@ -193,6 +226,25 @@ function get_task(store::TaskStore, task_id::String,
 end
 
 """
+    drain_pending_inputs!(record::TaskRecord) -> Nothing
+
+Close and clear every outstanding mid-task input request on a task entering a
+terminal status: a blocked `task_await_input` waiter observes its channel closing
+and unwinds (there is nothing left that could ever feed it). Caller must hold the
+store lock — which is also what makes close-vs-deliver atomic: `tasks/update`
+delivers under the same lock, so a channel is either fed exactly once or closed,
+never both.
+"""
+function drain_pending_inputs!(record::TaskRecord)
+    for (_, pending) in record.pending_inputs
+        # Base-qualified: the package's own close(::Transport) shadows Base.close here
+        Base.close(pending.channel)
+    end
+    empty!(record.pending_inputs)
+    nothing
+end
+
+"""
     finish_task!(store::TaskStore, record::TaskRecord,
                  outcome::Union{CallToolResult,ErrorInfo}) -> Bool
 
@@ -227,6 +279,9 @@ function finish_task!(store::TaskStore, record::TaskRecord,
                 "The operation completed successfully."
         end
         record.last_updated_at = Dates.now(Dates.UTC)
+        # Defensive: a handler that returns while a stray child waiter is still
+        # parked must not leave that waiter blocked forever
+        drain_pending_inputs!(record)
         notify(record.done)
         true
     end
@@ -237,7 +292,8 @@ end
 
 Transition a task to "cancelled". Returns `false` without mutating when the task is
 already terminal (the handler maps that to a -32602 error per spec). Sets
-`cancel_requested` so cooperative handlers can observe it via `task_cancelled(ctx)`.
+`cancel_requested` so cooperative handlers can observe it via `task_cancelled(ctx)`,
+and unblocks any `task_await_input` waiter by draining the pending input requests.
 """
 function cancel_task!(store::TaskStore, record::TaskRecord)::Bool
     lock(store.lock) do
@@ -246,6 +302,7 @@ function cancel_task!(store::TaskStore, record::TaskRecord)::Bool
         record.status_message = "The task was cancelled by request."
         record.cancel_requested[] = true
         record.last_updated_at = Dates.now(Dates.UTC)
+        drain_pending_inputs!(record)
         notify(record.done)
         true
     end

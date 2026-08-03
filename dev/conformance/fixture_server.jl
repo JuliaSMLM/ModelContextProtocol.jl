@@ -34,6 +34,11 @@ end
 # filled in immediately after construction below.
 const SERVER_REF = Ref{Any}(nothing)
 
+# Tolerant accessor for parsed-JSON response values (String or Symbol keys,
+# depending on which layer parsed them).
+_val(d, k) = d isa AbstractDict ?
+    (haskey(d, k) ? d[k] : (haskey(d, Symbol(k)) ? d[Symbol(k)] : nothing)) : nothing
+
 tools = [
     MCPTool(
         name = "test_simple_text",
@@ -211,6 +216,57 @@ tools = [
             task_detach(ctx)
             sleep(0.5)
             error("protocol_error_job: simulated internal failure")
+        end),
+    MCPTool(
+        name = "confirm_delete",
+        description = "Task-supporting confirmation: parks on one elicitation inputRequest, completes on the response",
+        parameters = [ToolParameter(name = "filename", description = "File to delete",
+                                    type = "string", required = true)],
+        task_support = :optional,
+        handler = (args, ctx) -> begin
+            task_detach(ctx)
+            resp = task_await_input(ctx, elicit_request(
+                "Really delete $(args["filename"])?";
+                requested_schema = Dict{String,Any}(
+                    "type" => "object",
+                    "properties" => Dict{String,Any}(
+                        "confirm" => Dict{String,Any}("type" => "boolean")))))
+            confirmed = _val(_val(resp, "content"), "confirm") === true
+            TextContent(text = confirmed ?
+                "confirm_delete: deleted $(args["filename"])" :
+                "confirm_delete: kept $(args["filename"])")
+        end),
+    MCPTool(
+        name = "multi_input",
+        description = "Task-supporting fan-out: two parallel elicitation inputRequests (partial fulfillment)",
+        parameters = ToolParameter[],
+        task_support = :optional,
+        handler = (args, ctx) -> begin
+            task_detach(ctx)
+            responses = task_await_input(ctx, [
+                elicit_request("First input?"),
+                elicit_request("Second input?"),
+            ])
+            names = [string(something(_val(_val(r, "content"), "name"), "?")) for r in responses]
+            TextContent(text = "multi_input done: $(join(names, ", "))")
+        end),
+    MCPTool(
+        name = "test_tool_with_task",
+        description = "MRTR-to-task composition: gathers user_name via the MRTR round, then escalates to a task",
+        parameters = ToolParameter[],
+        task_support = :required,
+        handler = (args, ctx) -> begin
+            resp = get(input_responses(ctx), "user_name", nothing)
+            resp === nothing && return InputRequired(Dict("user_name" => elicit_request(
+                "What is your name?";
+                requested_schema = Dict{String,Any}(
+                    "type" => "object",
+                    "properties" => Dict{String,Any}(
+                        "name" => Dict{String,Any}("type" => "string"))))))
+            task_detach(ctx)
+            sleep(0.2)
+            user_name = something(_val(_val(resp, "content"), "name"), "unknown")
+            TextContent(text = "Task complete for user: $(user_name)")
         end),
 ]
 

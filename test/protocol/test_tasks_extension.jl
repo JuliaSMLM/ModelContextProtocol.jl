@@ -563,6 +563,186 @@ _ext_tools() = [
         end
     end
 
+    @testset "mid-task input: park, snapshot, resume" begin
+        confirmer = MCPTool(name="confirmer", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx)
+                resp = task_await_input(ctx, elicit_request("Proceed?"))
+                TextContent(text="confirmed: $(JSON3.write(resp))")
+            end)
+        server, state, buf = _ext_test_server(tools=[confirmer])
+        elicit_caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+
+        @test _ext_call(server, state, "confirmer"; caps=elicit_caps, id=201) === nothing
+        tid = _ext_deferred_response(buf, 201)["result"]["taskId"]
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "input_required")
+
+        # tasks/get inlines the outstanding request under a server-minted key
+        g = _ext_get(server, state, tid)
+        @test g["result"]["resultType"] == "complete"
+        reqs = g["result"]["inputRequests"]
+        @test length(reqs) == 1
+        key = first(keys(reqs))
+        @test reqs[key]["method"] == "elicitation/create"
+        @test reqs[key]["params"]["message"] == "Proceed?"
+
+        # The snapshot is re-included on every poll until answered
+        @test haskey(_ext_get(server, state, tid)["result"]["inputRequests"], key)
+
+        # Not-outstanding keys are ignored: acked, task still parked, key intact
+        u0 = _ext_update(server, state, tid; responses=Dict{String,Any}(
+            "never-issued" => Dict{String,Any}("x" => 1)))
+        @test u0["result"]["resultType"] == "complete"
+        g2 = _ext_get(server, state, tid)
+        @test g2["result"]["status"] == "input_required"
+        @test haskey(g2["result"]["inputRequests"], key)
+
+        # The real response resumes the handler; the ack carries no task envelope
+        u = _ext_update(server, state, tid; responses=Dict{String,Any}(
+            String(key) => Dict{String,Any}("action" => "accept",
+                                            "content" => Dict{String,Any}("ok" => "magic-42"))))
+        @test u["result"]["resultType"] == "complete"
+        @test !haskey(u["result"], "taskId") && !haskey(u["result"], "status") &&
+              !haskey(u["result"], "inputRequests")
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "completed")
+        done = _ext_get(server, state, tid)
+        @test occursin("magic-42", done["result"]["result"]["content"][1]["text"])
+        @test !haskey(done["result"], "inputRequests")
+    end
+
+    @testset "mid-task input: partial fulfillment and key uniqueness" begin
+        fanout = MCPTool(name="fanout", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx)
+                rs = task_await_input(ctx, [elicit_request("First?"), elicit_request("Second?")])
+                TextContent(text="fanout: $(JSON3.write(rs))")
+            end)
+        tworounds = MCPTool(name="tworounds", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx)
+                a = task_await_input(ctx, elicit_request("Round 1?"))
+                b = task_await_input(ctx, elicit_request("Round 2?"))
+                TextContent(text="rounds: $(JSON3.write(Any[a, b]))")
+            end)
+        server, state, buf = _ext_test_server(tools=[fanout, tworounds])
+        elicit_caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+
+        # Two parallel requests park the task with two pending keys
+        @test _ext_call(server, state, "fanout"; caps=elicit_caps, id=211) === nothing
+        tid = _ext_deferred_response(buf, 211)["result"]["taskId"]
+        @test _ext_wait_for(() -> length(get(_ext_get(server, state, tid)["result"],
+                                             "inputRequests", Dict())) == 2)
+        keys2 = collect(keys(_ext_get(server, state, tid)["result"]["inputRequests"]))
+        k1, k2 = String(keys2[1]), String(keys2[2])
+
+        # Subset update: acked, answered key removed, still input_required
+        _ext_update(server, state, tid; responses=Dict{String,Any}(
+            k1 => Dict{String,Any}("content" => Dict{String,Any}("v" => "first-answer"))))
+        after = _ext_get(server, state, tid)["result"]
+        @test after["status"] == "input_required"
+        @test !haskey(after["inputRequests"], k1)
+        @test haskey(after["inputRequests"], k2)
+
+        # Completing the set resumes the handler; responses arrive in request order
+        _ext_update(server, state, tid; responses=Dict{String,Any}(
+            k2 => Dict{String,Any}("content" => Dict{String,Any}("v" => "second-answer"))))
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "completed")
+        text = _ext_get(server, state, tid)["result"]["result"]["content"][1]["text"]
+        @test occursin(r"first-answer.*second-answer"s, text)
+
+        # Sequential rounds mint fresh keys: a key is never reused after answering
+        @test _ext_call(server, state, "tworounds"; caps=elicit_caps, id=221) === nothing
+        tid2 = _ext_deferred_response(buf, 221)["result"]["taskId"]
+        @test _ext_wait_for(() -> _ext_get(server, state, tid2)["result"]["status"] == "input_required")
+        r1key = String(first(keys(_ext_get(server, state, tid2)["result"]["inputRequests"])))
+        _ext_update(server, state, tid2; responses=Dict{String,Any}(
+            r1key => Dict{String,Any}("content" => Dict{String,Any}("v" => 1))))
+        @test _ext_wait_for(() -> begin
+            r = _ext_get(server, state, tid2)["result"]
+            r["status"] == "input_required" && !haskey(get(r, "inputRequests", Dict()), r1key)
+        end)
+        r2key = String(first(keys(_ext_get(server, state, tid2)["result"]["inputRequests"])))
+        @test r2key != r1key
+        _ext_update(server, state, tid2; responses=Dict{String,Any}(
+            r2key => Dict{String,Any}("content" => Dict{String,Any}("v" => 2))))
+        @test _ext_wait_for(() -> _ext_get(server, state, tid2)["result"]["status"] == "completed")
+    end
+
+    @testset "mid-task input: cancel unblocks the waiter" begin
+        confirmer = MCPTool(name="confirmer", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx)
+                task_await_input(ctx, elicit_request("Proceed?"))
+                TextContent(text="never delivered")
+            end)
+        server, state, buf = _ext_test_server(tools=[confirmer])
+        elicit_caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+
+        @test _ext_call(server, state, "confirmer"; caps=elicit_caps, id=231) === nothing
+        tid = _ext_deferred_response(buf, 231)["result"]["taskId"]
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "input_required")
+        pending_key = String(first(keys(_ext_get(server, state, tid)["result"]["inputRequests"])))
+
+        c = _ext_cancel(server, state, tid)
+        @test c["result"]["resultType"] == "complete"
+        @test _ext_get(server, state, tid)["result"]["status"] == "cancelled"
+
+        # The unwound waiter's discarded outcome never overwrites the cancel, and
+        # a late update finds nothing outstanding (acked, ignored)
+        sleep(0.2)
+        @test _ext_get(server, state, tid)["result"]["status"] == "cancelled"
+        late = _ext_update(server, state, tid; responses=Dict{String,Any}(
+            pending_key => Dict{String,Any}("content" => Dict{String,Any}())))
+        @test late["result"]["resultType"] == "complete"
+        @test _ext_get(server, state, tid)["result"]["status"] == "cancelled"
+    end
+
+    @testset "mid-task input: misuse surfaces as errors" begin
+        confirmer = MCPTool(name="confirmer", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx)
+                task_await_input(ctx, elicit_request("Proceed?"))
+                TextContent(text="never delivered")
+            end)
+        no_detach = MCPTool(name="no_detach", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_await_input(ctx, elicit_request("Proceed?"))
+                TextContent(text="unreachable")
+            end)
+        server, state, buf = _ext_test_server(tools=[confirmer, no_detach])
+        elicit_caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+
+        # The creating request never declared elicitation: the server must not
+        # surface the request — the await throws and the task fails
+        @test _ext_call(server, state, "confirmer"; id=241) === nothing  # _EXT_CAPS: no elicitation
+        tid = _ext_deferred_response(buf, 241)["result"]["taskId"]
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "failed")
+        g = _ext_get(server, state, tid)
+        @test g["result"]["error"]["code"] == -32603
+        @test occursin("capability", g["result"]["error"]["message"])
+
+        # Awaiting before detaching is a handler bug, answered as a tool error
+        # (the MRTR round is the pre-detach input mechanism)
+        @test _ext_call(server, state, "no_detach"; caps=elicit_caps, id=251) === nothing
+        resp = _ext_deferred_response(buf, 251)
+        @test resp["error"]["code"] == -32603
+        @test occursin("task_detach", resp["error"]["message"])
+    end
+
     @testset "Mcp-Name routing header mirrors taskId (SEP-2243)" begin
         body = """{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"taskId":"abc-123","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"""
         msg = JSON3.read(body)

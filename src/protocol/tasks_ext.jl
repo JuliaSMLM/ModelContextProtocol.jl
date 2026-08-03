@@ -120,9 +120,16 @@ function ext_task_wire(record::TaskRecord; detailed::Bool=false)::LittleDict{Str
             record.error.data !== nothing && (err["data"] = record.error.data)
             d["error"] = err
         elseif record.status == "input_required"
-            # Outstanding input requests (tasks/update flow) land here; until that
-            # flow exists no record can reach this status, but the shape is fixed
-            d["inputRequests"] = LittleDict{String,Any}()
+            # Point-in-time snapshot of ALL outstanding requests (the spec has the
+            # server re-include not-yet-answered entries on every poll; clients
+            # deduplicate by key)
+            reqs = LittleDict{String,Any}()
+            for (key, pending) in record.pending_inputs
+                entry = LittleDict{String,Any}("method" => pending.method)
+                pending.params === nothing || (entry["params"] = pending.params)
+                reqs[key] = entry
+            end
+            d["inputRequests"] = reqs
         end
     end
     d
@@ -206,6 +213,100 @@ function task_detach(ctx::RequestContext;
         st.create_delivered = true
         true
     end
+end
+
+"""
+    TaskCancelledException()
+
+Thrown by [`task_await_input`](@ref) when the task is cancelled (`tasks/cancel`)
+while the handler is waiting — or was already cancelled when it asked. Handlers
+that need cleanup can catch it; otherwise it unwinds the handler, whose discarded
+outcome never overwrites the cancelled status (cancelled tasks stay cancelled).
+"""
+struct TaskCancelledException <: Exception end
+
+Base.showerror(io::IO, ::TaskCancelledException) =
+    print(io, "TaskCancelledException: the task was cancelled while waiting for client input")
+
+"""
+    task_await_input(ctx, request::InputRequest) -> Any
+    task_await_input(ctx, requests::AbstractVector{InputRequest}) -> Vector{Any}
+
+Ask the client for input MID-TASK and block the handler until it answers (tasks
+extension, SEP-2663). Callable from a handler that has already detached via
+[`task_detach`](@ref): the request(s) are registered under server-minted keys
+(unique over the task's lifetime), the task's status flips to `input_required`,
+and `tasks/get` surfaces the outstanding requests in `inputRequests`. The client
+answers with `tasks/update` `inputResponses`; each response value is returned to
+the waiting handler (the vector form returns responses in request order, and only
+once ALL of them have arrived — a partial `tasks/update` is accepted, the task
+simply stays `input_required` until the rest arrive). Once nothing is pending the
+status returns to `working`.
+
+Build requests with [`elicit_request`](@ref), [`sampling_request`](@ref), or
+[`roots_request`](@ref) — the same constructors the MRTR flow uses. A server MUST
+NOT send input requests the creating request's client capabilities did not
+declare, so an undeclared capability throws (failing the task).
+
+Throws [`TaskCancelledException`](@ref) when the task is cancelled while (or
+before) waiting. There is no timeout: an unanswered request blocks until the
+client answers or cancels — bound handler-side if needed.
+
+Before detachment there is no `inputRequests` surface: a handler that needs input
+to DECIDE (e.g. whether to proceed at all) returns [`InputRequired`](@ref) for
+the MRTR round on the original request instead.
+
+# Arguments
+- `ctx`: The request context passed to a ctx-aware handler
+- `request`/`requests`: The input request(s) to surface to the client
+
+# Returns
+- The client's response value (single form), or a `Vector{Any}` of response
+  values in request order (vector form)
+"""
+task_await_input(ctx::RequestContext, request::InputRequest) =
+    first(task_await_input(ctx, InputRequest[request]))
+
+function task_await_input(ctx::RequestContext,
+                          requests::AbstractVector{InputRequest})::Vector{Any}
+    record = ctx.task
+    (record === nothing || record.era !== :ext) && throw(ArgumentError(
+        "task_await_input requires a detached extension-era task — call task_detach(ctx) first " *
+        "(before detachment, return InputRequired for the MRTR round on the original request)"))
+    isempty(requests) && return Any[]
+    for r in requests
+        capability_satisfied(ctx.client_capabilities, r) || throw(ArgumentError(
+            "client did not declare the capability required for $(r.method) input requests"))
+    end
+    store = ctx.server.tasks
+    entries = PendingTaskInput[]
+    lock(store.lock) do
+        task_is_terminal(record) && throw(TaskCancelledException())
+        for r in requests
+            record.input_key_counter += 1
+            pending = PendingTaskInput(r.method, r.params, Channel{Any}(1))
+            record.pending_inputs["input-$(record.input_key_counter)"] = pending
+            push!(entries, pending)
+        end
+        if record.status == "working"
+            record.status = "input_required"
+            record.status_message = "Waiting for client input."
+        end
+        record.last_updated_at = Dates.now(Dates.UTC)
+    end
+    # Block OUTSIDE the store lock: delivery (tasks/update) and cancellation both
+    # need it. A closed channel means the task went terminal without this request
+    # ever being answered — cancellation, from the waiter's point of view.
+    responses = Any[]
+    for pending in entries
+        value = try
+            take!(pending.channel)
+        catch
+            throw(TaskCancelledException())
+        end
+        push!(responses, value)
+    end
+    responses
 end
 
 # End the current request's ModernRequestLogger scope from the worker task (the
@@ -434,11 +535,15 @@ end
     handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams) -> HandlerResult
 
 Handle a modern-era `tasks/update` (tasks extension): deliver the client's
-`inputResponses` to a task waiting for input, acknowledging with an empty result.
-Responses keyed to requests that are not currently outstanding are ignored per
-spec — which today is every key, since no execution path parks a task in
-`input_required` yet (that flow arrives with mid-task input support). Gated on the
-extension declaration (-32021); an unknown `taskId` is -32602.
+`inputResponses` to the task's outstanding input requests, acknowledging with an
+empty result. Responses keyed to requests that are not currently outstanding —
+never issued, already answered, or superseded — are ignored per spec, and a
+partial set (a strict subset of the outstanding keys) is accepted: answered keys
+are removed and the task stays `input_required` until the rest arrive; once
+nothing is pending the status returns to `working`. The ack is eventually
+consistent — delivery happens before the ack here, but the resumed handler runs
+concurrently, so the observable status is whatever `tasks/get` sees next. Gated
+on the extension declaration (-32021); an unknown `taskId` is -32602.
 """
 function handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams)::HandlerResult
     tasks_extension_declared(ctx.client_capabilities) ||
@@ -447,6 +552,28 @@ function handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams)::
     record = get_task(store, params.taskId, ext_task_principal(ctx); era = :ext)
     (record === nothing || !ext_task_authorized(ctx, record)) &&
         return task_not_found_result()
+    lock(store.lock) do
+        # A terminal task has no outstanding requests (they are drained on the
+        # terminal transition), so every key is not-outstanding: acked, ignored
+        delivered = false
+        for (key, value) in params.inputResponses
+            pending = get(record.pending_inputs, key, nothing)
+            pending === nothing && continue
+            delete!(record.pending_inputs, key)
+            # Size-1 buffered channel, exactly one put per key (the delete above is
+            # in the same critical section), so this never blocks; the waiter's
+            # take! resumes once the lock is released
+            put!(pending.channel, value)
+            delivered = true
+        end
+        if delivered
+            if isempty(record.pending_inputs) && record.status == "input_required"
+                record.status = "working"
+                record.status_message = "The operation is now in progress."
+            end
+            record.last_updated_at = Dates.now(Dates.UTC)
+        end
+    end
     HandlerResult(response = JSONRPCResponse(
         id = ctx.request_id, result = LittleDict{String,Any}()))
 end
