@@ -16,6 +16,7 @@ const REQUEST_PARAMS_MAP = Dict{String,Type}(
     "tasks/get" => GetTaskParams,
     "tasks/result" => TaskResultParams,
     "tasks/cancel" => CancelTaskParams,
+    "tasks/update" => UpdateTaskParams,
     "tasks/list" => ListTasksParams,
     "notifications/progress" => ProgressParams
 )

@@ -492,11 +492,16 @@ function accepts_sse(accept_header::AbstractString)::Bool
     best_spec >= 0 && best_q > 0
 end
 
-# Modern methods whose Mcp-Name header mirrors a body field (SEP-2243)
+# Modern methods whose Mcp-Name header mirrors a body field (SEP-2243; the tasks
+# extension routes tasks/* by params.taskId so intermediaries can pin a task's
+# requests to the instance holding its state)
 const MCP_NAME_METHODS = Dict(
     "tools/call" => "name",
     "prompts/get" => "name",
     "resources/read" => "uri",
+    "tasks/get" => "taskId",
+    "tasks/update" => "taskId",
+    "tasks/cancel" => "taskId",
 )
 
 """

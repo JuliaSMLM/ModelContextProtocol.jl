@@ -164,6 +164,54 @@ tools = [
                 Dict("confirm" => elicit_request("Proceed with the diagnostic?")))
             TextContent(text = "confirmed")
         end),
+    # ---- Tasks extension (SEP-2663) fixtures: the tasks-* scenario contract ----
+    MCPTool(
+        name = "greet",
+        description = "Sync-only greeting",
+        parameters = [ToolParameter(name = "name", description = "Who to greet",
+                                    type = "string", required = true)],
+        handler = args -> TextContent(text = "Hello, $(args["name"])!")),
+    MCPTool(
+        name = "slow_compute",
+        description = "Task-supporting compute: sleeps `seconds` then returns; seconds:0 takes the immediate-result shortcut",
+        parameters = [
+            ToolParameter(name = "seconds", description = "How long to compute",
+                          type = "number", required = true),
+            ToolParameter(name = "label", description = "Echoed label", type = "string"),
+        ],
+        task_support = :optional,
+        handler = (args, ctx) -> begin
+            secs = round(Int, args["seconds"])
+            secs > 0 && task_detach(ctx)
+            for _ in 1:(secs * 20)
+                task_cancelled(ctx) && return TextContent(text = "slow_compute cancelled")
+                sleep(0.05)
+            end
+            TextContent(text = "slow_compute done after $(secs)s ($(get(args, "label", "")))")
+        end),
+    MCPTool(
+        name = "failing_job",
+        description = "Task-required job that reports a tool-level error (isError -> completed)",
+        parameters = ToolParameter[],
+        task_support = :required,
+        handler = (args, ctx) -> begin
+            task_detach(ctx)
+            sleep(1.0)
+            CallToolResult(
+                content = [Dict{String,Any}("type" => "text",
+                                            "text" => "failing_job: simulated tool error")],
+                is_error = true)
+        end),
+    MCPTool(
+        name = "protocol_error_job",
+        description = "Task-supporting job that fails with a protocol-level (JSON-RPC) error",
+        parameters = ToolParameter[],
+        task_support = :optional,
+        handler = (args, ctx) -> begin
+            task_detach(ctx)
+            sleep(0.5)
+            error("protocol_error_job: simulated internal failure")
+        end),
 ]
 
 resources = [

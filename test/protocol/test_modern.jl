@@ -166,7 +166,9 @@
         @test !haskey(resp["result"], "resultType")
     end
 
-    @testset "modern task metadata is ignored (extension not advertised)" begin
+    @testset "legacy task metadata is ignored on modern requests" begin
+        # Core (SEP-1686) tasks never apply to the modern era — the extension
+        # surface (test_tasks_extension.jl) is gated separately per request
         server = modern_server()
         ctx_modern = RequestContext(server = server, protocol_version = "2026-07-28")
         @test !ModelContextProtocol.tasks_supported(ctx_modern)

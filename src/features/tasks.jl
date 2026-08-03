@@ -36,6 +36,9 @@ Mutable record of one server-side task (a task-augmented request execution).
 - `poll_interval_ms::Union{Int,Nothing}`: Suggested client polling interval
 - `principal::Union{String,Nothing}`: Authorization binding (authenticated subject), `nothing` when unauthenticated
 - `method::String`: The originating request method (e.g. "tools/call")
+- `era::Symbol`: `:legacy` for SEP-1686 experimental tasks (2025-11-25 sessions),
+  `:ext` for the modern-era `io.modelcontextprotocol/tasks` extension (SEP-2663).
+  The eras are wire-incompatible and never serve each other's records
 - `result::Union{CallToolResult,Nothing}`: Final result when the underlying call succeeded (or failed via `isError`)
 - `error::Union{ErrorInfo,Nothing}`: Final JSON-RPC error when the underlying call errored
 - `done::Base.Event`: Set exactly once when the task reaches a terminal status
@@ -54,6 +57,7 @@ mutable struct TaskRecord
     poll_interval_ms::Union{Int,Nothing}
     principal::Union{String,Nothing}
     method::String
+    era::Symbol
     result::Union{CallToolResult,Nothing}
     error::Union{ErrorInfo,Nothing}
     done::Base.Event
@@ -103,7 +107,8 @@ end
 
 """
     create_task!(store::TaskStore, method::String;
-                 requested_ttl_ms=nothing, principal=nothing) -> TaskRecord
+                 requested_ttl_ms=nothing, principal=nothing, era=:legacy,
+                 status_message=nothing) -> TaskRecord
 
 Create a new task record in "working" status with a cryptographically random task id.
 The requested ttl is clamped to the store's `max_ttl_ms`; when absent the store's
@@ -111,20 +116,23 @@ The requested ttl is clamped to the store's `max_ttl_ms`; when absent the store'
 """
 function create_task!(store::TaskStore, method::String;
                       requested_ttl_ms::Union{Int,Nothing}=nothing,
-                      principal::Union{String,Nothing}=nothing)::TaskRecord
+                      principal::Union{String,Nothing}=nothing,
+                      era::Symbol=:legacy,
+                      status_message::Union{String,Nothing}=nothing)::TaskRecord
     ttl = requested_ttl_ms === nothing ? store.default_ttl_ms :
           clamp(requested_ttl_ms, 0, store.max_ttl_ms)
     now_utc = Dates.now(Dates.UTC)
     record = TaskRecord(
         string(uuid4(RandomDevice())),
         "working",
-        "The operation is now in progress.",
+        something(status_message, "The operation is now in progress."),
         now_utc,
         now_utc,
         ttl,
         store.poll_interval_ms,
         principal,
         method,
+        era,
         nothing,
         nothing,
         Base.Event(),
@@ -156,19 +164,23 @@ end
 
 """
     get_task(store::TaskStore, task_id::String,
-             principal::Union{String,Nothing}) -> Union{TaskRecord,Nothing}
+             principal::Union{String,Nothing}; era=:legacy) -> Union{TaskRecord,Nothing}
 
 Look up a task by id, enforcing authorization-context binding: a record is only
-returned when its stored principal matches the requestor's. A mismatch returns
-`nothing` (indistinguishable from "not found", so task existence is not leaked).
+returned when its stored principal matches the requestor's AND it belongs to the
+requested era (legacy sessions cannot see extension tasks and vice versa — the wire
+shapes are incompatible). A mismatch returns `nothing` (indistinguishable from
+"not found", so task existence is not leaked).
 """
 function get_task(store::TaskStore, task_id::String,
-                  principal::Union{String,Nothing})::Union{TaskRecord,Nothing}
+                  principal::Union{String,Nothing};
+                  era::Symbol=:legacy)::Union{TaskRecord,Nothing}
     lock(store.lock) do
         sweep_expired!(store)
         record = get(store.tasks, task_id, nothing)
         record === nothing && return nothing
         record.principal == principal || return nothing
+        record.era === era || return nothing
         record
     end
 end
@@ -177,8 +189,11 @@ end
     finish_task!(store::TaskStore, record::TaskRecord,
                  outcome::Union{CallToolResult,ErrorInfo}) -> Bool
 
-Transition a task to its terminal status from a completed execution: "failed" for an
-`ErrorInfo` or a `CallToolResult` with `is_error`, otherwise "completed". Returns
+Transition a task to its terminal status from a completed execution. An `ErrorInfo`
+(a JSON-RPC error) is always "failed". For a `CallToolResult` the eras diverge:
+legacy (SEP-1686) maps `is_error` to "failed", while the extension era (SEP-2663)
+requires "completed" for ANY result — "failed" is reserved for JSON-RPC errors, and
+a tool-level `isError:true` result completes with the result inlined. Returns
 `false` without mutating when the task is already terminal (e.g. cancelled while the
 work was still running — cancelled tasks MUST stay cancelled, so the outcome is
 discarded).
@@ -191,6 +206,12 @@ function finish_task!(store::TaskStore, record::TaskRecord,
             record.error = outcome
             record.status = "failed"
             record.status_message = "Tool execution failed: $(outcome.message)"
+        elseif record.era === :ext
+            record.result = outcome
+            record.status = "completed"
+            record.status_message = outcome.is_error ?
+                "The tool reported an error (isError)." :
+                "The operation completed successfully."
         else
             record.result = outcome
             record.status = outcome.is_error ? "failed" : "completed"
@@ -288,3 +309,29 @@ end
 Format a UTC `DateTime` as an ISO 8601 / RFC 3339 timestamp with a `Z` suffix.
 """
 iso8601_utc(dt::DateTime) = Dates.format(dt, dateformat"yyyy-mm-dd\THH:MM:SS.sss\Z")
+
+"""
+    TaskDetachState(transport, route)
+
+Per-call state for a detachable modern-era `tools/call` (tasks extension,
+SEP-2663). Created when the call is spawned off-loop with its response route
+captured; `task_detach(ctx)` uses it to mint the task and deliver the
+`CreateTaskResult`, and the spawn wrapper uses it to learn whether the handler
+detached. All access is under `lock`.
+
+# Fields
+- `lock::ReentrantLock`: Guards `record`/`closed` against the detach/finish race
+- `transport::Any`: The serving transport at spawn time (may be `nothing` in tests)
+- `route::Any`: The captured response route (see `capture_response_route`)
+- `record::Union{TaskRecord,Nothing}`: The minted task once the handler detached
+- `closed::Bool`: Set when the handler has returned — a late `task_detach` (e.g.
+  from a stray child task) must fail rather than deliver a second response
+"""
+mutable struct TaskDetachState
+    lock::ReentrantLock
+    transport::Any
+    route::Any
+    record::Union{TaskRecord,Nothing}
+    closed::Bool
+end
+TaskDetachState(transport, route) = TaskDetachState(ReentrantLock(), transport, route, nothing, false)

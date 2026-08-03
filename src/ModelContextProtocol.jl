@@ -85,6 +85,7 @@ include("protocol/mrtr.jl")
 include("protocol/handlers.jl")
 include("protocol/modern.jl")
 include("protocol/subscriptions.jl")
+include("protocol/tasks_ext.jl")
 
 # 6. Serialization (needs all types)
 include("utils/serialization.jl")
@@ -124,6 +125,7 @@ export
     Server,  # For type annotations in user code
     send_progress,  # Progress reporting from tool handlers (RequestContext is intentionally not exported)
     task_cancelled,  # Cooperative cancellation check inside task-augmented tool handlers
+    task_detach,  # Hand a modern-era tool call off to background task execution (tasks extension, SEP-2663)
     subscribe!, unsubscribe!,  # Resource subscription management (legacy in-process callbacks)
     notify_list_changed, notify_resource_updated,  # Announce changes to subscriptions/listen streams
     InputRequired, elicit_request, sampling_request, roots_request,  # MRTR (2026-07-28): handlers requesting client input

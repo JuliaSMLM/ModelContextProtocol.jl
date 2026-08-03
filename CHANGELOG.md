@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tasks extension core (SEP-2663, `io.modelcontextprotocol/tasks`).** The modern
+  era's replacement for the experimental SEP-1686 core tasks, served alongside the
+  untouched legacy surface (era-tagged records in the shared `TaskStore`; neither
+  era can see the other's tasks). Task creation is server-directed: a client
+  declares the extension under `_meta`
+  `clientCapabilities.extensions["io.modelcontextprotocol/tasks"]`, and a
+  task-capable tool's handler — now run off the serial loop with its response
+  route captured — hands off with the new exported **`task_detach(ctx)`**, which
+  durably creates the task and immediately delivers the flat `CreateTaskResult`
+  (`resultType:"task"`, `ttlMs`/`pollIntervalMs` wire fields) while the handler
+  keeps running; the eventual return value completes the task (a tool-level
+  `isError:true` result **completes** it per the extension — `failed` is reserved
+  for JSON-RPC errors, inlined as the task's `error`). A handler that returns
+  without detaching yields the ordinary synchronous result (the immediate-result
+  shortcut), and one that returns `InputRequired` first gets the MRTR round —
+  MRTR exchanges resolve before task creation, so the SEP's composition rule
+  (gather input synchronously, then escalate to a task) works end-to-end.
+  Surface: `tasks/get` (DetailedTask with the terminal `result`/`error` inlined —
+  there is no `tasks/result`), `tasks/update` (ack-only; not-outstanding
+  `inputResponses` keys ignored per spec — the mid-task `input_required` flow
+  lands in a follow-up), and the idempotent ack-only `tasks/cancel` (terminal
+  cancels ack instead of erroring; `-32602` is reserved for unknown ids;
+  cooperative cancellation via the existing `task_cancelled(ctx)`).
+  Non-declaring clients get `-32021` with `data.requiredCapabilities` on the
+  `tasks/*` methods and on `tools/call` of a `task_support = :required` tool,
+  while `:optional` tools fall through to synchronous execution (and the legacy
+  `task` request param is tolerated and ignored). `server/discover` advertises
+  the extension under `capabilities.extensions`; `tasks/result`/`tasks/list`
+  stay `-32601` in the modern era; on Streamable HTTP the SEP-2243 `Mcp-Name`
+  header must mirror `params.taskId` on the `tasks/*` methods. Verified against
+  the official conformance suite's `tasks-*` scenarios (all substantive checks
+  pass; the suite's wire-schema validator does not yet know the extension's
+  `CreateTaskResult` shape, an upstream harness gap).
+
 - **Per-request `logLevel` (SEP-2575, 2026-07-28).** The modern era's replacement
   for `logging/setLevel`: a request whose `_meta` carries
   `io.modelcontextprotocol/logLevel` opts into `notifications/message` delivery

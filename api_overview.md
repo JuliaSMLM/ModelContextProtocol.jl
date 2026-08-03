@@ -949,6 +949,44 @@ long_tool = MCPTool(
 - Optional `notifications/tasks/status` are emitted on terminal transitions (stdout
   for stdio, SSE stream for HTTP)
 
+### Tasks extension (modern era, SEP-2663)
+
+On modern-era (2026-07-28) requests the experimental surface above is replaced by
+the `io.modelcontextprotocol/tasks` extension. Creation is server-directed: the
+client declares the extension in per-request `_meta`
+`clientCapabilities.extensions`, and the tool handler decides — `task_detach(ctx)`
+hands the running call off to a background task, immediately answering with a flat
+`CreateTaskResult` (`resultType:"task"`, `ttlMs`/`pollIntervalMs`):
+
+```julia
+slow_tool = MCPTool(
+    name = "slow_job",
+    description = "Expensive computation",
+    parameters = [],
+    handler = (args, ctx) -> begin
+        task_detach(ctx)   # false (and the call just runs synchronously) when the
+                           # client did not declare the tasks extension
+        for i in 1:100
+            task_cancelled(ctx) && return TextContent(text = "stopped")
+            # ... work ...
+        end
+        TextContent(text = "done")
+    end,
+    task_support = :optional    # :required rejects non-declaring clients with -32021
+)
+```
+
+**Semantics:**
+- Clients poll `tasks/get` (terminal `result`/`error` inlined — no `tasks/result`);
+  `tasks/cancel` is an idempotent empty ack (`-32602` only for unknown ids); a tool
+  `isError` result **completes** the task (`failed` is reserved for JSON-RPC errors)
+- `tasks/get`/`tasks/update`/`tasks/cancel` without the declared extension →
+  `-32021` with `data.requiredCapabilities`; `tasks/result`/`tasks/list` → `-32601`
+- Returning `InputRequired` *before* detaching runs the normal MRTR round, so a tool
+  can gather input synchronously and then escalate to a task (SEP-2663 composition)
+- Extension tasks and legacy (SEP-1686) tasks live in era-isolated stores; on HTTP,
+  `Mcp-Name` must mirror `params.taskId` for `tasks/*` requests
+
 ## Transport Types
 
 ### `StdioTransport`

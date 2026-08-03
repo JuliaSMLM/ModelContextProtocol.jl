@@ -30,6 +30,9 @@ Base.@kwdef mutable struct RequestContext
     protocol_version::Union{String,Nothing} = nothing  # modern-era per-request version from _meta; nothing on legacy requests (which use state.protocol_version)
     input_responses::Union{Nothing,Dict{String,Any}} = nothing  # MRTR retry responses (read via input_responses(ctx))
     input_state::Any = nothing  # handler state from a VERIFIED MRTR requestState (read via input_state(ctx))
+    client_capabilities::Any = nothing  # modern-era _meta clientCapabilities (raw parsed view); nothing on legacy requests
+    params_digest::Union{Nothing,String} = nothing  # canonical params digest of a modern MRTR-method request
+    detach::Union{Nothing,TaskDetachState} = nothing  # set for detachable modern tool calls (tasks extension); enables task_detach(ctx)
 end
 
 """
@@ -914,6 +917,20 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
         end
     end
 
+    # Tasks EXTENSION (SEP-2663, modern era). Server-directed: with the extension
+    # declared in this request's _meta clientCapabilities, a task-capable tool runs
+    # off-loop and may hand off to a task via task_detach(ctx). Without the
+    # declaration, a :required tool is rejected (-32021 with the required extension
+    # named) and an :optional tool falls through to ordinary synchronous execution;
+    # the legacy `task` request param is ignored in the modern era either way.
+    if ctx.protocol_version !== nothing && tool.task_support in (:optional, :required)
+        if tasks_extension_declared(ctx.client_capabilities)
+            return spawn_detachable_tool_call!(ctx, tool, args)
+        elseif tool.task_support === :required
+            return HandlerResult(error = tasks_extension_required_error())
+        end
+    end
+
     # Task augmentation (MCP Tasks, experimental). The tool-level rules apply only
     # when the tasks capability was declared to THIS client (negotiated 2025-11-25);
     # when undeclared, the spec requires processing the request normally, ignoring
@@ -1083,9 +1100,9 @@ with a `TaskCapability` AND the client negotiated a protocol version with task s
 """
 function tasks_supported(ctx::RequestContext)::Bool
     v = request_protocol_version(ctx)
-    # Modern-era (2026-07-28+) requests have no core tasks: they moved to the
-    # io.modelcontextprotocol/tasks EXTENSION, which this server does not yet
-    # advertise — so task metadata on modern requests is ignored, per spec.
+    # Modern-era (2026-07-28+) requests have no core tasks: they use the
+    # io.modelcontextprotocol/tasks EXTENSION (protocol/tasks_ext.jl), gated on
+    # the request's declared extension capability — never on this predicate.
     v !== nothing &&
         !(v in MODERN_PROTOCOL_VERSIONS) &&
         supports(v, :tasks) &&
