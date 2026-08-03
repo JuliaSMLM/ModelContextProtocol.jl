@@ -8,6 +8,11 @@
 # responses are delivered out-of-loop and land there).
 # No `using` here by convention — runtests.jl provides the imports.
 
+# An exception whose own display throws: the worst case for error paths that
+# interpolate the exception into a message.
+struct _ExtUglyException <: Exception end
+Base.show(::IO, ::_ExtUglyException) = throw(_ExtUglyException())
+
 # Wait until f() is true, with a generous timeout for slow CI machines.
 function _ext_wait_for(f; timeout=15.0, interval=0.05)
     deadline = time() + timeout
@@ -461,10 +466,26 @@ _ext_tools() = [
         cancel_task!(server.tasks, rec)
     end
 
+    @testset "display-throwing exceptions cannot orphan a task (Codex r4 B1)" begin
+        ugly = MCPTool(name="ugly", description="d", parameters=[], task_support=:optional,
+            handler=(args, ctx) -> (task_detach(ctx); throw(_ExtUglyException())))
+        server, state, buf = _ext_test_server(tools=[ugly])
+        @test _ext_call(server, state, "ugly"; id=131) === nothing
+        tid = _ext_deferred_response(buf, 131)["result"]["taskId"]
+        # The exception's show throws through every message interpolation; the
+        # task must still terminalize as failed instead of polling forever
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "failed")
+        g = _ext_get(server, state, tid)
+        @test occursin("_ExtUglyException", g["result"]["error"]["message"])
+    end
+
     @testset "task record published before fallible delivery (Codex r3 B1)" begin
         server, _, _ = _ext_test_server()
         dead = IOBuffer()
-        close(dead)  # every write throws: CreateTaskResult delivery cannot succeed
+        # Base.close, QUALIFIED: a bare `close` here would resolve Main's binding to
+        # Base's before transports/test_stdio.jl imports ModelContextProtocol.close,
+        # and Julia 1.11 then ignores that import (MethodError on close(transport))
+        Base.close(dead)  # every write throws: CreateTaskResult delivery cannot succeed
         broken = StdioTransport(input=IOBuffer(), output=dead)
         ctx = RequestContext(server=server, request_id=1,
                              protocol_version="2026-07-28", client_capabilities=_EXT_CAPS,

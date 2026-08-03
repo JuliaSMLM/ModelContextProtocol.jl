@@ -218,6 +218,28 @@ function close_request_log_scope!()
 end
 
 """
+    safe_error_message(prefix::String, e) -> String
+
+Format an exception for an error message WITHOUT trusting its `show`/`showerror`
+methods: an exception whose display itself throws must not escape the error
+path it is being reported on (it would defeat every catch that interpolates
+`\$(e)` and, on the task-worker path, leave a delivered task non-terminal
+forever). Falls back to the exception's type name, then to a static string.
+"""
+function safe_error_message(prefix::String, e)::String
+    detail = try
+        sprint(showerror, e)
+    catch
+        try
+            string(typeof(e))
+        catch
+            "unrenderable exception"
+        end
+    end
+    string(prefix, ": ", detail)
+end
+
+"""
     spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                                 args::AbstractDict,
                                 tool_scopes::Vector{String}) -> HandlerResult
@@ -263,8 +285,11 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
             outcome = try
                 execute_tool_call(tool, args, ctx)
             catch e
-                # execute_tool_call catches handler errors itself; this guards the glue
-                ErrorInfo(code = ErrorCodes.INTERNAL_ERROR, message = "Tool execution failed: $(e)")
+                # execute_tool_call catches handler errors itself; this guards the
+                # glue — including an exception whose OWN display throws, which
+                # escapes execute_tool_call's catch through its message interpolation
+                ErrorInfo(code = ErrorCodes.INTERNAL_ERROR,
+                          message = safe_error_message("Tool execution failed", e))
             end
             record, create_delivered = lock(st.lock) do
                 st.closed = true
@@ -304,7 +329,7 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                         id = request_id,
                         error = ErrorInfo(
                             code = ErrorCodes.INTERNAL_ERROR,
-                            message = "Internal error: $(e)"
+                            message = safe_error_message("Internal error", e)
                         )
                     ))
                 end
@@ -341,21 +366,28 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
             end
         catch e
             # Last resort: the request must never end with neither a response nor
-            # a terminal task, whatever threw above
-            if record !== nothing
+            # a terminal task, whatever threw above. Re-snapshot the detach state
+            # under its lock — a throw can reach here BEFORE the main-path
+            # snapshot ran (e.g. a display-throwing exception escaping every
+            # formatting site), in which case the locals still read "no record"
+            # for a task that was in fact created and delivered.
+            msg = safe_error_message("Internal error", e)
+            rec, cd = lock(st.lock) do
+                st.closed = true
+                (st.record, st.create_delivered)
+            end
+            if rec !== nothing
                 try
-                    finish_task!(server.tasks, record,
-                                 ErrorInfo(code = ErrorCodes.INTERNAL_ERROR,
-                                           message = "Internal error: $(e)"))
+                    finish_task!(server.tasks, rec,
+                                 ErrorInfo(code = ErrorCodes.INTERNAL_ERROR, message = msg))
                 catch
                 end
             end
-            if !delivered && (record === nothing || !create_delivered)
+            if !delivered && (rec === nothing || !cd)
                 try
                     deliver_response(transport, route, serialize_message(JSONRPCError(
                         id = request_id,
-                        error = ErrorInfo(code = ErrorCodes.INTERNAL_ERROR,
-                                          message = "Internal error: $(e)"))))
+                        error = ErrorInfo(code = ErrorCodes.INTERNAL_ERROR, message = msg))))
                 catch
                 end
             end
