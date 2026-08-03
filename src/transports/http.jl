@@ -1577,6 +1577,34 @@ function deliver_notification(transport::HttpTransport, route, message::String):
 end
 
 """
+    deliver_log_notification(transport::HttpTransport, route, message::String) -> Bool
+
+Push a request-scoped log notification onto the request's response stream. Unlike
+`deliver_notification`, backlog pressure NEVER closes the channel — the request's
+final response still has to travel it, and load-shedding it away because a stalled
+client let log records pile up would destroy the response. Past the cap the record
+is simply dropped (`false`), sending it to the logger's fallback stream instead.
+"""
+function deliver_log_notification(transport::HttpTransport, route, message::String)::Bool
+    route === nothing && return false
+    channel = lock(transport.channels_lock) do
+        get(transport.response_channels, route, nothing)
+    end
+    channel === nothing && return false
+    if Base.n_avail(channel) >= NOTIFICATION_QUEUE_SOFTCAP
+        @debug "Request log backlog full; dropping log notification" route
+        return false
+    end
+    try
+        put!(channel, (:notification, message))
+        return true
+    catch e
+        @debug "Request route closed" error=e
+        return false
+    end
+end
+
+"""
     route_alive(transport::HttpTransport, route) -> Bool
 
 Whether a captured response route still has a live consumer: its channel is still

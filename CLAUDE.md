@@ -455,9 +455,15 @@ with the exported `notify_list_changed` / `notify_resource_updated`). MRTR
 `elicit_request`/`sampling_request`/`roots_request`) and re-run on the client's
 retry with `input_responses(ctx)`/`input_state(ctx)`; undeclared capabilities →
 -32021 with `requiredCapabilities`; `requestState` is HMAC-bound to principal +
-TTL + original-params digest. The draft `server-stateless` conformance scenario
-passes 30/30. Still pending for the modern era: per-request `logLevel`, the tasks
-extension, and `x-mcp-header` parameter mirroring.
+TTL + original-params digest. Per-request `logLevel` (SEP-2575) is in: a request
+whose `_meta` sets `io.modelcontextprotocol/logLevel` receives
+`notifications/message` at-or-above that level on its OWN response stream only
+(unrecognized level → -32602; no opt-in → none, the modern MUST; requires the
+logging capability, which `server/discover` advertises; a `debug` opt-in
+re-scopes the logger so records below the operator's installed level flow for
+that request without touching global state). The draft `server-stateless`
+conformance scenario passes 30/30. Still pending for the modern era: the tasks
+extension and `x-mcp-header` parameter mirroring.
 
 ### ✅ Implemented
 

@@ -55,6 +55,17 @@ count_slow = MCPTool(
     task_support = :optional,
 )
 
+log_emitter = MCPTool(
+    name = "log_emitter",
+    description = "Emits info + warning log records (per-request logLevel demo)",
+    parameters = [],
+    handler = args -> begin
+        @info "wire-log-info"
+        @warn "wire-log-warn"
+        TextContent(text = "emitted")
+    end,
+)
+
 media_prompt = MCPPrompt(
     name = "media_demo",
     description = "Prompt with all media content types",
@@ -106,7 +117,7 @@ server = mcp_server(
     name = "wire-demo",
     version = "0.1.0",
     description = "Wire conformance demo server",
-    tools = [analyze, structured, count_slow],
+    tools = [analyze, structured, count_slow, log_emitter],
     prompts = [media_prompt],
     resources = [res, res_blob, res_text],
     resource_templates = [tmpl_artifact],

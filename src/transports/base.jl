@@ -132,6 +132,31 @@ function deliver_notification(transport::Transport, ::Any, message::String)::Boo
 end
 
 """
+    deliver_log_notification(transport::Transport, route::Any, message::String) -> Bool
+
+Deliver a request-scoped log notification (`ModernRequestLogger`) on a request's
+response route. Distinct from `deliver_notification` because the failure policy
+differs: a `subscriptions/listen` stream that cannot keep up is load-shed by
+CLOSING it, but a request's response channel must never be closed under log
+pressure — the final response still has to travel it. Implementations drop the
+record (returning `false`, which sends it to the logger's fallback stream) rather
+than sacrifice the channel.
+
+The default delegates to `deliver_notification` (correct for stdio's shared
+stream, which has no per-request channel to protect).
+
+# Arguments
+- `transport::Transport`: The transport instance
+- `route::Any`: The request's captured notification route
+- `message::String`: The serialized JSON-RPC notification
+
+# Returns
+- `Bool`: true when the notification was delivered
+"""
+deliver_log_notification(transport::Transport, route::Any, message::String)::Bool =
+    deliver_notification(transport, route, message)
+
+"""
     route_alive(transport::Transport, route::Any) -> Bool
 
 Whether the client behind a captured response route is still reachable — used by

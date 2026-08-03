@@ -199,6 +199,62 @@ end
         @test !occursin("request completed", String(take!(errbuf)))  # no longer on stderr
     end
 
+    @testset "stdio modern per-request logLevel (2026-07-28)" begin
+        # A pure modern stateless session (NO initialize ever): the per-request
+        # io.modelcontextprotocol/logLevel opt-in is the only path to log delivery
+        # — it must work without the legacy transport-activation handshake, filter
+        # by RFC-5424 severity, and stay silent for requests that did not opt in.
+        mmeta(extra = "") = """{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}$(extra)}"""
+        lvlmeta(l) = mmeta(",\"io.modelcontextprotocol/logLevel\":\"$(l)\"")
+        run_stdio(reqs) = begin
+            out = read(pipeline(`$(_E2E_JULIA) --project=$(_E2E_REPO) $(_WIRE_FIXTURE)`;
+                                stdin = IOBuffer(join(reqs, "\n") * "\n"),
+                                stderr = devnull), String)
+            resp = Dict{Int,Any}()
+            notifications = Any[]
+            for line in split(out, '\n')
+                startswith(line, "{") || continue
+                msg = JSON3.read(line)
+                if haskey(msg, :id)
+                    resp[msg.id] = msg
+                elseif haskey(msg, :method)
+                    push!(notifications, msg)
+                end
+            end
+            (resp, notifications)
+        end
+
+        # Run 1 — severity filter + no-opt-in silence + invalid value:
+        # "warning" admits the @warn probe but filters the @info one; the second
+        # call (no logLevel) must emit nothing; a bogus level is -32602.
+        resp, notifications = run_stdio([
+            """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_emitter","arguments":{},"_meta":$(lvlmeta("warning"))},"id":1}""",
+            """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_emitter","arguments":{},"_meta":$(mmeta())},"id":2}""",
+            """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_emitter","arguments":{},"_meta":$(lvlmeta("bogus"))},"id":3}""",
+        ])
+        @test resp[1].result.resultType == "complete"
+        @test resp[2].result.resultType == "complete"
+        @test resp[3].error.code == -32602
+        wire = JSON3.write(notifications)
+        @test occursin("wire-log-warn", wire)
+        @test !occursin("wire-log-info", wire)   # below the requested level
+        # exactly one delivery: the no-opt-in call contributed nothing
+        @test count(n -> n.method == "notifications/message" &&
+                         occursin("wire-log-warn", JSON3.write(n)), notifications) == 1
+
+        # Run 2 — "debug" opt-in on a server whose operator level is Info: the
+        # LogState re-scope must let per-request debug records through, including
+        # the request-lifecycle line, delivered as wire notifications.
+        resp, notifications = run_stdio([
+            """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_emitter","arguments":{},"_meta":$(lvlmeta("debug"))},"id":1}""",
+        ])
+        @test resp[1].result.resultType == "complete"
+        wire = JSON3.write(notifications)
+        @test occursin("wire-log-info", wire)
+        @test occursin("wire-log-warn", wire)
+        @test occursin("request completed", wire)
+    end
+
     @testset "Streamable HTTP" begin
         port = 8772
         url = "http://127.0.0.1:$(port)/"
@@ -288,6 +344,35 @@ end
                         status_exception = false)
                     @test r.status == 400
                     @test JSON3.read(String(r.body)).error.code == -32022
+
+                    # Per-request logLevel: log records ride THIS request's SSE
+                    # response stream (never the GET notification stream), before
+                    # the final response
+                    log_meta = """{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/logLevel":"info"}"""
+                    r = HTTP.post(url, vcat(mhdrs("tools/call"), ["Mcp-Name" => "log_emitter"]),
+                        """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_emitter","arguments":{},"_meta":$log_meta},"id":107}""";
+                        status_exception = false)
+                    @test r.status == 200
+                    @test startswith(HTTP.header(r, "Content-Type", ""), "text/event-stream")
+                    sse_body = String(r.body)
+                    events = [JSON3.read(line[6:end]) for line in split(sse_body, '\n')
+                              if startswith(line, "data: ")]
+                    logs = filter(e -> get(e, :method, "") == "notifications/message", events)
+                    @test any(e -> occursin("wire-log-info", JSON3.write(e)), logs)
+                    @test any(e -> occursin("wire-log-warn", JSON3.write(e)), logs)
+                    finals = filter(e -> haskey(e, :id), events)
+                    @test length(finals) == 1
+                    @test finals[1].result.resultType == "complete"
+                    # notifications precede the final response on the stream
+                    @test findlast(e -> haskey(e, :id), events) == length(events)
+
+                    # Same call WITHOUT the opt-in: plain JSON, no notifications
+                    r = HTTP.post(url, vcat(mhdrs("tools/call"), ["Mcp-Name" => "log_emitter"]),
+                        """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_emitter","arguments":{},"_meta":$mmeta},"id":108}""";
+                        status_exception = false)
+                    @test r.status == 200
+                    @test !startswith(HTTP.header(r, "Content-Type", ""), "text/event-stream")
+                    @test JSON3.read(String(r.body)).result.resultType == "complete"
 
                     # Legacy still works after the modern interleaving (dual-era)
                     r = HTTP.post(url, vcat(hdrs, ["Mcp-Session-Id" => session]),
