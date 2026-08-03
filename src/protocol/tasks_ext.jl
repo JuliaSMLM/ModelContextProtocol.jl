@@ -168,6 +168,13 @@ function task_detach(ctx::RequestContext;
                               era = :ext,
                               status_message = status_message,
                               required_scopes = st.required_scopes)
+        # Publish the record the moment it durably exists, BEFORE anything fallible
+        # below: were wire building or delivery to throw, the spawn wrapper must
+        # still see the record (to terminalize it and answer the owed response) —
+        # a created-but-unpublished record would sit in "working" forever, since
+        # the sweep only removes terminal records
+        st.record = record
+        ctx.task = record  # enables task_cancelled(ctx) for the running handler
         # Snapshot under the store lock so the CreateTaskResult reports creation-time
         # state; the task is durably registered BEFORE the response is delivered, so
         # a tasks/get issued the moment the client sees the taskId always resolves
@@ -175,21 +182,28 @@ function task_detach(ctx::RequestContext;
             ext_task_wire(record)
         end
         wire["resultType"] = "task"
-        response = modern_result_envelope(
-            JSONRPCResponse(id = ctx.request_id, result = wire), ctx.server)
+        payload = serialize_message(modern_result_envelope(
+            JSONRPCResponse(id = ctx.request_id, result = wire), ctx.server))
         # The response is about to go out: end the request's log scope first so no
         # notifications/message can trail it — and none may follow for the task's
         # background phase either (the spec forbids them on tasks)
-        close_request_log_scope!()
         try
-            deliver_response(st.transport, st.route, serialize_message(response))
+            close_request_log_scope!()
+        catch
+        end
+        try
+            deliver_response(st.transport, st.route, payload)
         catch e
             # The task exists and runs regardless; a vanished client re-finds
             # nothing (never learned the taskId) and the record expires via ttl
-            @debug "Failed to deliver CreateTaskResult" error=e
+            try  # best-effort diagnostic: a throwing logger must not escape here
+                @debug "Failed to deliver CreateTaskResult" error=e
+            catch
+            end
         end
-        st.record = record
-        ctx.task = record  # enables task_cancelled(ctx) for the running handler
+        # Delivery was attempted (success, or a dead client that cannot receive
+        # anything further either way): the request is no longer owed a response
+        st.create_delivered = true
         true
     end
 end
@@ -243,6 +257,7 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
     principal = mrtr_principal(ctx.authenticated_user)
     Threads.@spawn begin
         record = nothing
+        create_delivered = false
         delivered = false
         try
             outcome = try
@@ -251,9 +266,9 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                 # execute_tool_call catches handler errors itself; this guards the glue
                 ErrorInfo(code = ErrorCodes.INTERNAL_ERROR, message = "Tool execution failed: $(e)")
             end
-            record = lock(st.lock) do
+            record, create_delivered = lock(st.lock) do
                 st.closed = true
-                st.record
+                (st.record, st.create_delivered)
             end
             if record === nothing
                 # Never detached: this call's response is the ordinary synchronous
@@ -302,14 +317,27 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                     # Client likely disconnected; the route is gone either way
                 end
             else
-                # Detached: the CreateTaskResult already answered the request; the
-                # outcome is the task's terminal state. InputRequired AFTER
-                # detachment has no wire shape (mid-task input is the tasks/update
-                # flow) — fail the task rather than store an unrepresentable outcome.
+                # Detached: the outcome is the task's terminal state. InputRequired
+                # AFTER detachment has no wire shape (mid-task input is the
+                # tasks/update flow) — fail the task rather than store an
+                # unrepresentable outcome.
                 outcome isa InputRequired && (outcome = ErrorInfo(
                     code = ErrorCodes.INVALID_REQUEST,
                     message = "input_required is not supported after task detachment"))
                 finish_task!(server.tasks, record, outcome)
+                if !create_delivered
+                    # The handoff died between task creation and CreateTaskResult
+                    # delivery: the request is still owed a response (the task is
+                    # unreachable — the client never learned its id)
+                    delivered = true
+                    try
+                        deliver_response(transport, route, serialize_message(JSONRPCError(
+                            id = request_id,
+                            error = ErrorInfo(code = ErrorCodes.INTERNAL_ERROR,
+                                              message = "Internal error: task handoff failed"))))
+                    catch
+                    end
+                end
             end
         catch e
             # Last resort: the request must never end with neither a response nor
@@ -321,7 +349,8 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                                            message = "Internal error: $(e)"))
                 catch
                 end
-            elseif !delivered
+            end
+            if !delivered && (record === nothing || !create_delivered)
                 try
                     deliver_response(transport, route, serialize_message(JSONRPCError(
                         id = request_id,

@@ -461,6 +461,23 @@ _ext_tools() = [
         cancel_task!(server.tasks, rec)
     end
 
+    @testset "task record published before fallible delivery (Codex r3 B1)" begin
+        server, _, _ = _ext_test_server()
+        dead = IOBuffer()
+        close(dead)  # every write throws: CreateTaskResult delivery cannot succeed
+        broken = StdioTransport(input=IOBuffer(), output=dead)
+        ctx = RequestContext(server=server, request_id=1,
+                             protocol_version="2026-07-28", client_capabilities=_EXT_CAPS,
+                             detach=ModelContextProtocol.TaskDetachState(broken, nothing))
+        @test task_detach(ctx)  # delivery failure is swallowed; the detach holds
+        rec = ctx.task
+        @test rec !== nothing && rec.status == "working"
+        @test ctx.detach.record === rec  # published for the wrapper to terminalize
+        @test ctx.detach.create_delivered  # delivery attempted -> no response owed
+        @test get_task(server.tasks, rec.task_id, nothing; era=:ext) === rec
+        cancel_task!(server.tasks, rec)
+    end
+
     @testset "legacy tasks/list never exposes ext records (Codex r1 B3)" begin
         store = TaskStore()
         legacy = create_task!(store, "tools/call")

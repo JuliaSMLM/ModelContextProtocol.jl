@@ -335,9 +335,14 @@ detached. All access is under `lock`.
 - `route::Any`: The captured response route (see `capture_response_route`)
 - `required_scopes::Vector{String}`: The tool's `required_scopes`, recorded onto the
   minted task for per-request re-authorization of the extension surface
-- `record::Union{TaskRecord,Nothing}`: The minted task once the handler detached
+- `record::Union{TaskRecord,Nothing}`: The minted task, published the moment it is
+  durably created — BEFORE any fallible wire building or delivery, so a failure in
+  between can never orphan a hidden non-terminal record
 - `closed::Bool`: Set when the handler has returned — a late `task_detach` (e.g.
   from a stray child task) must fail rather than deliver a second response
+- `create_delivered::Bool`: Set once the `CreateTaskResult` delivery was attempted;
+  while false, the request is still owed a response (the spawn wrapper answers
+  -32603 if the handoff died between task creation and delivery)
 """
 mutable struct TaskDetachState
     lock::ReentrantLock
@@ -346,6 +351,7 @@ mutable struct TaskDetachState
     required_scopes::Vector{String}
     record::Union{TaskRecord,Nothing}
     closed::Bool
+    create_delivered::Bool
 end
 TaskDetachState(transport, route, required_scopes::Vector{String}=String[]) =
-    TaskDetachState(ReentrantLock(), transport, route, required_scopes, nothing, false)
+    TaskDetachState(ReentrantLock(), transport, route, required_scopes, nothing, false, false)

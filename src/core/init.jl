@@ -199,7 +199,10 @@ Primary entry point for creating and configuring a Model Context Protocol (MCP) 
 - `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for the server
 - `mrtr_state_key::Union{Vector{UInt8},Nothing}`: Optional MRTR `requestState`
   signing key (≥32 bytes) shared across replicas so retries survive re-routing;
-  defaults to a random per-server key (single-instance safe)
+  defaults to a random per-server key (single-instance safe). Tokens also carry a
+  format version: replicas on different package versions that change it reject
+  each other's tokens ("unsupported version"), so a rolling upgrade across such a
+  change should drain in-flight MRTR exchanges (bounded by the 600s state TTL)
 
 # Returns
 - `Server`: A configured server instance ready to handle MCP client connections

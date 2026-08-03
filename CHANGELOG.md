@@ -43,6 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass; the suite's wire-schema validator does not yet know the extension's
   `CreateTaskResult` shape, an upstream harness gap).
 
+### Changed
+
+- **MRTR `requestState` payload format v2.** The principal bound into a
+  `requestState` (and the principal extension tasks are bound to) is now the
+  canonical, collision-free `[provider, subject]` identity instead of the bare
+  subject — a same-`sub` token from a different identity provider can no longer
+  redeem another principal's state or resolve its tasks. The payload version is
+  bumped to 2 so a v1 token fails explicitly as "unsupported version". Operators
+  running shared-`mrtr_state_key` replica fleets should drain in-flight MRTR
+  exchanges (bounded by the 600 s state TTL) when rolling across this upgrade;
+  single-instance deployments with the default ephemeral key are unaffected.
+
 - **Per-request `logLevel` (SEP-2575, 2026-07-28).** The modern era's replacement
   for `logging/setLevel`: a request whose `_meta` carries
   `io.modelcontextprotocol/logLevel` opts into `notifications/message` delivery

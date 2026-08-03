@@ -354,8 +354,13 @@ a token issued for one must not resume the other.
 """
 function issue_request_state(server::Server, method::String, params_digest,
                              principal::String, handler_state)::String
+    # v2: the principal (`sub`) is the provider-qualified principal_identity
+    # encoding. The version gates the FORMAT — a v1 token (subject-only sub)
+    # must fail as "unsupported version", not as a confusing principal
+    # mismatch, and mixed-version replica fleets sharing a key must drain
+    # in-flight exchanges (<= the state TTL) across such an upgrade.
     payload = JSON3.write(LittleDict{String,Any}(
-        "v" => 1,
+        "v" => 2,
         "iat" => round(Int, time()),
         "ttl" => MRTR_STATE_TTL_SECS,
         "sub" => principal,
@@ -402,7 +407,7 @@ function verify_request_state(server::Server, token::AbstractString, method::Str
     catch
         return (false, "malformed token")
     end
-    get(payload, :v, nothing) == 1 || return (false, "unsupported version")
+    get(payload, :v, nothing) == 2 || return (false, "unsupported version")
     iat = get(payload, :iat, nothing)
     ttl = get(payload, :ttl, nothing)
     (iat isa Integer && ttl isa Integer && time() <= iat + ttl) ||

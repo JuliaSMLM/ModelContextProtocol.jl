@@ -102,13 +102,22 @@
         @test_throws ArgumentError mcp_server(name = "short-key", version = "1.0.0",
                                               mrtr_state_key = rand(UInt8, 16))
         # Expiry: a hand-signed payload with an old iat is rejected
-        old = JSON3.write(Dict("v" => 1, "iat" => round(Int, time()) - 10_000, "ttl" => 600,
+        old = JSON3.write(Dict("v" => 2, "iat" => round(Int, time()) - 10_000, "ttl" => 600,
                                "sub" => "alice", "mth" => "tools/call",
                                "dig" => "digest-1", "st" => nothing))
         mac = ModelContextProtocol.hmac_sha256(server.mrtr_state_key, old)
         expired = string(Base64.base64encode(old), ".", Base64.base64encode(mac))
         okx, why = verify(server, expired, "tools/call", "digest-1", "alice")
         @test !okx && occursin("expired", why)
+        # Format versioning: a v1 (pre-provider-qualified-principal) token is
+        # rejected as "unsupported version", never as a principal mismatch
+        v1 = JSON3.write(Dict("v" => 1, "iat" => round(Int, time()), "ttl" => 600,
+                              "sub" => "alice", "mth" => "tools/call",
+                              "dig" => "digest-1", "st" => nothing))
+        mac1 = ModelContextProtocol.hmac_sha256(server.mrtr_state_key, v1)
+        v1tok = string(Base64.base64encode(v1), ".", Base64.base64encode(mac1))
+        okv, whyv = verify(server, v1tok, "tools/call", "digest-1", "alice")
+        @test !okv && occursin("version", whyv)
     end
 
     @testset "wire flow: elicit, retry, complete" begin
