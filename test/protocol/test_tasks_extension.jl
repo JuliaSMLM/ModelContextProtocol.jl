@@ -351,6 +351,132 @@ _ext_tools() = [
         @test !haskey(caps, "tasks")
     end
 
+    @testset "deferred response survives build failures (Codex r1 B1)" begin
+        # A non-detaching handler whose MRTR envelope cannot be built (the
+        # requestState cannot encode a Function) must still answer -32603, exactly
+        # like the in-loop path — never silence
+        bad_state = MCPTool(name="bad_state", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> InputRequired(
+                Dict("k" => elicit_request("q")); state=identity))
+        server, state, buf = _ext_test_server(tools=[bad_state])
+        caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+        @test _ext_call(server, state, "bad_state"; caps=caps, id=101) === nothing
+        resp = _ext_deferred_response(buf, 101)
+        @test haskey(resp, "error") && resp["error"]["code"] == -32603
+    end
+
+    @testset "principal binding: provider + per-request scopes (Codex r1 B2)" begin
+        server, _, _ = _ext_test_server(tools=_ext_tools())
+        store = server.tasks
+        caps = _EXT_CAPS
+        user(scopes; provider="prov", subject="alice") =
+            AuthenticatedUser(subject=subject, provider=provider, scopes=scopes)
+        actx(u) = RequestContext(server=server, request_id=1,
+                                 authenticated_user=u, protocol_version="2026-07-28",
+                                 client_capabilities=caps)
+
+        # task_detach stamps the provider-qualified principal and the tool scopes
+        dctx = actx(user(["mcp:admin"]))
+        dctx.detach = ModelContextProtocol.TaskDetachState(server.transport, nothing, ["mcp:admin"])
+        @test task_detach(dctx)
+        rec = dctx.task
+        @test rec.era === :ext
+        @test rec.principal == "prov\x1falice"
+        @test rec.required_scopes == ["mcp:admin"]
+
+        # Same subject, insufficient scopes -> indistinguishable from not-found
+        g = ModelContextProtocol.handle_ext_get_task(actx(user(["mcp:read"])),
+            ModelContextProtocol.GetTaskParams(taskId=rec.task_id))
+        @test g.error !== nothing && g.error.code == -32602
+
+        # Same subject, wrong provider -> not-found (principal mismatch)
+        g2 = ModelContextProtocol.handle_ext_get_task(actx(user(["mcp:admin"]; provider="other")),
+            ModelContextProtocol.GetTaskParams(taskId=rec.task_id))
+        @test g2.error !== nothing && g2.error.code == -32602
+
+        # Full scopes from the right provider -> authorized
+        g3 = ModelContextProtocol.handle_ext_get_task(actx(user(["mcp:admin", "mcp:read"])),
+            ModelContextProtocol.GetTaskParams(taskId=rec.task_id))
+        @test g3.error === nothing
+
+        # cancel/update enforce the same recheck
+        c = ModelContextProtocol.handle_ext_cancel_task(actx(user(["mcp:read"])),
+            ModelContextProtocol.CancelTaskParams(taskId=rec.task_id))
+        @test c.error !== nothing && c.error.code == -32602
+        u = ModelContextProtocol.handle_ext_update_task(actx(user(["mcp:read"])),
+            ModelContextProtocol.UpdateTaskParams(taskId=rec.task_id,
+                                                  inputResponses=Dict{String,Any}()))
+        @test u.error !== nothing && u.error.code == -32602
+        cancel_task!(store, rec)
+    end
+
+    @testset "legacy tasks/list never exposes ext records (Codex r1 B3)" begin
+        store = TaskStore()
+        legacy = create_task!(store, "tools/call")
+        ext = create_task!(store, "tools/call"; era=:ext)
+        page, _ = ModelContextProtocol.list_tasks(store, nothing, nothing)
+        @test any(r -> r.task_id == legacy.task_id, page)
+        @test !any(r -> r.task_id == ext.task_id, page)
+        epage, _ = ModelContextProtocol.list_tasks(store, nothing, nothing; era=:ext)
+        @test any(r -> r.task_id == ext.task_id, epage)
+    end
+
+    @testset "transportless servers run task-capable tools synchronously (Codex r1 W4)" begin
+        server = mcp_server(name="no-transport", version="0.0.1", tools=_ext_tools())
+        @test server.transport === nothing
+        state = ServerState()
+        resp = _ext_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => 111,
+            "method" => "tools/call",
+            "params" => Dict{String,Any}("name" => "fast", "arguments" => Dict{String,Any}(),
+                                         "_meta" => _ext_meta())))
+        @test resp !== nothing
+        @test resp["result"]["resultType"] == "complete"
+        @test resp["result"]["content"][1]["text"] == "fast done"
+        @test !haskey(resp["result"], "taskId")
+    end
+
+    @testset "send_progress is a no-op on detachable calls (Codex r1 W6)" begin
+        server, _, _ = _ext_test_server()
+        ctx = RequestContext(server=server, request_id=1, progress_token="tok",
+                             detach=ModelContextProtocol.TaskDetachState(server.transport, nothing))
+        @test send_progress(ctx, 0.5) == false
+    end
+
+    @testset "gating precedes params validation (Codex r1 W7a)" begin
+        server, state, _ = _ext_test_server(tools=_ext_tools())
+        # Malformed params (no taskId) from a NON-declaring client: the extension's
+        # -32021 takes precedence over -32602 params validation
+        for method in ("tasks/get", "tasks/update", "tasks/cancel")
+            resp = _ext_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => 121,
+                "method" => method,
+                "params" => Dict("_meta" => _ext_meta(caps=Dict{String,Any}()))))
+            @test resp["error"]["code"] == -32021
+        end
+        # Declared but malformed still gets -32602
+        resp = _ext_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => 122,
+            "method" => "tasks/get", "params" => Dict("_meta" => _ext_meta())))
+        @test resp["error"]["code"] == -32602
+    end
+
+    @testset "legacy tasks/update stays -32601 (Codex r1 W7b)" begin
+        server, _, _ = _ext_test_server()
+        lstate = ServerState()
+        _ext_rpc(server, lstate, Dict("jsonrpc" => "2.0", "id" => 1, "method" => "initialize",
+            "params" => Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict(),
+                             "clientInfo" => Dict("name" => "l", "version" => "1"))))
+        # Empty params: the required-field params type has no zero-arg constructor,
+        # which must not abort parsing into -32603
+        for params in (Dict{String,Any}(),
+                       Dict{String,Any}("taskId" => "x", "inputResponses" => Dict{String,Any}()))
+            resp = _ext_rpc(server, lstate, Dict("jsonrpc" => "2.0", "id" => 2,
+                "method" => "tasks/update", "params" => params))
+            @test resp["error"]["code"] == -32601
+        end
+    end
+
     @testset "Mcp-Name routing header mirrors taskId (SEP-2243)" begin
         body = """{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"taskId":"abc-123","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"""
         msg = JSON3.read(body)

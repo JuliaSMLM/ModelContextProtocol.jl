@@ -39,6 +39,10 @@ Mutable record of one server-side task (a task-augmented request execution).
 - `era::Symbol`: `:legacy` for SEP-1686 experimental tasks (2025-11-25 sessions),
   `:ext` for the modern-era `io.modelcontextprotocol/tasks` extension (SEP-2663).
   The eras are wire-incompatible and never serve each other's records
+- `required_scopes::Vector{String}`: The originating tool's `required_scopes`,
+  re-checked on every extension-era task request (SEP-2663 requires authorization
+  on each task-related request — a later token for the same subject but without
+  the tool's scopes must not read the result). Empty when the tool declares none
 - `result::Union{CallToolResult,Nothing}`: Final result when the underlying call succeeded (or failed via `isError`)
 - `error::Union{ErrorInfo,Nothing}`: Final JSON-RPC error when the underlying call errored
 - `done::Base.Event`: Set exactly once when the task reaches a terminal status
@@ -58,6 +62,7 @@ mutable struct TaskRecord
     principal::Union{String,Nothing}
     method::String
     era::Symbol
+    required_scopes::Vector{String}
     result::Union{CallToolResult,Nothing}
     error::Union{ErrorInfo,Nothing}
     done::Base.Event
@@ -118,7 +123,8 @@ function create_task!(store::TaskStore, method::String;
                       requested_ttl_ms::Union{Int,Nothing}=nothing,
                       principal::Union{String,Nothing}=nothing,
                       era::Symbol=:legacy,
-                      status_message::Union{String,Nothing}=nothing)::TaskRecord
+                      status_message::Union{String,Nothing}=nothing,
+                      required_scopes::Vector{String}=String[])::TaskRecord
     ttl = requested_ttl_ms === nothing ? store.default_ttl_ms :
           clamp(requested_ttl_ms, 0, store.max_ttl_ms)
     now_utc = Dates.now(Dates.UTC)
@@ -133,6 +139,7 @@ function create_task!(store::TaskStore, method::String;
         principal,
         method,
         era,
+        required_scopes,
         nothing,
         nothing,
         Base.Event(),
@@ -246,20 +253,23 @@ end
 
 """
     list_tasks(store::TaskStore, principal::Union{String,Nothing},
-               cursor::Union{String,Nothing}) -> Tuple{Vector{TaskRecord},Union{String,Nothing}}
+               cursor::Union{String,Nothing}; era=:legacy)
+        -> Tuple{Vector{TaskRecord},Union{String,Nothing}}
 
 Return one page of the requestor's tasks (oldest first) and the next-page cursor, or
 `nothing` for the cursor when no further pages exist. Only tasks bound to the same
-principal are visible. Throws `ArgumentError` for an invalid cursor (mapped to -32602
-by the handler).
+principal AND era are visible (`tasks/list` exists only in the legacy era; extension
+records must never leak into it — the extension deliberately has no list, so one
+caller's task ids cannot be exposed to another). Throws `ArgumentError` for an
+invalid cursor (mapped to -32602 by the handler).
 """
 function list_tasks(store::TaskStore, principal::Union{String,Nothing},
-                    cursor::Union{String,Nothing})
+                    cursor::Union{String,Nothing}; era::Symbol=:legacy)
     offset = cursor === nothing ? 0 : decode_task_cursor(cursor)
     lock(store.lock) do
         sweep_expired!(store)
         visible = sort!(
-            [r for r in values(store.tasks) if r.principal == principal];
+            [r for r in values(store.tasks) if r.principal == principal && r.era === era];
             by = r -> (r.created_at, r.task_id)
         )
         offset > length(visible) && throw(ArgumentError("Invalid cursor"))
@@ -321,8 +331,10 @@ detached. All access is under `lock`.
 
 # Fields
 - `lock::ReentrantLock`: Guards `record`/`closed` against the detach/finish race
-- `transport::Any`: The serving transport at spawn time (may be `nothing` in tests)
+- `transport::Any`: The serving transport at spawn time
 - `route::Any`: The captured response route (see `capture_response_route`)
+- `required_scopes::Vector{String}`: The tool's `required_scopes`, recorded onto the
+  minted task for per-request re-authorization of the extension surface
 - `record::Union{TaskRecord,Nothing}`: The minted task once the handler detached
 - `closed::Bool`: Set when the handler has returned — a late `task_detach` (e.g.
   from a stray child task) must fail rather than deliver a second response
@@ -331,7 +343,9 @@ mutable struct TaskDetachState
     lock::ReentrantLock
     transport::Any
     route::Any
+    required_scopes::Vector{String}
     record::Union{TaskRecord,Nothing}
     closed::Bool
 end
-TaskDetachState(transport, route) = TaskDetachState(ReentrantLock(), transport, route, nothing, false)
+TaskDetachState(transport, route, required_scopes::Vector{String}=String[]) =
+    TaskDetachState(ReentrantLock(), transport, route, required_scopes, nothing, false)

@@ -26,6 +26,34 @@ function tasks_extension_declared(client_capabilities)::Bool
 end
 
 """
+    ext_task_principal(ctx::RequestContext) -> Union{String,Nothing}
+
+The authorization principal extension tasks are bound to. Unlike the legacy
+`task_principal` (subject only), this binds provider AND subject — two identity
+providers can issue the same `sub`, and a token from the wrong provider must not
+resolve another caller's task. `nothing` when auth is not enabled (single-user
+transports).
+"""
+ext_task_principal(ctx::RequestContext) =
+    ctx.authenticated_user === nothing ? nothing :
+    string(ctx.authenticated_user.provider, "\x1f", ctx.authenticated_user.subject)
+
+"""
+    ext_task_authorized(ctx::RequestContext, record::TaskRecord) -> Bool
+
+Re-authorize a task-related request against the task's recorded requirements
+(SEP-2663: authorization checks on EVERY task request, not only at creation): when
+the request is authenticated, the current token must carry every scope the
+originating tool required. A failure is reported as task-not-found by the caller,
+indistinguishable from an unknown id.
+"""
+function ext_task_authorized(ctx::RequestContext, record::TaskRecord)::Bool
+    ctx.authenticated_user === nothing && return true
+    isempty(record.required_scopes) && return true
+    isempty(setdiff(record.required_scopes, ctx.authenticated_user.scopes))
+end
+
+"""
     tasks_extension_required_error() -> ErrorInfo
 
 The -32021 MissingRequiredClientCapability error for task-surface requests from a
@@ -134,9 +162,10 @@ function task_detach(ctx::RequestContext;
         st.closed && return false
         record = create_task!(ctx.server.tasks, "tools/call";
                               requested_ttl_ms = ttl_ms,
-                              principal = task_principal(ctx),
+                              principal = ext_task_principal(ctx),
                               era = :ext,
-                              status_message = status_message)
+                              status_message = status_message,
+                              required_scopes = st.required_scopes)
         # Snapshot under the store lock so the CreateTaskResult reports creation-time
         # state; the task is durably registered BEFORE the response is delivered, so
         # a tasks/get issued the moment the client sees the taskId always resolves
@@ -146,9 +175,12 @@ function task_detach(ctx::RequestContext;
         wire["resultType"] = "task"
         response = modern_result_envelope(
             JSONRPCResponse(id = ctx.request_id, result = wire), ctx.server)
+        # The response is about to go out: end the request's log scope first so no
+        # notifications/message can trail it — and none may follow for the task's
+        # background phase either (the spec forbids them on tasks)
+        close_request_log_scope!()
         try
-            st.transport === nothing ||
-                deliver_response(st.transport, st.route, serialize_message(response))
+            deliver_response(st.transport, st.route, serialize_message(response))
         catch e
             # The task exists and runs regardless; a vanished client re-finds
             # nothing (never learned the taskId) and the record expires via ttl
@@ -158,6 +190,15 @@ function task_detach(ctx::RequestContext;
         ctx.task = record  # enables task_cancelled(ctx) for the running handler
         true
     end
+end
+
+# End the current request's ModernRequestLogger scope from the worker task (the
+# spawned handler inherits the logstate, so current_logger() IS the request scope
+# when one was installed). Idempotent; a no-op when no scope is in effect.
+function close_request_log_scope!()
+    lg = Logging.current_logger()
+    lg isa ModernRequestLogger && close_scope!(lg)
+    nothing
 end
 
 """
@@ -180,60 +221,85 @@ The handler decides the response shape by what it does first:
 function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                                      args::AbstractDict)::HandlerResult
     transport = ctx.server.transport
-    route = transport === nothing ? nothing : capture_response_route(transport)
-    st = TaskDetachState(transport, route)
+    route = capture_response_route(transport)
+    st = TaskDetachState(transport, route, tool.required_scopes)
     ctx.detach = st
     server = ctx.server
     request_id = ctx.request_id
     client_caps = ctx.client_capabilities
     params_digest = ctx.params_digest
     principal = mrtr_principal(ctx.authenticated_user)
+    # The request now belongs to this worker: the loop must not close the request's
+    # log scope on its way out (the worker does, at its response boundary)
+    task_local_storage(:mcp_detached_call, true)
     Threads.@spawn begin
-        outcome = try
-            execute_tool_call(tool, args, ctx)
-        catch e
-            # execute_tool_call catches handler errors itself; this guards the glue
-            ErrorInfo(code = ErrorCodes.INTERNAL_ERROR, message = "Tool execution failed: $(e)")
-        end
-        record = lock(st.lock) do
-            st.closed = true
-            st.record
-        end
-        if record === nothing
-            # Never detached: this call's response is the ordinary synchronous one,
-            # built exactly as the in-loop modern serve path would
-            response = if outcome isa ErrorInfo
-                JSONRPCError(
-                    id = request_id,
-                    error = ErrorInfo(
-                        code = modernize_error_code(outcome.code),
-                        message = outcome.message,
-                        data = outcome.data
-                    )
-                )
-            elseif outcome isa InputRequired
-                modern_input_required_response(server, outcome, request_id,
-                                               "tools/call", client_caps,
-                                               params_digest, principal)
-            else
-                modern_result_envelope(
-                    JSONRPCResponse(id = request_id, result = outcome), server)
-            end
-            try
-                transport === nothing ||
-                    deliver_response(transport, route, serialize_message(response))
+        try
+            outcome = try
+                execute_tool_call(tool, args, ctx)
             catch e
-                @debug "Failed to deliver deferred tools/call response" error=e
+                # execute_tool_call catches handler errors itself; this guards the glue
+                ErrorInfo(code = ErrorCodes.INTERNAL_ERROR, message = "Tool execution failed: $(e)")
             end
-        else
-            # Detached: the CreateTaskResult already answered the request; the
-            # outcome is the task's terminal state. InputRequired AFTER detachment
-            # has no wire shape (mid-task input is the tasks/update flow) — fail
-            # the task rather than store an unrepresentable outcome.
-            outcome isa InputRequired && (outcome = ErrorInfo(
-                code = ErrorCodes.INVALID_REQUEST,
-                message = "input_required is not supported after task detachment"))
-            finish_task!(server.tasks, record, outcome)
+            record = lock(st.lock) do
+                st.closed = true
+                st.record
+            end
+            if record === nothing
+                # Never detached: this call's response is the ordinary synchronous
+                # one, built exactly as the in-loop modern serve path would. The
+                # response MUST reach the client even when building it throws (a
+                # non-serializable result, a requestState the state cannot encode):
+                # fall back to the same -32603 the in-loop path would produce.
+                payload = try
+                    response = if outcome isa ErrorInfo
+                        JSONRPCError(
+                            id = request_id,
+                            error = ErrorInfo(
+                                code = modernize_error_code(outcome.code),
+                                message = outcome.message,
+                                data = outcome.data
+                            )
+                        )
+                    elseif outcome isa InputRequired
+                        modern_input_required_response(server, outcome, request_id,
+                                                       "tools/call", client_caps,
+                                                       params_digest, principal)
+                    else
+                        modern_result_envelope(
+                            JSONRPCResponse(id = request_id, result = outcome), server)
+                    end
+                    serialize_message(response)
+                catch e
+                    @debug "Failed to build deferred tools/call response" error=e
+                    serialize_message(JSONRPCError(
+                        id = request_id,
+                        error = ErrorInfo(
+                            code = ErrorCodes.INTERNAL_ERROR,
+                            message = "Internal error: $(e)"
+                        )
+                    ))
+                end
+                # Scope ends before the response goes out (no trailing records)
+                close_request_log_scope!()
+                try
+                    deliver_response(transport, route, payload)
+                catch e
+                    @debug "Failed to deliver deferred tools/call response (client likely disconnected)" error=e
+                end
+            else
+                # Detached: the CreateTaskResult already answered the request; the
+                # outcome is the task's terminal state. InputRequired AFTER
+                # detachment has no wire shape (mid-task input is the tasks/update
+                # flow) — fail the task rather than store an unrepresentable outcome.
+                outcome isa InputRequired && (outcome = ErrorInfo(
+                    code = ErrorCodes.INVALID_REQUEST,
+                    message = "input_required is not supported after task detachment"))
+                finish_task!(server.tasks, record, outcome)
+            end
+        finally
+            # Covers every remaining exit: a throw above, or a handler that never
+            # triggered either boundary close. Idempotent.
+            close_request_log_scope!()
         end
     end
     HandlerResult(deferred = true)
@@ -251,8 +317,9 @@ function handle_ext_get_task(ctx::RequestContext, params::GetTaskParams)::Handle
     tasks_extension_declared(ctx.client_capabilities) ||
         return HandlerResult(error = tasks_extension_required_error())
     store = ctx.server.tasks
-    record = get_task(store, params.taskId, task_principal(ctx); era = :ext)
-    record === nothing && return task_not_found_result()
+    record = get_task(store, params.taskId, ext_task_principal(ctx); era = :ext)
+    (record === nothing || !ext_task_authorized(ctx, record)) &&
+        return task_not_found_result()
     wire = lock(store.lock) do
         ext_task_wire(record; detailed = true)
     end
@@ -273,8 +340,9 @@ function handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams)::
     tasks_extension_declared(ctx.client_capabilities) ||
         return HandlerResult(error = tasks_extension_required_error())
     store = ctx.server.tasks
-    record = get_task(store, params.taskId, task_principal(ctx); era = :ext)
-    record === nothing && return task_not_found_result()
+    record = get_task(store, params.taskId, ext_task_principal(ctx); era = :ext)
+    (record === nothing || !ext_task_authorized(ctx, record)) &&
+        return task_not_found_result()
     HandlerResult(response = JSONRPCResponse(
         id = ctx.request_id, result = LittleDict{String,Any}()))
 end
@@ -293,8 +361,9 @@ function handle_ext_cancel_task(ctx::RequestContext, params::CancelTaskParams)::
     tasks_extension_declared(ctx.client_capabilities) ||
         return HandlerResult(error = tasks_extension_required_error())
     store = ctx.server.tasks
-    record = get_task(store, params.taskId, task_principal(ctx); era = :ext)
-    record === nothing && return task_not_found_result()
+    record = get_task(store, params.taskId, ext_task_principal(ctx); era = :ext)
+    (record === nothing || !ext_task_authorized(ctx, record)) &&
+        return task_not_found_result()
     cancel_task!(store, record)  # false = already terminal; the ack is identical
     HandlerResult(response = JSONRPCResponse(
         id = ctx.request_id, result = LittleDict{String,Any}()))

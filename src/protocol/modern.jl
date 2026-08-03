@@ -287,15 +287,22 @@ function dispatch_modern(ctx::RequestContext, request::Request)::HandlerResult
     elseif request.method == "subscriptions/listen"
         request.params isa SubscriptionsListenParams || return modern_invalid_params(ctx, request.method)
         handle_subscriptions_listen(ctx, request.params)
-    elseif request.method == "tasks/get"
-        request.params isa GetTaskParams || return modern_invalid_params(ctx, request.method)
-        handle_ext_get_task(ctx, request.params)
-    elseif request.method == "tasks/update"
-        request.params isa UpdateTaskParams || return modern_invalid_params(ctx, request.method)
-        handle_ext_update_task(ctx, request.params)
-    elseif request.method == "tasks/cancel"
-        request.params isa CancelTaskParams || return modern_invalid_params(ctx, request.method)
-        handle_ext_cancel_task(ctx, request.params)
+    elseif request.method in ("tasks/get", "tasks/update", "tasks/cancel")
+        # Capability gating comes FIRST: a non-declaring client gets -32021 even
+        # with malformed params (the extension's error rules take precedence over
+        # params validation; the handlers re-check as defense-in-depth)
+        tasks_extension_declared(ctx.client_capabilities) ||
+            return HandlerResult(error = tasks_extension_required_error())
+        if request.method == "tasks/get"
+            request.params isa GetTaskParams || return modern_invalid_params(ctx, request.method)
+            handle_ext_get_task(ctx, request.params)
+        elseif request.method == "tasks/update"
+            request.params isa UpdateTaskParams || return modern_invalid_params(ctx, request.method)
+            handle_ext_update_task(ctx, request.params)
+        else
+            request.params isa CancelTaskParams || return modern_invalid_params(ctx, request.method)
+            handle_ext_cancel_task(ctx, request.params)
+        end
     else
         HandlerResult(
             error = ErrorInfo(
@@ -513,11 +520,24 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         finally
             # The response is on its way: late child-task records must drop to the
             # operator stream, not trail the response on the wire. close_scope!
-            # waits out any in-flight delivery under the scope's lock.
-            close_scope!(rl)
+            # waits out any in-flight delivery under the scope's lock. EXCEPT when
+            # the request was handed off to a detachable-tool-call worker (tasks
+            # extension): the response has NOT gone out yet — the worker owns the
+            # scope and closes it at its own response boundary (before delivering
+            # the sync/MRTR response, or at CreateTaskResult delivery), so an
+            # opted-in handler's records still reach the request stream.
+            if get(task_local_storage(), :mcp_detached_call, false)
+                task_local_storage(:mcp_detached_call, false)
+            else
+                close_scope!(rl)
+            end
         end
     end
-    serve_modern(server, request, version, mrtr_state, authenticated_user)
+    result = serve_modern(server, request, version, mrtr_state, authenticated_user)
+    # No logger scope existed to hand off; just clear the worker flag so it cannot
+    # leak into a later request on this loop task
+    task_local_storage(:mcp_detached_call, false)
+    result
 end
 
 """

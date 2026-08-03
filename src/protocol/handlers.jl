@@ -55,14 +55,18 @@ Emit an MCP `notifications/progress` for the current request. A tool handler tha
 accepts the `RequestContext` (its second argument) can call this during a long
 operation to report progress.
 
-Returns `false` (a no-op) when the client did not supply a `progressToken` or no
-transport is connected, so it is always safe to call. Send an increasing
-`progress`; include `total` for a determinate bar and `message` for a status line.
+Returns `false` (a no-op) when the client did not supply a `progressToken`, no
+transport is connected, or the call is a detachable modern-era task call (tasks
+extension: `notifications/progress` is not supported on tasks, and the spawned
+handler has no request stream to route them to), so it is always safe to call.
+Send an increasing `progress`; include `total` for a determinate bar and
+`message` for a status line.
 """
 function send_progress(ctx::RequestContext, progress::Real;
                        total::Union{Real,Nothing}=nothing,
                        message::Union{String,Nothing}=nothing)::Bool
-    (ctx.progress_token === nothing || ctx.server.transport === nothing) && return false
+    (ctx.progress_token === nothing || ctx.server.transport === nothing ||
+     ctx.detach !== nothing) && return false
     params = Dict{String,Any}(
         "progressToken" => ctx.progress_token,
         "progress" => Float64(progress),
@@ -924,11 +928,16 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
     # named) and an :optional tool falls through to ordinary synchronous execution;
     # the legacy `task` request param is ignored in the modern era either way.
     if ctx.protocol_version !== nothing && tool.task_support in (:optional, :required)
-        if tasks_extension_declared(ctx.client_capabilities)
-            return spawn_detachable_tool_call!(ctx, tool, args)
-        elseif tool.task_support === :required
+        declared = tasks_extension_declared(ctx.client_capabilities)
+        if !declared && tool.task_support === :required
             return HandlerResult(error = tasks_extension_required_error())
         end
+        if declared && ctx.server.transport !== nothing
+            return spawn_detachable_tool_call!(ctx, tool, args)
+        end
+        # Declared but transportless (in-process/unit use): there is no route to
+        # deliver a deferred response on, so run synchronously — task_detach sees
+        # no detach state and returns false
     end
 
     # Task augmentation (MCP Tasks, experimental). The tool-level rules apply only
