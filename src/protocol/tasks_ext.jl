@@ -29,14 +29,16 @@ end
     ext_task_principal(ctx::RequestContext) -> Union{String,Nothing}
 
 The authorization principal extension tasks are bound to. Unlike the legacy
-`task_principal` (subject only), this binds provider AND subject — two identity
-providers can issue the same `sub`, and a token from the wrong provider must not
-resolve another caller's task. `nothing` when auth is not enabled (single-user
-transports).
+`task_principal` (subject only), this binds provider AND subject via the
+canonical collision-free [`principal_identity`](@ref) — two identity providers
+can issue the same `sub`, and a token from the wrong provider must not resolve
+another caller's task. `nothing` when auth is not enabled (single-user
+transports). Shares its encoding with the MRTR `requestState` principal, so the
+composition flow (MRTR round, then task creation) is bound to one identity
+end-to-end.
 """
 ext_task_principal(ctx::RequestContext) =
-    ctx.authenticated_user === nothing ? nothing :
-    string(ctx.authenticated_user.provider, "\x1f", ctx.authenticated_user.subject)
+    ctx.authenticated_user === nothing ? nothing : principal_identity(ctx.authenticated_user)
 
 """
     ext_task_authorized(ctx::RequestContext, record::TaskRecord) -> Bool
@@ -203,11 +205,15 @@ end
 
 """
     spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
-                                args::AbstractDict) -> HandlerResult
+                                args::AbstractDict,
+                                tool_scopes::Vector{String}) -> HandlerResult
 
 Run a task-capable modern-era `tools/call` off the serial server loop: capture the
 request's response route, spawn the handler on a background Julia task, and defer.
-The handler decides the response shape by what it does first:
+`tool_scopes` is the caller's snapshot of the tool's `required_scopes` — the exact
+set this request was authorized against, recorded onto a minted task for
+per-request re-authorization. The handler decides the response shape by what it
+does first:
 
 - returns without detaching → ordinary synchronous result (the immediate-result
   shortcut), delivered on the captured route
@@ -217,22 +223,27 @@ The handler decides the response shape by what it does first:
 - calls `task_detach(ctx)` → the `CreateTaskResult` was already delivered; the
   eventual outcome is recorded into the task (a `CallToolResult` completes it,
   a thrown error fails it with the JSON-RPC error inlined)
+
+The worker guarantees exactly one outcome on every path: any throw between the
+handler's return and the response delivery — including one raised by a
+diagnostic logger — lands in a last-resort catch that answers -32603 (or fails
+the already-created task).
 """
 function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
-                                     args::AbstractDict)::HandlerResult
+                                     args::AbstractDict,
+                                     tool_scopes::Vector{String})::HandlerResult
     transport = ctx.server.transport
     route = capture_response_route(transport)
-    st = TaskDetachState(transport, route, tool.required_scopes)
+    st = TaskDetachState(transport, route, tool_scopes)
     ctx.detach = st
     server = ctx.server
     request_id = ctx.request_id
     client_caps = ctx.client_capabilities
     params_digest = ctx.params_digest
     principal = mrtr_principal(ctx.authenticated_user)
-    # The request now belongs to this worker: the loop must not close the request's
-    # log scope on its way out (the worker does, at its response boundary)
-    task_local_storage(:mcp_detached_call, true)
     Threads.@spawn begin
+        record = nothing
+        delivered = false
         try
             outcome = try
                 execute_tool_call(tool, args, ctx)
@@ -270,7 +281,10 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                     end
                     serialize_message(response)
                 catch e
-                    @debug "Failed to build deferred tools/call response" error=e
+                    try  # the diagnostic is best-effort — a throwing logger must not eat the fallback
+                        @debug "Failed to build deferred tools/call response" error=e
+                    catch
+                    end
                     serialize_message(JSONRPCError(
                         id = request_id,
                         error = ErrorInfo(
@@ -281,10 +295,11 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                 end
                 # Scope ends before the response goes out (no trailing records)
                 close_request_log_scope!()
+                delivered = true
                 try
                     deliver_response(transport, route, payload)
-                catch e
-                    @debug "Failed to deliver deferred tools/call response (client likely disconnected)" error=e
+                catch
+                    # Client likely disconnected; the route is gone either way
                 end
             else
                 # Detached: the CreateTaskResult already answered the request; the
@@ -296,12 +311,40 @@ function spawn_detachable_tool_call!(ctx::RequestContext, tool::MCPTool,
                     message = "input_required is not supported after task detachment"))
                 finish_task!(server.tasks, record, outcome)
             end
+        catch e
+            # Last resort: the request must never end with neither a response nor
+            # a terminal task, whatever threw above
+            if record !== nothing
+                try
+                    finish_task!(server.tasks, record,
+                                 ErrorInfo(code = ErrorCodes.INTERNAL_ERROR,
+                                           message = "Internal error: $(e)"))
+                catch
+                end
+            elseif !delivered
+                try
+                    deliver_response(transport, route, serialize_message(JSONRPCError(
+                        id = request_id,
+                        error = ErrorInfo(code = ErrorCodes.INTERNAL_ERROR,
+                                          message = "Internal error: $(e)"))))
+                catch
+                end
+            end
         finally
             # Covers every remaining exit: a throw above, or a handler that never
-            # triggered either boundary close. Idempotent.
-            close_request_log_scope!()
+            # triggered either boundary close. Idempotent, and must not throw out
+            # of the finally.
+            try
+                close_request_log_scope!()
+            catch
+            end
         end
     end
+    # The request now belongs to the worker: the loop must not close the request's
+    # log scope on its way out (the worker does, at its response boundary). Set
+    # LAST so no throw between here and the deferred return can leave the flag
+    # armed for a request that was actually answered synchronously.
+    task_local_storage(:mcp_detached_call, true)
     HandlerResult(deferred = true)
 end
 

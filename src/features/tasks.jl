@@ -139,7 +139,7 @@ function create_task!(store::TaskStore, method::String;
         principal,
         method,
         era,
-        required_scopes,
+        copy(required_scopes),  # defensive: the record's set must never alias a caller's mutable vector
         nothing,
         nothing,
         Base.Event(),

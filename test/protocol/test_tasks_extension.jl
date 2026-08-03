@@ -384,7 +384,7 @@ _ext_tools() = [
         @test task_detach(dctx)
         rec = dctx.task
         @test rec.era === :ext
-        @test rec.principal == "prov\x1falice"
+        @test rec.principal == "[\"prov\",\"alice\"]"  # canonical [provider, subject] identity
         @test rec.required_scopes == ["mcp:admin"]
 
         # Same subject, insufficient scopes -> indistinguishable from not-found
@@ -411,6 +411,54 @@ _ext_tools() = [
                                                   inputResponses=Dict{String,Any}()))
         @test u.error !== nothing && u.error.code == -32602
         cancel_task!(store, rec)
+    end
+
+    @testset "principal identity is collision-free end-to-end (Codex r2 B2)" begin
+        # Delimiter-style concatenation would collide these two identities; the
+        # canonical JSON [provider, subject] encoding cannot
+        a = AuthenticatedUser(subject="b\x1fc", provider="a")
+        b = AuthenticatedUser(subject="c", provider="a\x1fb")
+        @test ModelContextProtocol.principal_identity(a) != ModelContextProtocol.principal_identity(b)
+
+        server, _, _ = _ext_test_server()
+        actx(u) = RequestContext(server=server, request_id=1, authenticated_user=u,
+                                 protocol_version="2026-07-28", client_capabilities=_EXT_CAPS)
+        rec = create_task!(server.tasks, "tools/call"; era=:ext,
+                           principal=ModelContextProtocol.principal_identity(a))
+        cross = ModelContextProtocol.handle_ext_get_task(actx(b),
+            ModelContextProtocol.GetTaskParams(taskId=rec.task_id))
+        @test cross.error !== nothing && cross.error.code == -32602
+        own = ModelContextProtocol.handle_ext_get_task(actx(a),
+            ModelContextProtocol.GetTaskParams(taskId=rec.task_id))
+        @test own.error === nothing
+
+        # An MRTR requestState issued to one provider's principal must not verify
+        # for a same-subject token from ANOTHER provider (the composition flow
+        # would otherwise inherit the first principal's handler state)
+        prov_a = AuthenticatedUser(subject="sub", provider="A")
+        prov_b = AuthenticatedUser(subject="sub", provider="B")
+        token = ModelContextProtocol.issue_request_state(server, "tools/call", "digest",
+            ModelContextProtocol.mrtr_principal(prov_a), Dict("k" => 1))
+        ok_a, _ = ModelContextProtocol.verify_request_state(server, token, "tools/call",
+            "digest", ModelContextProtocol.mrtr_principal(prov_a))
+        ok_b, _ = ModelContextProtocol.verify_request_state(server, token, "tools/call",
+            "digest", ModelContextProtocol.mrtr_principal(prov_b))
+        @test ok_a
+        @test !ok_b
+        cancel_task!(server.tasks, rec)
+    end
+
+    @testset "required_scopes are snapshotted, never aliased (Codex r2 B3)" begin
+        server, _, _ = _ext_test_server()
+        live = ["mcp:admin"]
+        ctx = RequestContext(server=server, request_id=1,
+                             protocol_version="2026-07-28", client_capabilities=_EXT_CAPS,
+                             detach=ModelContextProtocol.TaskDetachState(server.transport, nothing, live))
+        @test task_detach(ctx)
+        rec = ctx.task
+        empty!(live)  # a later registry mutation must not rewrite the task's requirement
+        @test rec.required_scopes == ["mcp:admin"]
+        cancel_task!(server.tasks, rec)
     end
 
     @testset "legacy tasks/list never exposes ext records (Codex r1 B3)" begin

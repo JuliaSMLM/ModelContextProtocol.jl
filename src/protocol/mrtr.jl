@@ -289,11 +289,26 @@ bind an issued `requestState` to the exact original params it may resume.
 canonical_json_digest(x)::String = bytes2hex(sha256(JSON3.write(canonicalize_json(x))))
 
 """
+    principal_identity(user::AuthenticatedUser) -> String
+
+The canonical, collision-free identity string for an authenticated principal:
+the JSON array `[provider, subject]`. Two identity providers can issue the same
+`sub`, so the subject alone must never identify a principal; JSON encoding (not
+delimiter concatenation) makes the pair unambiguous — `("a", "b\\x1fc")` and
+`("a\\x1fb", "c")` cannot collide. `username` is display-oriented and mutable,
+so it never participates.
+"""
+principal_identity(user::AuthenticatedUser)::String =
+    JSON3.write([user.provider, user.subject])
+
+"""
     mrtr_principal(user::Union{AuthenticatedUser,Nothing}) -> String
 
-The principal string bound into a `requestState`: the authenticated subject, or
-`""` when the request is unauthenticated. A state issued to one principal must not
-be redeemable by another.
+The principal string bound into a `requestState`: the canonical
+provider-qualified identity (see [`principal_identity`](@ref)), or `""` when the
+request is unauthenticated. A state issued to one principal must not be
+redeemable by another — including a DIFFERENT provider's token that happens to
+carry the same subject.
 
 # Arguments
 - `user::Union{AuthenticatedUser,Nothing}`: The request's authenticated user
@@ -302,7 +317,7 @@ be redeemable by another.
 - `String`: The principal
 """
 mrtr_principal(user::Union{AuthenticatedUser,Nothing})::String =
-    user === nothing ? "" : user.subject
+    user === nothing ? "" : principal_identity(user)
 
 # Constant-time byte comparison (an early-exit == would leak how many MAC bytes
 # matched)

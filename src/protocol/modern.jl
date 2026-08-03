@@ -533,11 +533,14 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
             end
         end
     end
-    result = serve_modern(server, request, version, mrtr_state, authenticated_user)
-    # No logger scope existed to hand off; just clear the worker flag so it cannot
-    # leak into a later request on this loop task
-    task_local_storage(:mcp_detached_call, false)
-    result
+    try
+        serve_modern(server, request, version, mrtr_state, authenticated_user)
+    finally
+        # No logger scope existed to hand off; just clear the worker flag (even on
+        # a throw) so it cannot leak into a later request on this loop task and
+        # make that request skip its own scope closure
+        task_local_storage(:mcp_detached_call, false)
+    end
 end
 
 """
@@ -633,6 +636,16 @@ function serve_modern(server::Server, request::Request, version::String, mrtr_st
         )
     end
 
+    if result.deferred
+        # The request was handed off out-of-loop (a subscriptions/listen stream,
+        # or a detachable tool-call worker that now owns the response). Return
+        # IMMEDIATELY: nothing may run on this path that could throw and
+        # synthesize a second response for a request another task answers —
+        # including the lifecycle log line below, whose logger is caller-supplied
+        # and may itself throw.
+        return nothing
+    end
+
     @debug "request completed" method=request.method id=request.id era="modern" duration_ms=round((time() - request_start) * 1000; digits=2) ok=isnothing(result.error)
 
     if !isnothing(result.error)
@@ -645,10 +658,6 @@ function serve_modern(server::Server, request::Request, version::String, mrtr_st
                 data = err.data
             )
         )
-    elseif result.deferred
-        # subscriptions/listen defers: its route is captured and the stream is
-        # served out-of-loop, so there is no response to emit here
-        nothing
     elseif !isnothing(result.response) && result.response.result isa InputRequired
         # MRTR: the handler needs client input. A server MUST NOT send
         # inputRequests whose capability this request did not declare — that is

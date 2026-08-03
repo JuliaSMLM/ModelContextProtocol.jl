@@ -898,9 +898,13 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
     # (`authenticated_user === nothing`, i.e. auth not configured) the check is skipped —
     # the server performs no authorization, matching how the global
     # `OAuthConfig.required_scopes` is only enforced when a validator runs. Checked before
-    # the task/sync split so both execution paths are gated.
-    if !isempty(tool.required_scopes) && ctx.authenticated_user !== nothing
-        missing_scopes = setdiff(tool.required_scopes, ctx.authenticated_user.scopes)
+    # the task/sync split so both execution paths are gated. The snapshot taken here is
+    # the ONE set this request is authorized against — it is also what a detached task
+    # records for its per-request re-authorization, so a registry mutation between the
+    # check and task creation cannot widen or narrow a task's requirement.
+    tool_scopes = copy(tool.required_scopes)
+    if !isempty(tool_scopes) && ctx.authenticated_user !== nothing
+        missing_scopes = setdiff(tool_scopes, ctx.authenticated_user.scopes)
         if !isempty(missing_scopes)
             return HandlerResult(
                 error=ErrorInfo(
@@ -933,7 +937,7 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
             return HandlerResult(error = tasks_extension_required_error())
         end
         if declared && ctx.server.transport !== nothing
-            return spawn_detachable_tool_call!(ctx, tool, args)
+            return spawn_detachable_tool_call!(ctx, tool, args, tool_scopes)
         end
         # Declared but transportless (in-process/unit use): there is no route to
         # deliver a deferred response on, so run synchronously — task_detach sees
