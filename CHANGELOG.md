@@ -83,6 +83,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatch suite's parked-elicitation check now pass all substantive checks
   (fixtures `confirm_delete`, `multi_input`, `test_tool_with_task`).
 
+- **Argument completion (`completion/complete`).** The completion utility,
+  served in both eras: suggestions for prompt arguments (`ref/prompt`, by
+  prompt name) and resource-template variables (`ref/resource`, by URI
+  template). Sources are configured per component via the new `completions`
+  field on `MCPPrompt` / `ResourceTemplate` — a `Vector{String}` served
+  filtered by prefix against the partial value, or a function `value -> values`
+  / `(value, context_args) -> values` receiving the request context's
+  already-resolved arguments; components without sources serve empty
+  suggestion lists. Responses cap `values` at the spec's 100 with `total` and
+  `hasMore`; unknown ref types, prompt names, or template URIs are `-32602`.
+  The new `CompletionCapability` (in the defaults) advertises `completions` in
+  the legacy initialize response and in `server/discover`, and gates the
+  modern-era method surface. This clears the last modern-dated conformance
+  failure (suite now 40/40) and the legacy `completion-complete` scenario.
+
 ### Changed
 
 - **MRTR `requestState` payload format v2.** The principal bound into a

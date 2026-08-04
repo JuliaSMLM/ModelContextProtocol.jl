@@ -49,6 +49,17 @@ Base.@kwdef struct LoggingCapability <: Capability
 end
 
 """
+    CompletionCapability()
+
+Advertise argument-completion support (`completion/complete`): contextual value
+suggestions for prompt arguments and resource-template variables, declared as the
+`completions` capability. Sources are configured per component via the
+`completions` field on `MCPPrompt` / `ResourceTemplate`; components without
+sources serve empty suggestion lists.
+"""
+struct CompletionCapability <: Capability end
+
+"""
     TaskCapability(; list::Bool=true, cancel::Bool=true)
 
 Configure MCP Tasks support (SEP-1686, experimental): task-augmented `tools/call`
@@ -164,6 +175,8 @@ function capabilities_to_protocol(capabilities::Vector{Capability}, server::Serv
             )
         elseif cap isa LoggingCapability
             result["logging"] = LittleDict{String,Any}()
+        elseif cap isa CompletionCapability
+            result["completions"] = LittleDict{String,Any}()
         elseif cap isa TaskCapability
             tasks = to_protocol_format(cap)
             # Security guidance (spec): receivers that cannot identify requestors

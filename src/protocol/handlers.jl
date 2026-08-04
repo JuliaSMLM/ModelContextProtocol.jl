@@ -633,6 +633,86 @@ function handle_get_prompt(ctx::RequestContext, params::GetPromptParams)::Handle
     end
 end
 
+# The spec caps completion suggestions at 100 per response
+const COMPLETION_MAX_VALUES = 100
+
+"""
+    completion_values(sources, arg_name::String, value::String, context) -> Vector{String}
+
+Resolve the suggestion list for one completion request from a component's
+`completions` sources: a `Vector` source is served filtered by prefix against the
+partial `value`; a `Function` source is called as `f(value)` — or
+`f(value, context_args)` when applicable, where `context_args` is the request
+context's `arguments` entry (already-resolved argument values) or `nothing`.
+Missing sources (or a component without any) resolve to no suggestions.
+
+# Arguments
+- `sources`: The component's `completions` field (a Dict or `nothing`)
+- `arg_name::String`: The argument (or template variable) being completed
+- `value::String`: The partial value typed so far
+- `context`: The request's optional `context` object
+
+# Returns
+- `Vector{String}`: The full (uncapped) suggestion list
+"""
+function completion_values(sources, arg_name::String, value::String, context)::Vector{String}
+    sources isa AbstractDict || return String[]
+    source = get(sources, arg_name, nothing)
+    source === nothing && return String[]
+    if source isa Function
+        context_args = context isa AbstractDict ? get(context, "arguments", nothing) : nothing
+        raw = applicable(source, value, context_args) ? source(value, context_args) : source(value)
+        return String[string(v) for v in raw]
+    end
+    String[string(v) for v in source if startswith(string(v), value)]
+end
+
+"""
+    handle_complete(ctx::RequestContext, params::CompleteParams) -> HandlerResult
+
+Handle a `completion/complete` request: suggest values for a prompt argument
+(`ref/prompt`, resolved by prompt name) or a resource-template variable
+(`ref/resource`, resolved by URI template). Suggestions come from the matched
+component's `completions` sources (see `completion_values`); the response caps
+`values` at the spec's 100, reporting the full count as `total` and `hasMore`
+accordingly. An unknown ref type, prompt name, or template URI is -32602.
+"""
+function handle_complete(ctx::RequestContext, params::CompleteParams)::HandlerResult
+    invalid(msg) = HandlerResult(error=ErrorInfo(code=ErrorCodes.INVALID_PARAMS, message=msg))
+    sources = if params.ref.type == "ref/prompt"
+        params.ref.name === nothing && return invalid("ref/prompt requires a name")
+        idx = findfirst(p -> p.name == params.ref.name, ctx.server.prompts)
+        idx === nothing && return invalid("Prompt not found: $(params.ref.name)")
+        ctx.server.prompts[idx].completions
+    elseif params.ref.type == "ref/resource"
+        params.ref.uri === nothing && return invalid("ref/resource requires a uri")
+        idx = findfirst(t -> t.uri_template == params.ref.uri, ctx.server.resource_templates)
+        idx === nothing && return invalid("Resource template not found: $(params.ref.uri)")
+        ctx.server.resource_templates[idx].completions
+    else
+        return invalid("Unknown completion ref type: $(params.ref.type)")
+    end
+    all_values = try
+        completion_values(sources, params.argument.name, params.argument.value, params.context)
+    catch e
+        return HandlerResult(error=ErrorInfo(
+            code=ErrorCodes.INTERNAL_ERROR,
+            message="Completion source failed: $(e)"))
+    end
+    capped = length(all_values) > COMPLETION_MAX_VALUES ?
+             all_values[1:COMPLETION_MAX_VALUES] : all_values
+    HandlerResult(response=JSONRPCResponse(
+        id=ctx.request_id,
+        result=LittleDict{String,Any}(
+            "completion" => LittleDict{String,Any}(
+                "values" => capped,
+                "total" => length(all_values),
+                "hasMore" => length(all_values) > COMPLETION_MAX_VALUES
+            )
+        )
+    ))
+end
+
 
 """
     handle_list_resources(ctx::RequestContext, params::ListResourcesParams) -> HandlerResult
@@ -1599,6 +1679,8 @@ function handle_request(server::Server, state::ServerState, request::Request;
                 handle_list_prompts(ctx, params)
             elseif request.method == "prompts/get"
                 handle_get_prompt(ctx, request.params::GetPromptParams)
+            elseif request.method == "completion/complete"
+                handle_complete(ctx, request.params::CompleteParams)
             elseif request.method == "logging/setLevel"
                 handle_set_level(ctx, request.params::SetLevelParams)
             elseif request.method == "tasks/get"

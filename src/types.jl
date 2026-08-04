@@ -472,7 +472,8 @@ end
             arguments::Vector{PromptArgument}=PromptArgument[],
             messages::Vector{PromptMessage}=PromptMessage[],
             title::Union{String,Nothing}=nothing,
-            icons::Union{Vector{MCPIcon},Nothing}=nothing)
+            icons::Union{Vector{MCPIcon},Nothing}=nothing,
+            completions::Union{Nothing,Dict{String,Any}}=nothing)
 
 Implement a prompt or prompt template as defined in the MCP schema.
 Prompts can include variables that are replaced with arguments when retrieved.
@@ -486,6 +487,10 @@ Prompts can include variables that are replaced with arguments when retrieved.
 - `icons::Union{Vector{MCPIcon},Nothing}`: Optional icons for UI display
 - `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions,
   emitted verbatim in `prompts/list` when set
+- `completions::Union{Nothing,Dict{String,Any}}`: Optional `completion/complete`
+  sources per argument name: a `Vector{String}` (served filtered by prefix
+  against the partial value) or a function `value -> values` /
+  `(value, context_args) -> values` returning the suggestions
 """
 Base.@kwdef struct MCPPrompt
     name::String
@@ -495,6 +500,7 @@ Base.@kwdef struct MCPPrompt
     title::Union{String,Nothing} = nothing
     icons::Union{Vector{MCPIcon},Nothing} = nothing
     _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in prompts/list when set
+    completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per argument
 end
 
 """
@@ -620,6 +626,10 @@ any `resources/read` whose URI matches the template.
   Templates without a provider are advertised but not readable.
 - `_meta::Union{Nothing,Dict{String,Any}}`: Optional metadata for protocol extensions,
   emitted verbatim in `resources/templates/list` when set
+- `completions::Union{Nothing,Dict{String,Any}}`: Optional `completion/complete`
+  sources per template variable name: a `Vector{String}` (served filtered by
+  prefix against the partial value) or a function `value -> values` /
+  `(value, context_args) -> values` returning the suggestions
 """
 Base.@kwdef struct ResourceTemplate
     name::String
@@ -630,13 +640,14 @@ Base.@kwdef struct ResourceTemplate
     icons::Union{Vector{MCPIcon},Nothing} = nothing
     data_provider::Union{Function,Nothing} = nothing  # provider(uri) or provider(uri, vars); see resources/read routing
     _meta::Union{Nothing,Dict{String,Any}} = nothing  # emitted verbatim in resources/templates/list when set
+    completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per template variable
 end
 
 # Back-compat: the pre-0.5.4 six-field positional shape still constructs
 ResourceTemplate(name::String, uri_template::String, mime_type::Union{String,Nothing},
                  description::String, title::Union{String,Nothing},
                  icons::Union{Vector{MCPIcon},Nothing}) =
-    ResourceTemplate(name, uri_template, mime_type, description, title, icons, nothing, nothing)
+    ResourceTemplate(name, uri_template, mime_type, description, title, icons, nothing, nothing, nothing)
 
 #==============================================================================
 # 7. Subscription and Progress Types

@@ -31,6 +31,7 @@ const MODERN_METHODS = Dict{String,Union{DataType,Nothing}}(
     "resources/templates/list" => ResourceCapability,
     "prompts/list" => PromptCapability,
     "prompts/get" => PromptCapability,
+    "completion/complete" => CompletionCapability,
     "subscriptions/listen" => nothing,
     "tasks/get" => nothing,
     "tasks/update" => nothing,
@@ -206,6 +207,8 @@ function handle_discover(ctx::RequestContext)::HandlerResult
             caps["prompts"] = d
         elseif c isa LoggingCapability
             caps["logging"] = LittleDict{String,Any}()
+        elseif c isa CompletionCapability
+            caps["completions"] = LittleDict{String,Any}()
         end
     end
     # Extensions live under capabilities.extensions (never a legacy-style
@@ -284,6 +287,9 @@ function dispatch_modern(ctx::RequestContext, request::Request)::HandlerResult
     elseif request.method == "prompts/get"
         request.params isa GetPromptParams || return modern_invalid_params(ctx, request.method)
         handle_get_prompt(ctx, request.params)
+    elseif request.method == "completion/complete"
+        request.params isa CompleteParams || return modern_invalid_params(ctx, request.method)
+        handle_complete(ctx, request.params)
     elseif request.method == "subscriptions/listen"
         request.params isa SubscriptionsListenParams || return modern_invalid_params(ctx, request.method)
         handle_subscriptions_listen(ctx, request.params)
