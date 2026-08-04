@@ -68,6 +68,16 @@ receive.
 """
 function handle_subscriptions_listen(ctx::RequestContext,
                                      params::SubscriptionsListenParams)::HandlerResult
+    # Task status subscriptions belong to the tasks extension, and its
+    # missing-capability error is a spec MUST that takes precedence over shape
+    # validation: the PRESENCE of a taskIds entry from a non-declaring client is
+    # -32021 whatever the entry looks like (a malformed or over-limit array must
+    # not demote the error to -32602)
+    if params.notifications isa AbstractDict && haskey(params.notifications, "taskIds") &&
+       !tasks_extension_declared(ctx.client_capabilities)
+        return HandlerResult(error = tasks_extension_required_error())
+    end
+
     requested = parse_subscription_filter(params.notifications)
     requested isa SubscriptionFilter || return HandlerResult(
         error = ErrorInfo(
@@ -76,11 +86,20 @@ function handle_subscriptions_listen(ctx::RequestContext,
         )
     )
 
-    # Task status subscriptions belong to the tasks extension: a client that
-    # requests taskIds without declaring it gets the extension's -32021 (spec
-    # MUST), before any stream is established
-    if !isempty(requested.task_ids) && !tasks_extension_declared(ctx.client_capabilities)
-        return HandlerResult(error = tasks_extension_required_error())
+    registry = ctx.server.listen_subscriptions
+
+    # Cheap capacity precheck BEFORE the (potentially 256-id) task resolution
+    # below — the race-safe check at registration remains authoritative
+    at_capacity = lock(registry.lock) do
+        length(registry.subs) >= MAX_SUBSCRIPTIONS
+    end
+    if at_capacity
+        return HandlerResult(
+            error = ErrorInfo(
+                code = ErrorCodes.INTERNAL_ERROR,
+                message = "subscriptions/listen: active subscription limit reached ($(MAX_SUBSCRIPTIONS))"
+            )
+        )
     end
 
     # Honor only what this server can actually deliver: list-changed types require
@@ -93,12 +112,23 @@ function handle_subscriptions_listen(ctx::RequestContext,
     # Agree only to task ids this requestor could tasks/get RIGHT NOW: same
     # principal, extension era, and per-request scope re-authorization — an
     # unknown or foreign id is silently omitted from the acknowledged set, so
-    # subscription probing leaks nothing a tasks/get poll would not
+    # subscription probing leaks nothing a tasks/get poll would not. Batch
+    # resolution under ONE store lock and ONE sweep (a per-id get_task would
+    # sweep the whole store up to 256 times).
+    task_principal = ext_task_principal(ctx)
     honored_task_ids = Set{String}()
-    for tid in requested.task_ids
-        record = get_task(ctx.server.tasks, tid, ext_task_principal(ctx); era = :ext)
-        (record === nothing || !ext_task_authorized(ctx, record)) && continue
-        push!(honored_task_ids, tid)
+    if !isempty(requested.task_ids)
+        store = ctx.server.tasks
+        lock(store.lock) do
+            sweep_expired!(store)
+            for tid in requested.task_ids
+                record = get(store.tasks, tid, nothing)
+                record === nothing && continue
+                (record.principal == task_principal && record.era === :ext) || continue
+                ext_task_authorized(ctx, record) || continue
+                push!(honored_task_ids, tid)
+            end
+        end
     end
     honored = SubscriptionFilter(
         tools_list_changed = requested.tools_list_changed && tool_lc,
@@ -146,7 +176,8 @@ function handle_subscriptions_listen(ctx::RequestContext,
     # error response still goes out on the normal path), and the ack-then-register
     # pair runs under the registry lock (see docstring). The id-uniqueness check is
     # load-bearing on stdio, where the id is the only way to tell streams apart.
-    registry = ctx.server.listen_subscriptions
+    task_scopes = ctx.authenticated_user === nothing ?
+        Set{String}() : Set{String}(ctx.authenticated_user.scopes)
     status = lock(registry.lock) do
         # Sweep dead routes FIRST: a record whose connection handler already died
         # (client vanished) must not consume the capacity cap or pin its id
@@ -157,7 +188,8 @@ function handle_subscriptions_listen(ctx::RequestContext,
         any(s -> s.id == sub_id, registry.subs) && return :duplicate
         route = capture_response_route(transport)
         deliver_notification(transport, route, ack) || return :unreachable
-        push!(registry.subs, SubscriptionRecord(sub_id, honored, route, transport))
+        push!(registry.subs, SubscriptionRecord(sub_id, honored, route, transport,
+                                                task_principal, task_scopes))
         :ok
     end
 
@@ -177,6 +209,21 @@ function handle_subscriptions_listen(ctx::RequestContext,
         )
     elseif status === :unreachable
         @debug "subscriptions/listen: client route unavailable; subscription dropped" sub_id
+    end
+
+    # Initial per-task snapshot: a transition landing between the authorization
+    # above and the registration would otherwise never be pushed — the ack names
+    # the id but no notification follows, and a notification-only client waits
+    # forever. Fired through the normal status-change path (complete-state
+    # semantics make the extra push benign for other streams watching the id).
+    if status === :ok && !isempty(honored_task_ids)
+        store = ctx.server.tasks
+        lock(store.lock) do
+            for tid in honored_task_ids
+                record = get(store.tasks, tid, nothing)
+                record === nothing || _fire_status_change(store, record)
+            end
+        end
     end
 
     HandlerResult(deferred = true)
@@ -204,6 +251,10 @@ graceful closure; see the `SubscriptionRegistry` docstring for the lock ordering
 - `params::AbstractDict`: Additional notification params
 - `uri::Union{String,Nothing}`: For `notifications/resources/updated`, the resource URI
 - `task_id::Union{String,Nothing}`: For `notifications/tasks`, the task id
+- `authorize`: Optional per-stream predicate `record::SubscriptionRecord -> Bool`
+  checked after the filter match — used by `notifications/tasks` to re-authorize
+  each delivery against the stream's stored principal/scopes WITHOUT taking the
+  task-store lock here (the ordering store → registry must never reverse)
 
 # Returns
 - `Int`: How many streams received the notification
@@ -211,14 +262,16 @@ graceful closure; see the `SubscriptionRegistry` docstring for the lock ordering
 function broadcast_subscription_notification(server::Server, method::String;
                                              params::AbstractDict = LittleDict{String,Any}(),
                                              uri::Union{String,Nothing} = nothing,
-                                             task_id::Union{String,Nothing} = nothing)::Int
+                                             task_id::Union{String,Nothing} = nothing,
+                                             authorize::Union{Nothing,Function} = nothing)::Int
     registry = server.listen_subscriptions
     lock(registry.lock) do
         delivered = 0
         kept = SubscriptionRecord[]
         for s in registry.subs
             alive = route_alive(s.transport, s.route)
-            if alive && filter_wants(s.filter, method, uri, task_id)
+            if alive && filter_wants(s.filter, method, uri, task_id) &&
+               (authorize === nothing || authorize(s) === true)
                 payload = subscription_notification(method, params, s.id)
                 alive = deliver_notification(s.transport, s.route, payload)
                 alive && (delivered += 1)

@@ -423,25 +423,59 @@ function task_await_input(ctx::RequestContext,
     responses
 end
 
+# Bound on queued-but-undelivered task status notifications. Past it new
+# notifications are load-shed (dropped): they are best-effort pushes, and
+# polling tasks/get stays authoritative.
+const TASK_NOTIFICATION_QUEUE_CAP = 1024
+
 """
     install_task_notifications!(server::Server) -> Nothing
 
 Wire the tasks extension's `notifications/tasks` status updates: install the
 store's status-change hook so every extension-era transition (parking on input,
-resuming, completing, failing, cancelling, expiring) broadcasts the task's
-complete DetailedTask — identical to what `tasks/get` would return at that
-moment — to the `subscriptions/listen` streams that subscribed to the task's id.
-Installed by `mcp_server`; the hook runs under the store lock (which
-`ext_task_wire` requires), safe against the subscription registry lock (the
-ordering store → registry → transport channels is never reversed).
+resuming, completing, failing, cancelling, expiring) pushes the task's complete
+DetailedTask — identical to what `tasks/get` would return at that moment — to
+the `subscriptions/listen` streams that subscribed to the task's id.
+
+The hook runs under the store lock (which the wire snapshot requires) but does
+NO transport I/O there: it enqueues the snapshot — plus the task's
+transition-time principal and `required_scopes`, re-checked per stream at
+delivery — onto a bounded FIFO consumed by a single dispatcher task, which
+broadcasts OUTSIDE the store lock. A stalled client can therefore never wedge
+the task store (a synchronous stdio write under the lock would block every
+tasks/* request once the client's pipe fills), the single consumer preserves
+transition order, and a full queue load-sheds (best-effort pushes; polling
+stays authoritative). Installed by `mcp_server`; `stop!` closes the queue,
+ending the dispatcher.
 """
 function install_task_notifications!(server::Server)
+    queue = Channel{Any}(TASK_NOTIFICATION_QUEUE_CAP)
+    server.task_notification_queue = queue
+    Threads.@spawn begin
+        for (wire, task_id, principal, required_scopes) in queue
+            try
+                broadcast_subscription_notification(server, "notifications/tasks";
+                    params = wire,
+                    task_id = task_id,
+                    # Delivery-time re-authorization from the TRANSITION-time
+                    # requirements: a stream whose principal/scopes no longer
+                    # satisfy the task must not keep receiving its status
+                    authorize = s -> s.task_principal == principal &&
+                                     issubset(required_scopes, s.task_scopes))
+            catch
+                # A broken transport must not kill the dispatcher
+            end
+        end
+    end
     server.tasks.on_status_change[] = record -> begin
         record.era === :ext || return nothing
-        wire = ext_task_wire(record; detailed = true)
-        broadcast_subscription_notification(server, "notifications/tasks";
-                                            params = wire,
-                                            task_id = record.task_id)
+        # Single producer (every call site holds the store lock), so the
+        # availability check cannot race another put!: the queue never blocks
+        Base.n_avail(queue) >= TASK_NOTIFICATION_QUEUE_CAP && return nothing
+        put!(queue, (ext_task_wire(record; detailed = true),
+                     record.task_id,
+                     record.principal,
+                     copy(record.required_scopes)))
         nothing
     end
     nothing

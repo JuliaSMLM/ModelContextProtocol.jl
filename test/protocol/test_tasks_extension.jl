@@ -979,6 +979,58 @@ _ext_tools() = [
                         m["params"]["taskId"] == legacy.task_id, msgs)
     end
 
+    @testset "notifications/tasks hardening (Codex r1)" begin
+        server, state, buf = _ext_test_server(tools=_ext_tools())
+        listen(id, task_ids; caps=_EXT_CAPS) = _ext_rpc(server, state,
+            Dict("jsonrpc" => "2.0", "id" => id, "method" => "subscriptions/listen",
+                 "params" => Dict("notifications" => Dict("taskIds" => task_ids),
+                                  "_meta" => _ext_meta(caps=caps))))
+
+        # Gating precedes shape validation: a non-declaring client gets the
+        # extension's -32021 even for an over-limit or empty taskIds entry
+        @test listen("g1", ["id-$(i)" for i in 1:257]; caps=Dict{String,Any}())["error"]["code"] == -32021
+        @test listen("g2", String[]; caps=Dict{String,Any}())["error"]["code"] == -32021
+        # Declared client, over-limit: the ordinary filter violation
+        @test listen("g3", ["id-$(i)" for i in 1:257])["error"]["code"] == -32602
+
+        # Initial snapshot: subscribing to an already-parked task pushes its
+        # CURRENT state immediately — a transition landing between authorization
+        # and registration can no longer strand a notification-only client
+        @test _ext_call(server, state, "slow"; id=321) === nothing
+        tid = _ext_deferred_response(buf, 321)["result"]["taskId"]
+        @test listen("sub-snap", [tid]) === nothing
+        msgs = []
+        @test _ext_wait_for(() -> (append!(msgs, _ext_oob(buf));
+            any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                     m["params"]["taskId"] == tid &&
+                     m["params"]["status"] == "working", msgs)))
+        _ext_cancel(server, state, tid)
+
+        # Delivery-time re-authorization: a task whose required_scopes grow after
+        # the listen stops pushing to a stream that could no longer tasks/get it
+        rec = create_task!(server.tasks, "tools/call"; era=:ext,
+                           required_scopes=String[])
+        @test listen("sub-authz", [rec.task_id]) === nothing
+        msgs2 = []
+        @test _ext_wait_for(() -> (append!(msgs2, _ext_oob(buf));
+            any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                     m["params"]["taskId"] == rec.task_id, msgs2)))  # initial snapshot delivered
+        push!(rec.required_scopes, "mcp:admin")  # authz requirements change post-listen
+        cancel_task!(server.tasks, rec)
+        sleep(0.3)
+        append!(msgs2, _ext_oob(buf))
+        @test !any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                        m["params"]["taskId"] == rec.task_id &&
+                        m["params"]["status"] == "cancelled", msgs2)
+
+        # stop! ends the dispatcher; post-stop transitions neither push nor throw
+        server.active = true
+        stop!(server)
+        rec2 = create_task!(server.tasks, "tools/call"; era=:ext)
+        @test cancel_task!(server.tasks, rec2)  # transition survives the closed queue
+        @test rec2.status == "cancelled"
+    end
+
     @testset "notifications/tasks: cancellation pushes the cancelled state" begin
         server, state, buf = _ext_test_server(tools=_ext_tools())
         @test _ext_call(server, state, "slow"; id=311) === nothing

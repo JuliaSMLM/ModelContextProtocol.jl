@@ -90,11 +90,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pushes a complete DetailedTask (identical to what `tasks/get` would return at
   that moment, `subscriptionId`-tagged) to the streams watching that id.
   Requesting `taskIds` without declaring the `io.modelcontextprotocol/tasks`
-  extension is the extension's `-32021` (spec MUST); the acknowledgment echoes
-  only the ids the server agreed to — unknown, foreign-principal, or
-  insufficiently-scoped ids are silently omitted (the same re-authorization
-  `tasks/get` applies, so subscription probing leaks nothing polling would not).
-  Legacy-era (SEP-1686) tasks never reach these streams.
+  extension is the extension's `-32021` (spec MUST, taking precedence over
+  shape validation); the acknowledgment echoes only the ids the server agreed
+  to — unknown, foreign-principal, or insufficiently-scoped ids are silently
+  omitted (the same re-authorization `tasks/get` applies, so subscription
+  probing leaks nothing polling would not), and each subscribed task's CURRENT
+  state is pushed right after the acknowledgment, so a transition landing
+  during registration can never strand a notification-only client. Deliveries
+  re-check the stream's principal and scopes against the task's transition-time
+  requirements, and ride a bounded FIFO drained by a dispatcher task outside
+  the store lock — a stalled client cannot wedge the task surface, transition
+  order is preserved, and overload load-sheds (pushes are best-effort; polling
+  stays authoritative). Legacy-era (SEP-1686) tasks never reach these streams.
 
 - **Argument completion (`completion/complete`).** The completion utility,
   served in both eras: suggestions for prompt arguments (`ref/prompt`, by

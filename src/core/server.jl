@@ -334,8 +334,14 @@ function stop!(server::Server)
     if !server.active
         throw(ServerError("Server not running"))
     end
-    
+
     server.active = false
+    # End the notifications/tasks dispatcher (its FIFO drains, then the consumer
+    # exits); post-stop transitions simply stop pushing (the enqueue hook's
+    # put! on a closed channel is swallowed by _fire_status_change)
+    if server.task_notification_queue !== nothing
+        Base.close(server.task_notification_queue)
+    end
     nothing
 end
 

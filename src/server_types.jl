@@ -18,6 +18,8 @@ Represent a running MCP server instance that manages resources, tools, and promp
 - `tasks::TaskStore`: Registry of server-side tasks (MCP Tasks, experimental)
 - `listen_subscriptions::SubscriptionRegistry`: Active modern-era `subscriptions/listen` streams
 - `active::Bool`: Whether the server is currently active
+- `task_notification_queue::Union{Channel{Any},Nothing}`: `notifications/tasks`
+  dispatch FIFO (set by `install_task_notifications!`, closed by `stop!`)
 
 # Constructor
 - `Server(config::ServerConfig; transport=nothing)`: Creates a new server with the specified configuration
@@ -35,6 +37,7 @@ mutable struct Server
     listen_subscriptions::SubscriptionRegistry
     mrtr_state_key::Vector{UInt8}  # HMAC key for MRTR requestState tokens (ephemeral, per-server)
     active::Bool
+    task_notification_queue::Union{Channel{Any},Nothing}  # notifications/tasks dispatch FIFO (see install_task_notifications!); closed by stop!
 
     function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing,
                     mrtr_state_key::Union{Vector{UInt8},Nothing}=nothing)
@@ -56,7 +59,8 @@ mutable struct Server
             TaskStore(),
             SubscriptionRegistry(),
             something(mrtr_state_key, rand(RandomDevice(), UInt8, 32)),
-            false
+            false,
+            nothing
         )
     end
 end

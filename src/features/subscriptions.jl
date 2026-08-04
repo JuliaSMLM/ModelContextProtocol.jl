@@ -43,7 +43,8 @@ Base.@kwdef struct SubscriptionFilter
 end
 
 """
-    SubscriptionRecord(id, filter, route, transport)
+    SubscriptionRecord(id, filter, route, transport,
+                       task_principal=nothing, task_scopes=Set{String}())
 
 One active `subscriptions/listen` stream.
 
@@ -55,13 +56,23 @@ One active `subscriptions/listen` stream.
   (`nothing` for stream transports like stdio, which share one channel)
 - `transport::Any`: the transport to deliver over (`Transport`; typed `Any` to avoid
   include-order coupling)
+- `task_principal::Union{String,Nothing}`: the listen requestor's extension-task
+  principal, re-checked at every `notifications/tasks` delivery
+- `task_scopes::Set{String}`: the listen requestor's token scopes, re-checked
+  against the task's `required_scopes` at every `notifications/tasks` delivery —
+  a task whose authorization requirements changed after the listen must not keep
+  leaking status to a stream that could no longer `tasks/get` it
 """
 struct SubscriptionRecord
     id::Union{String,Int}
     filter::SubscriptionFilter
     route::Any
     transport::Any
+    task_principal::Union{String,Nothing}
+    task_scopes::Set{String}
 end
+SubscriptionRecord(id, filter, route, transport) =
+    SubscriptionRecord(id, filter, route, transport, nothing, Set{String}())
 
 """
     SubscriptionRegistry()
