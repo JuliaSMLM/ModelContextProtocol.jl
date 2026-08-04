@@ -1012,8 +1012,8 @@ confirming_tool = MCPTool(
   `working`); not-outstanding keys are ignored; `tasks/cancel` unblocks the waiter
   by throwing `TaskCancelledException` into the handler; requires the creating
   request to have declared the matching client capability (e.g. `elicitation`);
-  request params are frozen at registration (immutable snapshot, must be
-  JSON-serializable); a task whose ttl elapses while parked is failed and drained
+  request params are frozen at registration (owned plain-JSON snapshot; exotic
+  values are rejected); a task whose ttl elapses while parked is failed and drained
 - Extension tasks and legacy (SEP-1686) tasks live in era-isolated stores; on HTTP,
   `Mcp-Name` must mirror `params.taskId` for `tasks/*` requests
 

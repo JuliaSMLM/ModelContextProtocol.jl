@@ -258,10 +258,13 @@ expired task still parked on client input and unwinds its waiters, so abandoned
 tasks cannot pin handler state forever. To distinguish expiry from a client
 cancel, check `task_cancelled(ctx)` — `true` only for the latter.
 
-The registered requests are frozen: each request's params are snapshotted to an
-owned immutable value at registration, so a key's content can never change
-across polls (the spec's key-stability rule) and the capability check binds to
-exactly what will be surfaced. Params must therefore be JSON-serializable.
+The registered requests are frozen: each request's params are normalized into
+an owned plain-JSON snapshot at registration, so a key's content can never
+change across polls (the spec's key-stability rule) and the capability check
+binds to exactly what will be surfaced. Params must therefore be plain JSON
+data — nested dicts/vectors/tuples/sets of strings, numbers, booleans, and
+`nothing` (what `elicit_request` and friends naturally produce); anything else
+is rejected with an `ArgumentError`.
 
 Before detachment there is no `inputRequests` surface: a handler that needs input
 to DECIDE (e.g. whether to proceed at all) returns [`InputRequired`](@ref) for
@@ -278,26 +281,51 @@ the MRTR round on the original request instead.
 task_await_input(ctx::RequestContext, request::InputRequest) =
     first(task_await_input(ctx, InputRequest[request]))
 
+# Closed-world freeze of a JSON value: only plain JSON data is accepted, and
+# the result is an OWNED value sharing no mutable state with the input —
+# containers rebuilt, strings copied, big numbers duplicated, everything else
+# rejected. Deliberately a whitelist rather than deepcopy: Base documents
+# deepcopy passing some mutable types through by identity (e.g. Regex), and
+# custom types can specialize deepcopy_internal the same way — a closed set has
+# no such loophole. Numeric fidelity is exact (a JSON round-trip would reparse
+# an integer beyond Int64, e.g. 10^30 in a schema `const`, as a lossy Float64).
+function _frozen_json(x)
+    if x === nothing || x === missing || x isa Bool
+        x
+    elseif x isa AbstractString
+        String(x)  # owned immutable copy (AbstractString subtypes may be mutable)
+    elseif x isa Union{Symbol,AbstractChar}
+        string(x)  # JSON3 serializes these as strings; normalize up front
+    elseif x isa Union{BigInt,BigFloat}
+        deepcopy(x)  # mutable GMP/MPFR backing; Base owns this deepcopy
+    elseif x isa Real
+        isbits(x) ? x : throw(ArgumentError(
+            "input request params must be plain JSON data; got $(typeof(x))"))
+    elseif x isa Union{AbstractDict,NamedTuple}
+        out = LittleDict{String,Any}()
+        for (k, v) in pairs(x)
+            out[string(k)] = _frozen_json(v)
+        end
+        out
+    elseif x isa Union{AbstractVector,Tuple,AbstractSet}
+        Any[_frozen_json(v) for v in x]
+    else
+        throw(ArgumentError(
+            "input request params must be plain JSON data (dicts, vectors, " *
+            "strings, numbers, booleans); got $(typeof(x))"))
+    end
+end
+
 # An owned snapshot of an input request: a caller-held reference to mutable
 # params must not be able to change what a registered key describes on later
 # polls (spec key-stability), nor to escalate a request past the capability
 # check after it ran (e.g. adding sampling `tools` post-validation). The
-# up-front serialization proves wire-serializability (and acyclicity) — better
-# a clear error here than a broken tasks/get later. The snapshot is a deepcopy:
-# it severs EVERY alias whatever the value's shape (Sets, Refs, NamedTuple
-# fields, BigInt's mutable GMP backing — a structural rebuild of just
-# dicts/vectors would carry all of those by reference) while preserving numeric
-# types exactly, where a JSON round-trip would reparse an integer beyond Int64
-# (e.g. 10^30 in a schema `const`) as a lossy Float64.
+# closed-world freeze IS the validation: its output is plain owned JSON data,
+# so it serializes cleanly on every later tasks/get — and a rejected value
+# fails here with a clear error instead of a broken poll later.
 function _frozen_input_request(r::InputRequest)::InputRequest
     r.params === nothing && return r
-    try
-        JSON3.write(r.params)
-    catch e
-        throw(ArgumentError(safe_error_message(
-            "input request params must be JSON-serializable", e)))
-    end
-    InputRequest(r.method, deepcopy(r.params))
+    InputRequest(r.method, _frozen_json(r.params))
 end
 
 function task_await_input(ctx::RequestContext,

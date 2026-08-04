@@ -62,12 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cancelled status — and an input request whose capability the creating
   request did not declare is refused (the await throws, failing the task, since
   a server must not surface requests the client cannot handle). Registered
-  requests are **frozen**: params are deep-copied at registration — severing
-  every alias whatever the value's shape, with numeric fidelity (an integer
-  beyond Int64 in a schema `const` survives exactly) — so a caller-held
-  reference can neither repurpose a key's content across polls (the spec's
-  key-stability rule) nor escalate a request past the already-run capability
-  check (e.g. adding sampling `tools` afterwards). A task whose ttl elapses
+  requests are **frozen**: params are normalized into an owned plain-JSON
+  snapshot at registration (a closed whitelist — containers rebuilt, strings
+  copied, big numbers duplicated, anything exotic rejected with a clear error;
+  numeric fidelity is exact, an integer beyond Int64 in a schema `const`
+  survives) — so a caller-held reference can neither repurpose a key's content
+  across polls (the spec's key-stability rule) nor escalate a request past the
+  already-run capability check (e.g. adding sampling `tools` afterwards). A task whose ttl elapses
   while parked on client input is **failed and drained by a clock-driven
   per-wait deadline timer** (interval-retried past the wall-clock boundary,
   with the store sweep as backstop) — abandoned parked tasks cannot pin their
