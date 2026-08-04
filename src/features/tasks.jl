@@ -188,15 +188,34 @@ end
 """
     sweep_expired!(store::TaskStore) -> Nothing
 
-Delete terminal task records whose ttl has elapsed. Non-terminal records are retained
-even past their ttl (the spec permits but does not require deleting those, and their
-background work may still be running). Caller must hold `store.lock`.
+Delete terminal task records whose ttl has elapsed, and fail expired
+extension-era tasks still parked in `input_required`: a task past its ttl that is
+waiting on CLIENT input is abandoned — the client the server is waiting on can no
+longer use the result — so it is terminalized (status `failed`, error inlined)
+and its pending inputs drained, unwinding the blocked `task_await_input` waiter.
+Without this, an abandoned parked task would pin its spawned handler, channels,
+and request params forever (the terminal-only delete would never reach it). Other
+non-terminal records are retained past their ttl (the spec permits but does not
+require deleting those, and their background work may still be running). Caller
+must hold `store.lock`.
 """
 function sweep_expired!(store::TaskStore)
     now_utc = Dates.now(Dates.UTC)
     for (id, record) in store.tasks
-        if task_is_terminal(record) && task_is_expired(record, now_utc)
-            delete!(store.tasks, id)
+        if task_is_terminal(record)
+            task_is_expired(record, now_utc) && delete!(store.tasks, id)
+        elseif record.era === :ext && record.status == "input_required" &&
+               task_is_expired(record, now_utc)
+            record.error = ErrorInfo(
+                code = ErrorCodes.INTERNAL_ERROR,
+                message = "Task expired while awaiting client input")
+            record.status = "failed"
+            record.status_message = "The task expired while awaiting client input."
+            record.last_updated_at = now_utc
+            drain_pending_inputs!(record)
+            notify(record.done)
+            # Deleted by a LATER sweep (now terminal + expired): the client gets
+            # one observable "failed" poll before the record disappears
         end
     end
     nothing

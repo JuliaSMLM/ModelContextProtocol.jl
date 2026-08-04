@@ -61,7 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exported `TaskCancelledException`, and its discarded outcome never overwrites
   the cancelled status — and an input request whose capability the creating
   request did not declare is refused (the await throws, failing the task, since
-  a server must not surface requests the client cannot handle). Conformance:
+  a server must not surface requests the client cannot handle). Registered
+  requests are **frozen**: params are snapshotted to an owned immutable value at
+  registration, so a caller-held reference can neither repurpose a key's content
+  across polls (the spec's key-stability rule) nor escalate a request past the
+  already-run capability check (e.g. adding sampling `tools` afterwards). A task
+  whose ttl elapses while parked on client input is **failed and drained** by
+  the store sweep (one observable `failed` poll, then expiry) — abandoned parked
+  tasks cannot pin their spawned handler, channels, and params indefinitely,
+  while `working` tasks keep the existing retained-past-ttl behavior since their
+  background work may still be running. Conformance:
   the `tasks-mrtr-input` and `tasks-mrtr-composition` scenarios and the
   dispatch suite's parked-elicitation check now pass all substantive checks
   (fixtures `confirm_delete`, `multi_input`, `test_tool_with_task`).

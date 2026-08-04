@@ -743,6 +743,82 @@ _ext_tools() = [
         @test occursin("task_detach", resp["error"]["message"])
     end
 
+    @testset "mid-task input: registered requests are frozen (Codex r1 B1)" begin
+        shared_schema = Dict{String,Any}("type" => "object",
+            "properties" => Dict{String,Any}("ok" => Dict{String,Any}("type" => "boolean")))
+        shared_sampling = Dict{String,Any}("messages" => Any[], "maxTokens" => 8)
+        freezer = MCPTool(name="freezer", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx)
+                task_await_input(ctx, [
+                    elicit_request("Approve?"; requested_schema=shared_schema),
+                    sampling_request(shared_sampling),
+                ])
+                TextContent(text="froze")
+            end)
+        server, state, buf = _ext_test_server(tools=[freezer])
+        caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "sampling" => Dict{String,Any}(),  # plain: tools subfeature NOT declared
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+        @test _ext_call(server, state, "freezer"; caps=caps, id=261) === nothing
+        tid = _ext_deferred_response(buf, 261)["result"]["taskId"]
+        @test _ext_wait_for(() -> length(get(_ext_get(server, state, tid)["result"],
+                                             "inputRequests", Dict())) == 2)
+
+        # Post-registration mutation of the caller's params must not reach the
+        # surfaced snapshot: a key can never be repurposed across polls, and a
+        # sampling request can never grow `tools` past the capability check
+        shared_schema["properties"]["evil"] = Dict{String,Any}("type" => "string")
+        shared_sampling["tools"] = Any[Dict{String,Any}("name" => "t")]
+        vals = collect(values(_ext_get(server, state, tid)["result"]["inputRequests"]))
+        elicit_entry = first(v for v in vals if v["method"] == "elicitation/create")
+        sampling_entry = first(v for v in vals if v["method"] == "sampling/createMessage")
+        @test !haskey(elicit_entry["params"]["requestedSchema"]["properties"], :evil)
+        @test haskey(elicit_entry["params"]["requestedSchema"]["properties"], :ok)
+        @test !haskey(sampling_entry["params"], :tools)
+        _ext_cancel(server, state, tid)
+    end
+
+    @testset "mid-task input: expired parked task fails and unblocks (Codex r1 W1)" begin
+        parked = MCPTool(name="parked", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx; ttl_ms=500)
+                task_await_input(ctx, elicit_request("Anyone there?"))
+                TextContent(text="answered")
+            end)
+        server, state, buf = _ext_test_server(tools=[parked])
+        elicit_caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+        @test _ext_call(server, state, "parked"; caps=elicit_caps, id=271) === nothing
+        tid = _ext_deferred_response(buf, 271)["result"]["taskId"]
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "input_required")
+
+        # ttl elapses while parked on client input: the next poll's sweep fails the
+        # task (one observable poll), drains the waiter, then the record expires away
+        sleep(0.7)
+        g = _ext_get(server, state, tid)
+        @test g["result"]["status"] == "failed"
+        @test occursin("expired", g["result"]["error"]["message"])
+        @test !haskey(g["result"], "inputRequests")
+        @test _ext_get(server, state, tid)["error"]["code"] == -32602
+    end
+
+    @testset "mid-task input: cancellation beats validation (Codex r1 N1)" begin
+        server, _, _ = _ext_test_server()
+        rec = create_task!(server.tasks, "tools/call"; era=:ext)
+        cancel_task!(server.tasks, rec)
+        # Undeclared capability (roots) on an already-cancelled task: the handler
+        # must see the cancellation, not a validation error that skips its
+        # cancellation-specific cleanup
+        ctx = RequestContext(server=server, request_id=1, protocol_version="2026-07-28",
+                             client_capabilities=_EXT_CAPS, task=rec)
+        @test_throws TaskCancelledException task_await_input(ctx, roots_request())
+    end
+
     @testset "Mcp-Name routing header mirrors taskId (SEP-2243)" begin
         body = """{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"taskId":"abc-123","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"""
         msg = JSON3.read(body)

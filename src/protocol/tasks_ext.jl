@@ -249,8 +249,15 @@ NOT send input requests the creating request's client capabilities did not
 declare, so an undeclared capability throws (failing the task).
 
 Throws [`TaskCancelledException`](@ref) when the task is cancelled while (or
-before) waiting. There is no timeout: an unanswered request blocks until the
-client answers or cancels — bound handler-side if needed.
+before) waiting. An unanswered request blocks until the client answers or
+cancels, or until the task's ttl elapses — an expired task still parked on
+client input is failed and its waiters unwound, so abandoned tasks cannot pin
+handler state forever.
+
+The registered requests are frozen: each request's params are snapshotted to an
+owned immutable value at registration, so a key's content can never change
+across polls (the spec's key-stability rule) and the capability check binds to
+exactly what will be surfaced. Params must therefore be JSON-serializable.
 
 Before detachment there is no `inputRequests` surface: a handler that needs input
 to DECIDE (e.g. whether to proceed at all) returns [`InputRequired`](@ref) for
@@ -267,6 +274,23 @@ the MRTR round on the original request instead.
 task_await_input(ctx::RequestContext, request::InputRequest) =
     first(task_await_input(ctx, InputRequest[request]))
 
+# An owned, IMMUTABLE snapshot of an input request: a caller-held reference to
+# mutable params must not be able to change what a registered key describes on
+# later polls (spec key-stability), nor to escalate a request past the capability
+# check after it ran (e.g. adding sampling `tools` post-validation). JSON3 values
+# are read-only views, and the round-trip also proves wire-serializability up
+# front — better a clear error here than a broken tasks/get later.
+function _frozen_input_request(r::InputRequest)::InputRequest
+    r.params === nothing && return r
+    frozen = try
+        JSON3.read(JSON3.write(r.params))
+    catch e
+        throw(ArgumentError(safe_error_message(
+            "input request params must be JSON-serializable", e)))
+    end
+    InputRequest(r.method, frozen)
+end
+
 function task_await_input(ctx::RequestContext,
                           requests::AbstractVector{InputRequest})::Vector{Any}
     record = ctx.task
@@ -274,15 +298,25 @@ function task_await_input(ctx::RequestContext,
         "task_await_input requires a detached extension-era task — call task_detach(ctx) first " *
         "(before detachment, return InputRequired for the MRTR round on the original request)"))
     isempty(requests) && return Any[]
-    for r in requests
+    store = ctx.server.tasks
+    # Terminal check BEFORE validation: an already-cancelled task must surface as
+    # TaskCancelledException whatever the handler asks for next, so cancellation-
+    # specific cleanup paths are never skipped for a validation error
+    lock(store.lock) do
+        task_is_terminal(record) && throw(TaskCancelledException())
+    end
+    # Freeze first, then validate THE SNAPSHOT — the checked params and the
+    # surfaced params must be the same object
+    frozen = InputRequest[_frozen_input_request(r) for r in requests]
+    for r in frozen
         capability_satisfied(ctx.client_capabilities, r) || throw(ArgumentError(
             "client did not declare the capability required for $(r.method) input requests"))
     end
-    store = ctx.server.tasks
     entries = PendingTaskInput[]
     lock(store.lock) do
+        # Recheck: cancellation may have landed during freezing/validation
         task_is_terminal(record) && throw(TaskCancelledException())
-        for r in requests
+        for r in frozen
             record.input_key_counter += 1
             pending = PendingTaskInput(r.method, r.params, Channel{Any}(1))
             record.pending_inputs["input-$(record.input_key_counter)"] = pending
