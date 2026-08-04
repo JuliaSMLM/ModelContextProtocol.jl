@@ -191,6 +191,82 @@ const _CMP_MODERN_META = Dict{String,Any}(
         @test rn["error"]["code"] == -32601
     end
 
+    @testset "legacy malformed params are -32602, not internal (Codex r1 W1)" begin
+        server, state = _cmp_server()
+        _cmp_init(server, state)
+        for params in (
+            Dict{String,Any}("ref" => Dict("type" => "ref/prompt", "name" => "cities")),  # no argument
+            Dict{String,Any}("ref" => "not-an-object",
+                             "argument" => Dict("name" => "city", "value" => "")),
+            Dict{String,Any}("ref" => Dict("type" => "ref/prompt", "name" => "cities"),
+                             "argument" => 5),
+        )
+            r = _cmp_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => 21,
+                "method" => "completion/complete", "params" => params))
+            @test r["error"]["code"] == -32602
+        end
+    end
+
+    @testset "context.arguments is validated as an object of strings (Codex r1 W2)" begin
+        typed = MCPPrompt(name = "typed", description = "d",
+            arguments = [PromptArgument(name = "a", required = false)],
+            messages = [PromptMessage(content = TextContent(text = "a"))],
+            completions = Dict{String,Any}(
+                # A strictly typed two-argument source must be applicable once
+                # the context is normalized to Dict{String,String}
+                "a" => (value, context::Dict{String,String}) -> ["$(context["prev"])-$(value)"]))
+        server = mcp_server(name = "ctx-test", version = "0.0.1",
+                            prompts = [typed])
+        server.transport = StdioTransport(input = IOBuffer(), output = IOBuffer())
+        state = ServerState()
+        _cmp_init(server, state)
+
+        ok = _cmp_complete(server, state, Dict("type" => "ref/prompt", "name" => "typed");
+                           name = "a", value = "x",
+                           context = Dict("arguments" => Dict("prev" => "p")))
+        @test ok["result"]["completion"]["values"] == ["p-x"]
+
+        # Mistyped contexts are the client's error
+        for ctx in (Dict("arguments" => 1),
+                    Dict("arguments" => Dict("prev" => 5)),
+                    Dict("arguments" => ["a"]))
+            r = _cmp_complete(server, state, Dict("type" => "ref/prompt", "name" => "typed");
+                              name = "a", value = "x", context = ctx, id = 31)
+            @test r["error"]["code"] == -32602
+        end
+    end
+
+    @testset "misconfigured sources fail loudly, never coerce (Codex r1 N1)" begin
+        bad = [
+            MCPPrompt(name = "lone", description = "d",
+                arguments = [PromptArgument(name = "a", required = false)],
+                messages = [PromptMessage(content = TextContent(text = "a"))],
+                completions = Dict{String,Any}("a" => v -> "single-string")),
+            MCPPrompt(name = "nonstr", description = "d",
+                arguments = [PromptArgument(name = "a", required = false)],
+                messages = [PromptMessage(content = TextContent(text = "a"))],
+                completions = Dict{String,Any}("a" => v -> [42])),
+            MCPPrompt(name = "static_nonstr", description = "d",
+                arguments = [PromptArgument(name = "a", required = false)],
+                messages = [PromptMessage(content = TextContent(text = "a"))],
+                completions = Dict{String,Any}("a" => Any["ok", 42])),
+            MCPPrompt(name = "scalar_src", description = "d",
+                arguments = [PromptArgument(name = "a", required = false)],
+                messages = [PromptMessage(content = TextContent(text = "a"))],
+                completions = Dict{String,Any}("a" => "not-a-vector")),
+        ]
+        server = mcp_server(name = "badsrc-test", version = "0.0.1", prompts = bad)
+        server.transport = StdioTransport(input = IOBuffer(), output = IOBuffer())
+        state = ServerState()
+        _cmp_init(server, state)
+        for prompt in ("lone", "nonstr", "static_nonstr", "scalar_src")
+            r = _cmp_complete(server, state, Dict("type" => "ref/prompt", "name" => prompt);
+                              name = "a", value = "")
+            @test r["error"]["code"] == -32603
+            @test occursin("completion source", r["error"]["message"])
+        end
+    end
+
     @testset "throwing completion source fails cleanly" begin
         boom = MCPPrompt(name = "boom", description = "d",
             arguments = [PromptArgument(name = "a", required = false)],

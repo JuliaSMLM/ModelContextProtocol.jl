@@ -234,17 +234,17 @@ function parse_request(raw::JSON3.Object)::Request
             catch
                 nothing
             end
-        elseif protocol_version !== nothing
-            # Modern-era request: typed-param failures must not abort parsing with
-            # a raw exception — the era handler owns validation and answers -32601
-            # (method removed) or -32602 (invalid params) as appropriate
+        else
+            # Typed-param failures must not abort parsing with a raw exception —
+            # era dispatch owns validation: modern answers -32601 (method removed)
+            # or -32602 (invalid params), and legacy methods with isa guards
+            # (completion/complete) answer -32602, while the legacy hard-assert
+            # methods keep their existing internal-error classification
             try
                 StructTypes.constructfrom(params_type, raw.params)
             catch
                 nothing
             end
-        else
-            StructTypes.constructfrom(params_type, raw.params)
         end
     else
         nothing

@@ -92,7 +92,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   / `(value, context_args) -> values` receiving the request context's
   already-resolved arguments; components without sources serve empty
   suggestion lists. Responses cap `values` at the spec's 100 with `total` and
-  `hasMore`; unknown ref types, prompt names, or template URIs are `-32602`.
+  `hasMore`; unknown ref types, prompt names, or template URIs are `-32602`, as
+  are malformed params in EITHER era and a `context.arguments` that is not the
+  schema's object-of-strings (validated and normalized to `Dict{String,String}`
+  before source dispatch, so strictly typed two-argument sources work);
+  misconfigured sources — non-vector values, non-string elements, a function
+  returning a lone string — fail loudly with `-32603` naming the cause instead
+  of silently coercing.
   The new `CompletionCapability` (in the defaults) advertises `completions` in
   the legacy initialize response and in `server/discover`, and gates the
   modern-era method surface. This clears the last modern-dated conformance

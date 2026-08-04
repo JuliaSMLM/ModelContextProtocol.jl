@@ -637,34 +637,51 @@ end
 const COMPLETION_MAX_VALUES = 100
 
 """
-    completion_values(sources, arg_name::String, value::String, context) -> Vector{String}
+    completion_values(sources, arg_name::String, value::String,
+                      context_args::Union{Nothing,Dict{String,String}}) -> Vector{String}
 
 Resolve the suggestion list for one completion request from a component's
 `completions` sources: a `Vector` source is served filtered by prefix against the
 partial `value`; a `Function` source is called as `f(value)` — or
 `f(value, context_args)` when applicable, where `context_args` is the request
-context's `arguments` entry (already-resolved argument values) or `nothing`.
-Missing sources (or a component without any) resolve to no suggestions.
+context's validated `arguments` map (already-resolved argument values) or
+`nothing`. Missing sources (or a component without any) resolve to no
+suggestions. Source misconfiguration — a non-Vector/non-Function source, a
+non-string element, or a function returning a lone string or non-strings —
+throws `ArgumentError` (surfaced by the handler as an internal error naming the
+cause) rather than silently coercing.
 
 # Arguments
 - `sources`: The component's `completions` field (a Dict or `nothing`)
 - `arg_name::String`: The argument (or template variable) being completed
 - `value::String`: The partial value typed so far
-- `context`: The request's optional `context` object
+- `context_args`: The request context's validated `arguments`, or `nothing`
 
 # Returns
 - `Vector{String}`: The full (uncapped) suggestion list
 """
-function completion_values(sources, arg_name::String, value::String, context)::Vector{String}
+function completion_values(sources, arg_name::String, value::String,
+                           context_args::Union{Nothing,Dict{String,String}})::Vector{String}
+    _completion_string(v) = v isa AbstractString ? String(v) : throw(ArgumentError(
+        "completion source for '$(arg_name)' must produce strings; got $(typeof(v))"))
     sources isa AbstractDict || return String[]
     source = get(sources, arg_name, nothing)
     source === nothing && return String[]
     if source isa Function
-        context_args = context isa AbstractDict ? get(context, "arguments", nothing) : nothing
         raw = applicable(source, value, context_args) ? source(value, context_args) : source(value)
-        return String[string(v) for v in raw]
+        # A lone string is almost certainly a bug (it would iterate as characters)
+        raw isa AbstractString && throw(ArgumentError(
+            "completion source for '$(arg_name)' returned a single string; return a collection of strings"))
+        return String[_completion_string(v) for v in raw]
     end
-    String[string(v) for v in source if startswith(string(v), value)]
+    source isa AbstractVector || throw(ArgumentError(
+        "completion source for '$(arg_name)' must be a Vector of strings or a function; got $(typeof(source))"))
+    values = String[]
+    for v in source
+        s = _completion_string(v)
+        startswith(s, value) && push!(values, s)
+    end
+    values
 end
 
 """
@@ -675,7 +692,8 @@ Handle a `completion/complete` request: suggest values for a prompt argument
 (`ref/resource`, resolved by URI template). Suggestions come from the matched
 component's `completions` sources (see `completion_values`); the response caps
 `values` at the spec's 100, reporting the full count as `total` and `hasMore`
-accordingly. An unknown ref type, prompt name, or template URI is -32602.
+accordingly. An unknown ref type, prompt name, or template URI is -32602, as is
+a `context.arguments` that is not an object of strings (the schema's shape).
 """
 function handle_complete(ctx::RequestContext, params::CompleteParams)::HandlerResult
     invalid(msg) = HandlerResult(error=ErrorInfo(code=ErrorCodes.INVALID_PARAMS, message=msg))
@@ -692,8 +710,27 @@ function handle_complete(ctx::RequestContext, params::CompleteParams)::HandlerRe
     else
         return invalid("Unknown completion ref type: $(params.ref.type)")
     end
+    # context.arguments is schema-typed as an object of STRINGS (the already-
+    # resolved argument values): validate and normalize before source dispatch,
+    # so typed `(value, context::Dict{String,String})` sources are applicable
+    # and a mistyped context is the client's error, not a source failure
+    context_args = nothing
+    if params.context !== nothing
+        raw_args = get(params.context, "arguments", nothing)
+        if raw_args !== nothing
+            raw_args isa AbstractDict ||
+                return invalid("context.arguments must be an object of strings")
+            args = Dict{String,String}()
+            for (k, v) in pairs(raw_args)
+                v isa AbstractString ||
+                    return invalid("context.arguments must be an object of strings")
+                args[String(k)] = String(v)
+            end
+            context_args = args
+        end
+    end
     all_values = try
-        completion_values(sources, params.argument.name, params.argument.value, params.context)
+        completion_values(sources, params.argument.name, params.argument.value, context_args)
     catch e
         return HandlerResult(error=ErrorInfo(
             code=ErrorCodes.INTERNAL_ERROR,
@@ -1680,7 +1717,15 @@ function handle_request(server::Server, state::ServerState, request::Request;
             elseif request.method == "prompts/get"
                 handle_get_prompt(ctx, request.params::GetPromptParams)
             elseif request.method == "completion/complete"
-                handle_complete(ctx, request.params::CompleteParams)
+                # isa guard, not a hard assert: malformed params are the CLIENT's
+                # error (-32602), never an internal one
+                if request.params isa CompleteParams
+                    handle_complete(ctx, request.params)
+                else
+                    HandlerResult(error=ErrorInfo(
+                        code=ErrorCodes.INVALID_PARAMS,
+                        message="Invalid params for completion/complete"))
+                end
             elseif request.method == "logging/setLevel"
                 handle_set_level(ctx, request.params::SetLevelParams)
             elseif request.method == "tasks/get"
