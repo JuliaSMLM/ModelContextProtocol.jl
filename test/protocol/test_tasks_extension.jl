@@ -1061,6 +1061,14 @@ _ext_tools() = [
         ModelContextProtocol.ensure_task_notifications!(server)
         @test server.task_notification_queue !== q1
         @test isopen(server.task_notification_queue)
+
+        # Generational teardown: an old run's shutdown closes only ITS queue — a
+        # fresh queue installed by an overlapping restart must survive it
+        old_q = server.task_notification_queue
+        ModelContextProtocol.install_task_notifications!(server)  # the "new run"
+        new_q = server.task_notification_queue
+        Base.close(old_q)  # the old run's generation-local finally
+        @test isopen(new_q)
     end
 
     @testset "dead routes cannot pin listen capacity (Codex r2 B1)" begin

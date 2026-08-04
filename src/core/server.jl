@@ -284,11 +284,15 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
 
     @info "Starting MCP server: $(server.config.name)"
 
+    task_queue = nothing
     try
         server.active = true
         # A restart after stop! (or a previous loop exit) needs a fresh
-        # notifications/tasks dispatcher — its queue was closed on shutdown
+        # notifications/tasks dispatcher — its queue was closed on shutdown.
+        # THIS run's queue is captured locally: the finally must close its own
+        # generation only, never a fresh queue an overlapping restart installed.
         ensure_task_notifications!(server)
+        task_queue = server.task_notification_queue
         run_server_loop(server, state)
     catch e
         server.active = false
@@ -305,12 +309,12 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
         catch e
             @debug "Error closing subscription streams" error=e
         end
-        # End the notifications/tasks dispatcher on EVERY loop exit (EOF included,
-        # where stop! never runs): a parked dispatcher would otherwise retain the
-        # server past its lifetime
-        if server.task_notification_queue !== nothing
-            Base.close(server.task_notification_queue)
-        end
+        # End THIS run's notifications/tasks dispatcher on EVERY loop exit (EOF
+        # included, where stop! never runs): a parked dispatcher would otherwise
+        # retain the server past its lifetime. Generation-local on purpose — an
+        # overlapping stop!/start! may already run a fresh queue, which this
+        # run's teardown must not touch.
+        task_queue === nothing || Base.close(task_queue)
         close(server.transport)
         @info "Server stopped"
     end
