@@ -253,7 +253,11 @@ function mcp_server(;
     
     # Create server
     server = Server(config; mrtr_state_key = mrtr_state_key)
-    
+
+    # Tasks extension: broadcast notifications/tasks on status transitions to
+    # subscribed listen streams (a no-op until a stream subscribes taskIds)
+    install_task_notifications!(server)
+
     # Register tools if provided
     if !isnothing(tools)
         foreach(t -> register!(server, t), tools isa Vector ? tools : [tools])

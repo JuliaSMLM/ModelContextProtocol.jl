@@ -76,6 +76,13 @@ function handle_subscriptions_listen(ctx::RequestContext,
         )
     )
 
+    # Task status subscriptions belong to the tasks extension: a client that
+    # requests taskIds without declaring it gets the extension's -32021 (spec
+    # MUST), before any stream is established
+    if !isempty(requested.task_ids) && !tasks_extension_declared(ctx.client_capabilities)
+        return HandlerResult(error = tasks_extension_required_error())
+    end
+
     # Honor only what this server can actually deliver: list-changed types require
     # the corresponding capability, resource subscriptions require resources.subscribe
     caps = ctx.server.config.capabilities
@@ -83,11 +90,22 @@ function handle_subscriptions_listen(ctx::RequestContext,
     prompt_lc = any(c -> c isa PromptCapability && c.list_changed, caps)
     res_lc = any(c -> c isa ResourceCapability && c.list_changed, caps)
     res_sub = any(c -> c isa ResourceCapability && c.subscribe, caps)
+    # Agree only to task ids this requestor could tasks/get RIGHT NOW: same
+    # principal, extension era, and per-request scope re-authorization — an
+    # unknown or foreign id is silently omitted from the acknowledged set, so
+    # subscription probing leaks nothing a tasks/get poll would not
+    honored_task_ids = Set{String}()
+    for tid in requested.task_ids
+        record = get_task(ctx.server.tasks, tid, ext_task_principal(ctx); era = :ext)
+        (record === nothing || !ext_task_authorized(ctx, record)) && continue
+        push!(honored_task_ids, tid)
+    end
     honored = SubscriptionFilter(
         tools_list_changed = requested.tools_list_changed && tool_lc,
         prompts_list_changed = requested.prompts_list_changed && prompt_lc,
         resources_list_changed = requested.resources_list_changed && res_lc,
-        resource_uris = res_sub ? requested.resource_uris : Set{String}()
+        resource_uris = res_sub ? requested.resource_uris : Set{String}(),
+        task_ids = honored_task_ids
     )
 
     sub_id = ctx.request_id
@@ -167,7 +185,8 @@ end
 """
     broadcast_subscription_notification(server::Server, method::String;
                                         params::AbstractDict=LittleDict{String,Any}(),
-                                        uri::Union{String,Nothing}=nothing) -> Int
+                                        uri::Union{String,Nothing}=nothing,
+                                        task_id::Union{String,Nothing}=nothing) -> Int
 
 Deliver a notification to every `subscriptions/listen` stream that opted into it,
 tagged with each stream's own subscription id. Every record — not just the filter
@@ -184,20 +203,22 @@ graceful closure; see the `SubscriptionRegistry` docstring for the lock ordering
 - `method::String`: The notification method
 - `params::AbstractDict`: Additional notification params
 - `uri::Union{String,Nothing}`: For `notifications/resources/updated`, the resource URI
+- `task_id::Union{String,Nothing}`: For `notifications/tasks`, the task id
 
 # Returns
 - `Int`: How many streams received the notification
 """
 function broadcast_subscription_notification(server::Server, method::String;
                                              params::AbstractDict = LittleDict{String,Any}(),
-                                             uri::Union{String,Nothing} = nothing)::Int
+                                             uri::Union{String,Nothing} = nothing,
+                                             task_id::Union{String,Nothing} = nothing)::Int
     registry = server.listen_subscriptions
     lock(registry.lock) do
         delivered = 0
         kept = SubscriptionRecord[]
         for s in registry.subs
             alive = route_alive(s.transport, s.route)
-            if alive && filter_wants(s.filter, method, uri)
+            if alive && filter_wants(s.filter, method, uri, task_id)
                 payload = subscription_notification(method, params, s.id)
                 alive = deliver_notification(s.transport, s.route, payload)
                 alive && (delivered += 1)

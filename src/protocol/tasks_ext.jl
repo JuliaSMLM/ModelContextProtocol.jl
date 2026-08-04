@@ -374,6 +374,9 @@ function task_await_input(ctx::RequestContext,
             record.status_message = "Waiting for client input."
         end
         record.last_updated_at = Dates.now(Dates.UTC)
+        # Fired even for a second parallel registration (status already
+        # input_required): the observable inputRequests snapshot changed
+        _fire_status_change(store, record)
     end
     # Clock-driven ttl deadline: the store sweep only runs on LATER store
     # activity, so without this a parked task whose client vanished would pin
@@ -392,7 +395,7 @@ function task_await_input(ctx::RequestContext,
         deadline = Timer(max(remaining_ms, 0) / 1000; interval = 0.25) do t
             try
                 lock(store.lock) do
-                    expire_parked_input!(record, Dates.now(Dates.UTC)) ||
+                    expire_parked_input!(store, record, Dates.now(Dates.UTC)) ||
                         task_is_terminal(record)
                 end && Base.close(t)
             catch
@@ -418,6 +421,30 @@ function task_await_input(ctx::RequestContext,
         deadline === nothing || Base.close(deadline)
     end
     responses
+end
+
+"""
+    install_task_notifications!(server::Server) -> Nothing
+
+Wire the tasks extension's `notifications/tasks` status updates: install the
+store's status-change hook so every extension-era transition (parking on input,
+resuming, completing, failing, cancelling, expiring) broadcasts the task's
+complete DetailedTask — identical to what `tasks/get` would return at that
+moment — to the `subscriptions/listen` streams that subscribed to the task's id.
+Installed by `mcp_server`; the hook runs under the store lock (which
+`ext_task_wire` requires), safe against the subscription registry lock (the
+ordering store → registry → transport channels is never reversed).
+"""
+function install_task_notifications!(server::Server)
+    server.tasks.on_status_change[] = record -> begin
+        record.era === :ext || return nothing
+        wire = ext_task_wire(record; detailed = true)
+        broadcast_subscription_notification(server, "notifications/tasks";
+                                            params = wire,
+                                            task_id = record.task_id)
+        nothing
+    end
+    nothing
 end
 
 # End the current request's ModernRequestLogger scope from the worker task (the
@@ -683,6 +710,7 @@ function handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams)::
                 record.status_message = "The operation is now in progress."
             end
             record.last_updated_at = Dates.now(Dates.UTC)
+            _fire_status_change(store, record)
         end
     end
     HandlerResult(response = JSONRPCResponse(
