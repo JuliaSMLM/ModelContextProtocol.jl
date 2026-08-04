@@ -284,11 +284,21 @@ const _CMP_MODERN_META = Dict{String,Any}(
         end
     end
 
-    @testset "pre-completions positional constructor shapes still work (Codex r3 W1)" begin
+    @testset "pre-completions positional constructor shapes still work (Codex r3 W1 + r4 W1)" begin
         p = MCPPrompt("p", "d", PromptArgument[], PromptMessage[], nothing, nothing, nothing)
         @test p.completions === nothing
         t = ResourceTemplate("r", "u://{x}", nothing, "", nothing, nothing, nothing, nothing)
         @test t.completions === nothing
+
+        # The released constructors also CONVERTED — empty untyped vectors,
+        # SubString names, narrower dict types — so the shims must be generic
+        p2 = MCPPrompt("p", "d", [], [], nothing, nothing, nothing)
+        @test p2.arguments isa Vector{PromptArgument} && p2.completions === nothing
+        p3 = MCPPrompt(SubString("prompted", 1, 6), "d", PromptArgument[], PromptMessage[],
+                       nothing, nothing, Dict("x" => 1))
+        @test p3.name == "prompt" && p3._meta["x"] == 1
+        t2 = ResourceTemplate("r", "u://{x}", nothing, "", nothing, [], nothing, nothing)
+        @test t2.icons isa Vector{MCPIcon} && t2.completions === nothing
     end
 
     @testset "throwing completion source fails cleanly" begin
