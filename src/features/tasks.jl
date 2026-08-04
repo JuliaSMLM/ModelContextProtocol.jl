@@ -117,9 +117,11 @@ Thread-safe registry of server-side tasks.
   after every status transition, while the store lock is held (see
   `_fire_status_change`); installed for the tasks extension's
   `notifications/tasks`. `nothing` disables it
-- `notification_seq::Base.RefValue{Int}`: Monotone sequence stamped on every
-  enqueued status notification (incremented only under the store lock).
-  Subscriptions record the counter at registration and receive only
+- `notification_seq::Threads.Atomic{Int}`: Monotone sequence stamped on every
+  enqueued status notification. Atomic on purpose: it is written at transition
+  sites (under the store lock) but read for registration thresholds under the
+  unrelated registry lock — a plain `Ref` would be a data race on a threaded
+  runtime. Subscriptions record the counter at registration and receive only
   later-stamped events, so a queued-but-undrained backlog never replays older
   states to a freshly registered stream
 """
@@ -131,7 +133,7 @@ Base.@kwdef struct TaskStore
     poll_interval_ms::Int = TASK_POLL_INTERVAL_MS
     page_size::Int = TASKS_PAGE_SIZE
     on_status_change::Base.RefValue{Any} = Ref{Any}(nothing)
-    notification_seq::Base.RefValue{Int} = Ref(0)
+    notification_seq::Threads.Atomic{Int} = Threads.Atomic{Int}(0)
 end
 
 """

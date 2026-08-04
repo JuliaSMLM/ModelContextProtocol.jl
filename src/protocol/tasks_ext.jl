@@ -474,18 +474,25 @@ function install_task_notifications!(server::Server)
             end
         end
     end
-    server.tasks.on_status_change[] = record -> begin
-        record.era === :ext || return nothing
-        # Single producer (every call site holds the store lock), so neither the
-        # availability check nor the seq increment can race: the queue never
-        # blocks and the stamps are strictly ordered
-        Base.n_avail(queue) >= TASK_NOTIFICATION_QUEUE_CAP && return nothing
-        put!(queue, (server.tasks.notification_seq[] += 1,
-                     ext_task_wire(record; detailed = true),
-                     record.task_id,
-                     record.principal,
-                     copy(record.required_scopes)))
-        nothing
+    # The hook is READ at transition sites under the store lock, so its
+    # publication must happen under the same lock — a restart racing an old
+    # detached task's completion must never let that transition observe a
+    # half-published closure
+    lock(server.tasks.lock) do
+        server.tasks.on_status_change[] = record -> begin
+            record.era === :ext || return nothing
+            # Single producer (every call site holds the store lock), so the
+            # availability check cannot race another put!: the queue never
+            # blocks, and the atomic stamps are strictly ordered (atomic_add!
+            # returns the previous value)
+            Base.n_avail(queue) >= TASK_NOTIFICATION_QUEUE_CAP && return nothing
+            put!(queue, (Threads.atomic_add!(server.tasks.notification_seq, 1) + 1,
+                         ext_task_wire(record; detailed = true),
+                         record.task_id,
+                         record.principal,
+                         copy(record.required_scopes)))
+            nothing
+        end
     end
     nothing
 end
