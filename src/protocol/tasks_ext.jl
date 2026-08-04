@@ -120,9 +120,16 @@ function ext_task_wire(record::TaskRecord; detailed::Bool=false)::LittleDict{Str
             record.error.data !== nothing && (err["data"] = record.error.data)
             d["error"] = err
         elseif record.status == "input_required"
-            # Outstanding input requests (tasks/update flow) land here; until that
-            # flow exists no record can reach this status, but the shape is fixed
-            d["inputRequests"] = LittleDict{String,Any}()
+            # Point-in-time snapshot of ALL outstanding requests (the spec has the
+            # server re-include not-yet-answered entries on every poll; clients
+            # deduplicate by key)
+            reqs = LittleDict{String,Any}()
+            for (key, pending) in record.pending_inputs
+                entry = LittleDict{String,Any}("method" => pending.method)
+                pending.params === nothing || (entry["params"] = pending.params)
+                reqs[key] = entry
+            end
+            d["inputRequests"] = reqs
         end
     end
     d
@@ -206,6 +213,211 @@ function task_detach(ctx::RequestContext;
         st.create_delivered = true
         true
     end
+end
+
+"""
+    TaskCancelledException()
+
+Thrown by [`task_await_input`](@ref) when the task reaches a terminal state while
+the handler is waiting (or had already reached one when it asked) — cancelled by
+the client via `tasks/cancel`, or failed by the server because its ttl elapsed
+while parked on client input. Handlers that need to distinguish the two can check
+`task_cancelled(ctx)`, which is `true` only for a client cancellation. Catch it
+for cleanup; otherwise it unwinds the handler, whose discarded outcome never
+overwrites the terminal status.
+"""
+struct TaskCancelledException <: Exception end
+
+Base.showerror(io::IO, ::TaskCancelledException) =
+    print(io, "TaskCancelledException: the task was cancelled or expired while waiting for client input")
+
+"""
+    task_await_input(ctx, request::InputRequest) -> Any
+    task_await_input(ctx, requests::AbstractVector{InputRequest}) -> Vector{Any}
+
+Ask the client for input MID-TASK and block the handler until it answers (tasks
+extension, SEP-2663). Callable from a handler that has already detached via
+[`task_detach`](@ref): the request(s) are registered under server-minted keys
+(unique over the task's lifetime), the task's status flips to `input_required`,
+and `tasks/get` surfaces the outstanding requests in `inputRequests`. The client
+answers with `tasks/update` `inputResponses`; each response value is returned to
+the waiting handler (the vector form returns responses in request order, and only
+once ALL of them have arrived — a partial `tasks/update` is accepted, the task
+simply stays `input_required` until the rest arrive). Once nothing is pending the
+status returns to `working`.
+
+Build requests with [`elicit_request`](@ref), [`sampling_request`](@ref), or
+[`roots_request`](@ref) — the same constructors the MRTR flow uses. A server MUST
+NOT send input requests the creating request's client capabilities did not
+declare, so an undeclared capability throws (failing the task).
+
+Throws [`TaskCancelledException`](@ref) when the task goes terminal while (or
+before) waiting. An unanswered request blocks until the client answers or
+cancels, or until the task's ttl elapses — a per-wait deadline timer fails an
+expired task still parked on client input and unwinds its waiters, so abandoned
+tasks cannot pin handler state forever. To distinguish expiry from a client
+cancel, check `task_cancelled(ctx)` — `true` only for the latter.
+
+The registered requests are frozen: each request's params are normalized into
+an owned plain-JSON snapshot at registration, so a key's content can never
+change across polls (the spec's key-stability rule) and the capability check
+binds to exactly what will be surfaced. Params must therefore be plain JSON
+data — nested dicts/vectors/tuples/sets of strings, numbers, booleans, and
+`nothing` (what `elicit_request` and friends naturally produce); anything else
+is rejected with an `ArgumentError`.
+
+Before detachment there is no `inputRequests` surface: a handler that needs input
+to DECIDE (e.g. whether to proceed at all) returns [`InputRequired`](@ref) for
+the MRTR round on the original request instead.
+
+# Arguments
+- `ctx`: The request context passed to a ctx-aware handler
+- `request`/`requests`: The input request(s) to surface to the client
+
+# Returns
+- The client's response value (single form), or a `Vector{Any}` of response
+  values in request order (vector form)
+"""
+task_await_input(ctx::RequestContext, request::InputRequest) =
+    first(task_await_input(ctx, InputRequest[request]))
+
+# Closed-world freeze of a JSON value: only plain JSON data is accepted, and
+# the result is an OWNED value sharing no mutable state with the input —
+# containers rebuilt, strings snapshotted, big numbers duplicated, everything
+# else rejected. Deliberately a whitelist rather than deepcopy: Base documents
+# deepcopy passing some mutable types through by identity (e.g. Regex), and
+# custom types can specialize deepcopy_internal the same way — a closed set has
+# no such loophole. The scalar branches are equally closed: EXACT concrete
+# numeric types only (an accepted abstract Real could serialize differently on
+# every poll — a Ptr-backed isbits subtype demonstrates it), floats must be
+# finite (JSON3 rejects NaN/Inf, which would otherwise register a request no
+# tasks/get can ever serialize), and non-String strings are snapshotted through
+# OUR buffer (a custom subtype's String()/string() can return a byte-aliased
+# String). Numeric fidelity is exact (a JSON round-trip would reparse an
+# integer beyond Int64, e.g. 10^30 in a schema `const`, as a lossy Float64).
+function _frozen_json(x)
+    if x === nothing || x === missing || x isa Bool
+        x
+    elseif x isa String
+        x  # Julia's concrete String is immutable; identity is safe
+    elseif x isa Union{AbstractString,Symbol,AbstractChar}
+        sprint(print, x)  # one print into fresh storage fixes the value now
+    elseif x isa Union{Int8,Int16,Int32,Int64,Int128,UInt8,UInt16,UInt32,UInt64,UInt128}
+        x
+    elseif x isa Union{Float16,Float32,Float64,BigInt,BigFloat}
+        (x isa AbstractFloat && !isfinite(x)) && throw(ArgumentError(
+            "input request params must be finite numbers (JSON has no NaN/Inf); got $x"))
+        # BigInt/BigFloat have mutable GMP/MPFR backing; Base owns this deepcopy
+        x isa Union{BigInt,BigFloat} ? deepcopy(x) : x
+    elseif x isa Union{AbstractDict,NamedTuple}
+        out = LittleDict{String,Any}()
+        for (k, v) in pairs(x)
+            out[_frozen_json_key(k)] = _frozen_json(v)
+        end
+        out
+    elseif x isa Union{AbstractVector,Tuple,AbstractSet}
+        Any[_frozen_json(v) for v in x]
+    else
+        throw(ArgumentError(
+            "input request params must be plain JSON data (dicts, vectors, " *
+            "strings, numbers, booleans); got $(typeof(x))"))
+    end
+end
+
+_frozen_json_key(k) = k isa String ? k : sprint(print, k)
+
+# An owned snapshot of an input request: a caller-held reference to mutable
+# params must not be able to change what a registered key describes on later
+# polls (spec key-stability), nor to escalate a request past the capability
+# check after it ran (e.g. adding sampling `tools` post-validation). The
+# closed-world freeze IS the validation: its output is plain owned JSON data,
+# so it serializes cleanly on every later tasks/get — and a rejected value
+# fails here with a clear error instead of a broken poll later.
+function _frozen_input_request(r::InputRequest)::InputRequest
+    r.params === nothing && return r
+    InputRequest(r.method, _frozen_json(r.params))
+end
+
+function task_await_input(ctx::RequestContext,
+                          requests::AbstractVector{InputRequest})::Vector{Any}
+    record = ctx.task
+    (record === nothing || record.era !== :ext) && throw(ArgumentError(
+        "task_await_input requires a detached extension-era task — call task_detach(ctx) first " *
+        "(before detachment, return InputRequired for the MRTR round on the original request)"))
+    isempty(requests) && return Any[]
+    store = ctx.server.tasks
+    # Terminal check BEFORE validation: an already-cancelled task must surface as
+    # TaskCancelledException whatever the handler asks for next, so cancellation-
+    # specific cleanup paths are never skipped for a validation error
+    lock(store.lock) do
+        task_is_terminal(record) && throw(TaskCancelledException())
+    end
+    # Freeze first, then validate THE SNAPSHOT — the checked params and the
+    # surfaced params must be the same object
+    frozen = InputRequest[_frozen_input_request(r) for r in requests]
+    for r in frozen
+        capability_satisfied(ctx.client_capabilities, r) || throw(ArgumentError(
+            "client did not declare the capability required for $(r.method) input requests"))
+    end
+    entries = PendingTaskInput[]
+    lock(store.lock) do
+        # Recheck: cancellation may have landed during freezing/validation
+        task_is_terminal(record) && throw(TaskCancelledException())
+        for r in frozen
+            record.input_key_counter += 1
+            pending = PendingTaskInput(r.method, r.params, Channel{Any}(1))
+            record.pending_inputs["input-$(record.input_key_counter)"] = pending
+            push!(entries, pending)
+        end
+        if record.status == "working"
+            record.status = "input_required"
+            record.status_message = "Waiting for client input."
+        end
+        record.last_updated_at = Dates.now(Dates.UTC)
+    end
+    # Clock-driven ttl deadline: the store sweep only runs on LATER store
+    # activity, so without this a parked task whose client vanished would pin
+    # its spawned handler, channels, and params forever. The timer fires the
+    # same expiry transition the sweep applies (whichever runs first wins; both
+    # no-op on a task no longer parked), closing the channels below. It RETRIES
+    # on an interval rather than firing once: libuv timers run on the monotonic
+    # clock while task_is_expired compares millisecond wall-clock DateTimes with
+    # strict `>`, so a single fire can land at-or-before the boundary, no-op,
+    # and never come back (observed as a CI-only hang). The timer stops itself
+    # once the task is terminal, and the `finally` below covers delivery.
+    deadline = nothing
+    if record.ttl_ms !== nothing
+        remaining_ms = Dates.value(record.created_at + Millisecond(record.ttl_ms) -
+                                   Dates.now(Dates.UTC))
+        deadline = Timer(max(remaining_ms, 0) / 1000; interval = 0.25) do t
+            try
+                lock(store.lock) do
+                    expire_parked_input!(record, Dates.now(Dates.UTC)) ||
+                        task_is_terminal(record)
+                end && Base.close(t)
+            catch
+                # Keep the timer alive: a transient failure must not strand the waiter
+            end
+        end
+    end
+    # Block OUTSIDE the store lock: delivery (tasks/update) and terminal
+    # transitions all need it. A closed channel means the task went terminal
+    # (cancel or ttl expiry) without this request ever being answered.
+    responses = Any[]
+    try
+        for pending in entries
+            value = try
+                take!(pending.channel)
+            catch
+                throw(TaskCancelledException())
+            end
+            push!(responses, value)
+        end
+    finally
+        # Base-qualified (the package's close(::Transport) shadows Base.close)
+        deadline === nothing || Base.close(deadline)
+    end
+    responses
 end
 
 # End the current request's ModernRequestLogger scope from the worker task (the
@@ -434,11 +646,15 @@ end
     handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams) -> HandlerResult
 
 Handle a modern-era `tasks/update` (tasks extension): deliver the client's
-`inputResponses` to a task waiting for input, acknowledging with an empty result.
-Responses keyed to requests that are not currently outstanding are ignored per
-spec — which today is every key, since no execution path parks a task in
-`input_required` yet (that flow arrives with mid-task input support). Gated on the
-extension declaration (-32021); an unknown `taskId` is -32602.
+`inputResponses` to the task's outstanding input requests, acknowledging with an
+empty result. Responses keyed to requests that are not currently outstanding —
+never issued, already answered, or superseded — are ignored per spec, and a
+partial set (a strict subset of the outstanding keys) is accepted: answered keys
+are removed and the task stays `input_required` until the rest arrive; once
+nothing is pending the status returns to `working`. The ack is eventually
+consistent — delivery happens before the ack here, but the resumed handler runs
+concurrently, so the observable status is whatever `tasks/get` sees next. Gated
+on the extension declaration (-32021); an unknown `taskId` is -32602.
 """
 function handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams)::HandlerResult
     tasks_extension_declared(ctx.client_capabilities) ||
@@ -447,6 +663,28 @@ function handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams)::
     record = get_task(store, params.taskId, ext_task_principal(ctx); era = :ext)
     (record === nothing || !ext_task_authorized(ctx, record)) &&
         return task_not_found_result()
+    lock(store.lock) do
+        # A terminal task has no outstanding requests (they are drained on the
+        # terminal transition), so every key is not-outstanding: acked, ignored
+        delivered = false
+        for (key, value) in params.inputResponses
+            pending = get(record.pending_inputs, key, nothing)
+            pending === nothing && continue
+            delete!(record.pending_inputs, key)
+            # Size-1 buffered channel, exactly one put per key (the delete above is
+            # in the same critical section), so this never blocks; the waiter's
+            # take! resumes once the lock is released
+            put!(pending.channel, value)
+            delivered = true
+        end
+        if delivered
+            if isempty(record.pending_inputs) && record.status == "input_required"
+                record.status = "working"
+                record.status_message = "The operation is now in progress."
+            end
+            record.last_updated_at = Dates.now(Dates.UTC)
+        end
+    end
     HandlerResult(response = JSONRPCResponse(
         id = ctx.request_id, result = LittleDict{String,Any}()))
 end

@@ -27,9 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MRTR exchanges resolve before task creation, so the SEP's composition rule
   (gather input synchronously, then escalate to a task) works end-to-end.
   Surface: `tasks/get` (DetailedTask with the terminal `result`/`error` inlined —
-  there is no `tasks/result`), `tasks/update` (ack-only; not-outstanding
-  `inputResponses` keys ignored per spec — the mid-task `input_required` flow
-  lands in a follow-up), and the idempotent ack-only `tasks/cancel` (terminal
+  there is no `tasks/result`), `tasks/update` (ack-only; see the mid-task input
+  flow entry below), and the idempotent ack-only `tasks/cancel` (terminal
   cancels ack instead of erroring; `-32602` is reserved for unknown ids;
   cooperative cancellation via the existing `task_cancelled(ctx)`).
   Non-declaring clients get `-32021` with `data.requiredCapabilities` on the
@@ -42,6 +41,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the official conformance suite's `tasks-*` scenarios (all substantive checks
   pass; the suite's wire-schema validator does not yet know the extension's
   `CreateTaskResult` shape, an upstream harness gap).
+
+- **Tasks extension mid-task input flow (SEP-2663 + SEP-2322).** A detached
+  handler can now ask the client for input DURING task execution with the new
+  exported **`task_await_input(ctx, request)`** (single-request or vector form;
+  requests are built with the existing
+  `elicit_request`/`sampling_request`/`roots_request` constructors). The
+  request(s) register under server-minted keys unique over the task's lifetime
+  (a key is never reused after being answered), the task parks as
+  `input_required`, and `tasks/get` inlines the point-in-time `inputRequests`
+  snapshot on every poll. The client answers via `tasks/update`
+  `inputResponses`, which now actually delivers: not-outstanding keys — never
+  issued, already answered, or superseded — are ignored per spec, and a partial
+  set is accepted (answered keys are removed, the task stays `input_required`
+  until the rest arrive); once nothing is pending the status returns to
+  `working` and the blocked handler resumes with the response values (the
+  vector form returns them in request order only when all have arrived).
+  `tasks/cancel` unblocks a parked waiter — the handler unwinds with the new
+  exported `TaskCancelledException`, and its discarded outcome never overwrites
+  the cancelled status — and an input request whose capability the creating
+  request did not declare is refused (the await throws, failing the task, since
+  a server must not surface requests the client cannot handle). Registered
+  requests are **frozen**: params are normalized into an owned plain-JSON
+  snapshot at registration (a closed whitelist — containers rebuilt, strings
+  snapshotted, big numbers duplicated, exact concrete numeric types only with
+  non-finite floats refused, anything exotic rejected with a clear error;
+  numeric fidelity is exact, an integer beyond Int64 in a schema `const`
+  survives) — so a caller-held reference can neither repurpose a key's content
+  across polls (the spec's key-stability rule) nor escalate a request past the
+  already-run capability check (e.g. adding sampling `tools` afterwards). A task whose ttl elapses
+  while parked on client input is **failed and drained by a clock-driven
+  per-wait deadline timer** (interval-retried past the wall-clock boundary,
+  with the store sweep as backstop) — abandoned parked tasks cannot pin their
+  spawned handler, channels, and params even when the client vanishes without
+  further requests; a post-expiry poll observes the failed record briefly or
+  task-not-found (timing-dependent), `working` tasks keep the existing
+  retained-past-ttl behavior since their background work may still be running,
+  and handlers can distinguish expiry from a client cancel via
+  `task_cancelled(ctx)`. Conformance:
+  the `tasks-mrtr-input` and `tasks-mrtr-composition` scenarios and the
+  dispatch suite's parked-elicitation check now pass all substantive checks
+  (fixtures `confirm_delete`, `multi_input`, `test_tool_with_task`).
 
 ### Changed
 

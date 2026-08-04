@@ -472,13 +472,21 @@ reserved for JSON-RPC errors), ack-only idempotent `tasks/cancel`, `tasks/update
 `capabilities.extensions` advertisement in `server/discover`, `Mcp-Name` =
 `params.taskId` on HTTP, era-tagged store isolation from legacy SEP-1686 tasks,
 and MRTR→task composition (InputRequired before detach = the MRTR round). The
-conformance `tasks-*` scenarios pass all substantive checks (the suite's
-wire-schema validator lacks the extension's CreateTaskResult shape — upstream
-harness gap; one dispatch check needs the PR-B `confirm_delete` fixture). The
-draft `server-stateless` conformance scenario passes 30/30. Still pending for
-the modern era: the tasks extension's mid-task input flow (`input_required` +
-`tasks/update` delivery + `task_await_input`), `notifications/tasks` over
-`subscriptions/listen` `taskIds`, and `x-mcp-header` parameter mirroring.
+**mid-task input flow** is in too: a detached handler blocks in the exported
+`task_await_input(ctx, request)` (single or vector form; requests from the MRTR
+constructors), the task parks as `input_required` with server-minted
+never-reused keys, `tasks/get` inlines the outstanding `inputRequests` snapshot,
+and `tasks/update` delivers `inputResponses` to the waiter (partial fulfillment
+accepted, not-outstanding keys ignored, pending-empty → back to `working`;
+cancel unblocks the waiter via the exported `TaskCancelledException`;
+undeclared-capability requests refuse at the await, failing the task). The
+conformance `tasks-*` scenarios — including `tasks-mrtr-input` and
+`tasks-mrtr-composition` — pass all substantive checks (the suite's wire-schema
+validator lacks the extension's CreateTaskResult shape — upstream harness gap).
+The draft `server-stateless` conformance scenario passes 30/30. Still pending
+for the modern era: `notifications/tasks` over `subscriptions/listen` `taskIds`,
+`x-mcp-header` parameter mirroring, and `completion/complete` (the one
+modern-dated conformance failure, 39/40).
 
 ### ✅ Implemented
 
@@ -506,10 +514,12 @@ the modern era: the tasks extension's mid-task input flow (`input_required` +
   on unauthenticated HTTP; capability only advertised to 2025-11-25 sessions (older
   sessions: task metadata ignored, sync execution per spec); `task_cancelled(ctx)` for
   cooperative cancellation
-- **Tasks extension core (SEP-2663, modern era)**: `task_detach(ctx)` server-directed
-  handoff, `tasks/get`/`tasks/update`/`tasks/cancel` with -32021 capability gating,
-  era-isolated from the legacy store (see the compliance-status paragraph above for
-  the full delta list); mid-task input flow and `notifications/tasks` pending
+- **Tasks extension core + mid-task input (SEP-2663, modern era)**: `task_detach(ctx)`
+  server-directed handoff, `tasks/get`/`tasks/update`/`tasks/cancel` with -32021
+  capability gating, era-isolated from the legacy store, and `task_await_input(ctx, ...)`
+  mid-task input (input_required parking, `inputRequests` snapshots, `tasks/update`
+  delivery with partial fulfillment; see the compliance-status paragraph above for
+  the full delta list); `notifications/tasks` pending
 - **logging/setLevel** (eight RFC-5424 levels) + per-request lifecycle `@debug` log
   (method/id/duration_ms/ok), runtime-enableable
 - **OAuth Resource Server** (2025-11-25 authorization): bearer validation (`JWKSValidator`

@@ -976,6 +976,27 @@ slow_tool = MCPTool(
 )
 ```
 
+After detaching, a handler can ask the client for input mid-task with
+`task_await_input` — the task parks as `input_required`, `tasks/get` surfaces the
+outstanding `inputRequests`, and the client answers via `tasks/update`
+`inputResponses`:
+
+```julia
+confirming_tool = MCPTool(
+    name = "confirm_delete",
+    description = "Delete with confirmation",
+    parameters = [ToolParameter(name = "filename", type = "string", required = true)],
+    handler = (args, ctx) -> begin
+        task_detach(ctx)
+        resp = task_await_input(ctx, elicit_request("Really delete $(args["filename"])?"))
+        # resp is the client's response value ({action, content, ...} for elicitation);
+        # a vector of requests parks them all at once and returns responses in order
+        TextContent(text = "done")
+    end,
+    task_support = :optional
+)
+```
+
 **Semantics:**
 - Clients poll `tasks/get` (terminal `result`/`error` inlined — no `tasks/result`);
   `tasks/cancel` is an idempotent empty ack (`-32602` only for unknown ids); a tool
@@ -984,6 +1005,15 @@ slow_tool = MCPTool(
   `-32021` with `data.requiredCapabilities`; `tasks/result`/`tasks/list` → `-32601`
 - Returning `InputRequired` *before* detaching runs the normal MRTR round, so a tool
   can gather input synchronously and then escalate to a task (SEP-2663 composition)
+- `task_await_input(ctx, request_or_vector)`: requests built with
+  `elicit_request`/`sampling_request`/`roots_request`; keys are server-minted and
+  never reused within a task; `tasks/update` may answer a subset (the task stays
+  `input_required` until all outstanding requests are answered, then returns to
+  `working`); not-outstanding keys are ignored; `tasks/cancel` unblocks the waiter
+  by throwing `TaskCancelledException` into the handler; requires the creating
+  request to have declared the matching client capability (e.g. `elicitation`);
+  request params are frozen at registration (owned plain-JSON snapshot; exotic
+  values are rejected); a task whose ttl elapses while parked is failed and drained
 - Extension tasks and legacy (SEP-1686) tasks live in era-isolated stores; on HTTP,
   `Mcp-Name` must mirror `params.taskId` for `tasks/*` requests
 

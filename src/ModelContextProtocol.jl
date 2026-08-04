@@ -126,6 +126,7 @@ export
     send_progress,  # Progress reporting from tool handlers (RequestContext is intentionally not exported)
     task_cancelled,  # Cooperative cancellation check inside task-augmented tool handlers
     task_detach,  # Hand a modern-era tool call off to background task execution (tasks extension, SEP-2663)
+    task_await_input, TaskCancelledException,  # Mid-task client input from a detached handler (tasks extension, SEP-2663)
     subscribe!, unsubscribe!,  # Resource subscription management (legacy in-process callbacks)
     notify_list_changed, notify_resource_updated,  # Announce changes to subscriptions/listen streams
     InputRequired, elicit_request, sampling_request, roots_request,  # MRTR (2026-07-28): handlers requesting client input
