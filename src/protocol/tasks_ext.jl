@@ -283,28 +283,36 @@ task_await_input(ctx::RequestContext, request::InputRequest) =
 
 # Closed-world freeze of a JSON value: only plain JSON data is accepted, and
 # the result is an OWNED value sharing no mutable state with the input —
-# containers rebuilt, strings copied, big numbers duplicated, everything else
-# rejected. Deliberately a whitelist rather than deepcopy: Base documents
+# containers rebuilt, strings snapshotted, big numbers duplicated, everything
+# else rejected. Deliberately a whitelist rather than deepcopy: Base documents
 # deepcopy passing some mutable types through by identity (e.g. Regex), and
 # custom types can specialize deepcopy_internal the same way — a closed set has
-# no such loophole. Numeric fidelity is exact (a JSON round-trip would reparse
-# an integer beyond Int64, e.g. 10^30 in a schema `const`, as a lossy Float64).
+# no such loophole. The scalar branches are equally closed: EXACT concrete
+# numeric types only (an accepted abstract Real could serialize differently on
+# every poll — a Ptr-backed isbits subtype demonstrates it), floats must be
+# finite (JSON3 rejects NaN/Inf, which would otherwise register a request no
+# tasks/get can ever serialize), and non-String strings are snapshotted through
+# OUR buffer (a custom subtype's String()/string() can return a byte-aliased
+# String). Numeric fidelity is exact (a JSON round-trip would reparse an
+# integer beyond Int64, e.g. 10^30 in a schema `const`, as a lossy Float64).
 function _frozen_json(x)
     if x === nothing || x === missing || x isa Bool
         x
-    elseif x isa AbstractString
-        String(x)  # owned immutable copy (AbstractString subtypes may be mutable)
-    elseif x isa Union{Symbol,AbstractChar}
-        string(x)  # JSON3 serializes these as strings; normalize up front
-    elseif x isa Union{BigInt,BigFloat}
-        deepcopy(x)  # mutable GMP/MPFR backing; Base owns this deepcopy
-    elseif x isa Real
-        isbits(x) ? x : throw(ArgumentError(
-            "input request params must be plain JSON data; got $(typeof(x))"))
+    elseif x isa String
+        x  # Julia's concrete String is immutable; identity is safe
+    elseif x isa Union{AbstractString,Symbol,AbstractChar}
+        sprint(print, x)  # one print into fresh storage fixes the value now
+    elseif x isa Union{Int8,Int16,Int32,Int64,Int128,UInt8,UInt16,UInt32,UInt64,UInt128}
+        x
+    elseif x isa Union{Float16,Float32,Float64,BigInt,BigFloat}
+        (x isa AbstractFloat && !isfinite(x)) && throw(ArgumentError(
+            "input request params must be finite numbers (JSON has no NaN/Inf); got $x"))
+        # BigInt/BigFloat have mutable GMP/MPFR backing; Base owns this deepcopy
+        x isa Union{BigInt,BigFloat} ? deepcopy(x) : x
     elseif x isa Union{AbstractDict,NamedTuple}
         out = LittleDict{String,Any}()
         for (k, v) in pairs(x)
-            out[string(k)] = _frozen_json(v)
+            out[_frozen_json_key(k)] = _frozen_json(v)
         end
         out
     elseif x isa Union{AbstractVector,Tuple,AbstractSet}
@@ -315,6 +323,8 @@ function _frozen_json(x)
             "strings, numbers, booleans); got $(typeof(x))"))
     end
 end
+
+_frozen_json_key(k) = k isa String ? k : sprint(print, k)
 
 # An owned snapshot of an input request: a caller-held reference to mutable
 # params must not be able to change what a registered key describes on later

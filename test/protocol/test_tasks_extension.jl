@@ -13,6 +13,14 @@
 struct _ExtUglyException <: Exception end
 Base.show(::IO, ::_ExtUglyException) = throw(_ExtUglyException())
 
+# Freeze probes (Codex r5): a custom string whose String() must never be
+# consulted (it could return a byte-aliased String), and a custom isbits Real
+# the closed numeric whitelist must reject (its serialization can vary).
+struct _ExtLyingString <: AbstractString end
+Base.String(::_ExtLyingString) = "ALIASED"
+Base.print(io::IO, ::_ExtLyingString) = print(io, "honest")
+struct _ExtWeirdReal <: Real end
+
 # Wait until f() is true, with a generous timeout for slow CI machines.
 function _ext_wait_for(f; timeout=15.0, interval=0.05)
     deadline = time() + timeout
@@ -860,6 +868,22 @@ _ext_tools() = [
             @test_throws ArgumentError ModelContextProtocol._frozen_input_request(
                 sampling_request(Dict{String,Any}("v" => bad)))
         end
+
+        # Numbers are EXACT concrete types only, and floats must be finite: a
+        # custom Real (even isbits) can serialize differently on every poll, and
+        # NaN/Inf would register a request no tasks/get can ever serialize
+        @test ModelContextProtocol._frozen_json(Int128(2)^100) == Int128(2)^100
+        for bad in (NaN, Inf, -Inf, Float32(NaN), big(NaN), _ExtWeirdReal(), 3//4)
+            @test_throws ArgumentError ModelContextProtocol._frozen_input_request(
+                sampling_request(Dict{String,Any}("v" => bad)))
+        end
+
+        # Non-String strings are snapshotted through our own buffer — a custom
+        # subtype's String() (which could return a byte-aliased String) is never
+        # consulted; a plain String is immutable and passes by identity
+        @test ModelContextProtocol._frozen_json(_ExtLyingString()) == "honest"
+        plain = "plain"
+        @test ModelContextProtocol._frozen_json(plain) === plain
     end
 
     @testset "mid-task input: cancellation beats validation (Codex r1 N1)" begin

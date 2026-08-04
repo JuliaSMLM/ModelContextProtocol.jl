@@ -64,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a server must not surface requests the client cannot handle). Registered
   requests are **frozen**: params are normalized into an owned plain-JSON
   snapshot at registration (a closed whitelist — containers rebuilt, strings
-  copied, big numbers duplicated, anything exotic rejected with a clear error;
+  snapshotted, big numbers duplicated, exact concrete numeric types only with
+  non-finite floats refused, anything exotic rejected with a clear error;
   numeric fidelity is exact, an integer beyond Int64 in a schema `const`
   survives) — so a caller-held reference can neither repurpose a key's content
   across polls (the spec's key-stability rule) nor escalate a request past the
