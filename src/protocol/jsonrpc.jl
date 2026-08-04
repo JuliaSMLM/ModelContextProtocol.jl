@@ -12,6 +12,7 @@ const REQUEST_PARAMS_MAP = Dict{String,Type}(
     "tools/list" => ListToolsParams,
     "prompts/list" => ListPromptsParams,
     "prompts/get" => GetPromptParams,
+    "completion/complete" => CompleteParams,
     "logging/setLevel" => SetLevelParams,
     "tasks/get" => GetTaskParams,
     "tasks/result" => TaskResultParams,
@@ -233,10 +234,14 @@ function parse_request(raw::JSON3.Object)::Request
             catch
                 nothing
             end
-        elseif protocol_version !== nothing
-            # Modern-era request: typed-param failures must not abort parsing with
-            # a raw exception — the era handler owns validation and answers -32601
-            # (method removed) or -32602 (invalid params) as appropriate
+        elseif protocol_version !== nothing || method == "completion/complete"
+            # Modern-era requests — and completion/complete in EITHER era, whose
+            # legacy dispatch has an isa guard answering -32602: typed-param
+            # failures must not abort parsing with a raw exception, the era
+            # handler owns validation. Other legacy methods deliberately keep the
+            # throwing path: their dispatchers treat nothing-params as ABSENT
+            # (defaulting cursors etc.), so swallowing failures there would turn
+            # malformed params into silent success
             try
                 StructTypes.constructfrom(params_type, raw.params)
             catch

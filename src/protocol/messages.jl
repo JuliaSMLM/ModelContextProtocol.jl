@@ -385,6 +385,59 @@ Base.@kwdef struct GetPromptResult <: ResponseResult
     messages::Vector{PromptMessage}
 end
 
+#= Completion Messages =#
+
+"""
+    CompletionReference(; type::String, name::Union{String,Nothing}=nothing,
+                        uri::Union{String,Nothing}=nothing)
+
+Identify what a `completion/complete` request targets: a prompt (`type` of
+`ref/prompt` with `name`) or a resource template (`type` of `ref/resource` with
+`uri` naming the URI template).
+
+# Fields
+- `type::String`: `"ref/prompt"` or `"ref/resource"`
+- `name::Union{String,Nothing}`: The prompt name (for `ref/prompt`)
+- `uri::Union{String,Nothing}`: The URI template (for `ref/resource`)
+"""
+Base.@kwdef struct CompletionReference
+    type::String
+    name::Union{String,Nothing} = nothing
+    uri::Union{String,Nothing} = nothing
+end
+
+"""
+    CompletionArgument(; name::String, value::String)
+
+Name the argument being completed and the partial value typed so far.
+
+# Fields
+- `name::String`: The argument (or template variable) name
+- `value::String`: The partial value to complete
+"""
+Base.@kwdef struct CompletionArgument
+    name::String
+    value::String
+end
+
+"""
+    CompleteParams(; ref::CompletionReference, argument::CompletionArgument,
+                   context::Union{Dict{String,Any},Nothing}=nothing) <: RequestParams
+
+Parameters for a `completion/complete` request.
+
+# Fields
+- `ref::CompletionReference`: The prompt or resource template being completed
+- `argument::CompletionArgument`: The argument name and partial value
+- `context::Union{Dict{String,Any},Nothing}`: Optional context; its `arguments`
+  entry carries already-resolved argument values
+"""
+Base.@kwdef struct CompleteParams <: RequestParams
+    ref::CompletionReference
+    argument::CompletionArgument
+    context::Union{Dict{String,Any},Nothing} = nothing
+end
+
 #= Subscription Messages =#
 
 """

@@ -164,6 +164,7 @@ function default_capabilities()
         ToolCapability(list_changed=true),
         PromptCapability(list_changed=true),  # Added prompt capability
         LoggingCapability(),  # Advertise logging + logging/setLevel support
+        CompletionCapability(),  # Argument completion via completion/complete
         TaskCapability()  # MCP Tasks (experimental): task-augmented tools/call; only advertised to 2025-11-25 clients
     ]
 end

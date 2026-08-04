@@ -46,6 +46,7 @@ const RUN_E2E = get(ENV, "MCP_TEST_E2E", ON_CI ? "false" : "true") == "true"
     include("protocol/test_modern.jl")
     include("protocol/test_mrtr.jl")
     include("protocol/test_tasks_extension.jl")
+    include("protocol/test_completion.jl")
     include("utils/serialization.jl")
     include("utils/logging.jl")
     include("transports/test_stdio.jl")

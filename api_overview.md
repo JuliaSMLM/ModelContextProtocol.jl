@@ -606,7 +606,8 @@ ResourceTemplate(;
     name::String,                       # Template name
     uri_template::String,               # URI pattern with placeholders
     mime_type::Union{String,Nothing} = nothing,
-    description::String = ""
+    description::String = "",
+    completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per {var}
 )
 ```
 
@@ -647,7 +648,25 @@ MCPPrompt(;
     name::String,                              # Identifier
     description::String = "",                  # Description
     arguments::Vector{PromptArgument} = [],   # Arguments
-    messages::Vector{PromptMessage} = []      # Messages
+    messages::Vector{PromptMessage} = [],     # Messages
+    completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per argument
+)
+```
+
+**Argument completion** (`completion/complete`, both eras): map an argument name
+to a `Vector{String}` (served filtered by prefix against the partial value) or a
+function `value -> values` / `(value, context_args) -> values` — `context_args`
+carries the request's already-resolved arguments. Values cap at the spec's 100
+per response (`total`/`hasMore` report the rest). The same field exists on
+`ResourceTemplate` for URI-template variables. The `completions` capability is
+advertised by default; components without sources serve empty lists.
+
+```julia
+prompt = MCPPrompt(
+    name = "city_report",
+    arguments = [PromptArgument(name = "city", required = true)],
+    messages = [PromptMessage(content = TextContent(text = "Report for {city}"))],
+    completions = Dict{String,Any}("city" => ["paris", "london", "tokyo"])
 )
 ```
 

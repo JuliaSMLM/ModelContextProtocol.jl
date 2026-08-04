@@ -304,7 +304,8 @@ templates = [
             text = JSON3.write(Dict(
                 "id" => vars["id"],
                 "templateTest" => true,
-                "data" => "Data for ID: $(vars["id"])")))),
+                "data" => "Data for ID: $(vars["id"])"))),
+        completions = Dict{String,Any}("id" => ["1", "2", "42"])),
 ]
 
 prompts = [
@@ -321,7 +322,10 @@ prompts = [
             PromptArgument(name = "arg2", description = "Second test argument", required = true),
         ],
         messages = [PromptMessage(content = TextContent(
-            text = "Prompt with arguments: arg1='{arg1}', arg2='{arg2}'"))]),
+            text = "Prompt with arguments: arg1='{arg1}', arg2='{arg2}'"))],
+        completions = Dict{String,Any}(
+            "arg1" => ["test-alpha", "test-beta", "testing-gamma"],
+            "arg2" => ["second-a", "second-b"])),
     MCPPrompt(
         name = "test_prompt_with_embedded_resource",
         description = "Prompt containing an embedded resource",
@@ -346,6 +350,7 @@ server = mcp_server(
         ModelContextProtocol.PromptCapability(list_changed = true),
         ModelContextProtocol.ResourceCapability(list_changed = true, subscribe = true),
         ModelContextProtocol.LoggingCapability(),
+        ModelContextProtocol.CompletionCapability(),
     ],
     name = "conformance-fixture-server",
     version = "0.1.0",

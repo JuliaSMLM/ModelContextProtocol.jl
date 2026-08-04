@@ -483,10 +483,12 @@ undeclared-capability requests refuse at the await, failing the task). The
 conformance `tasks-*` scenarios — including `tasks-mrtr-input` and
 `tasks-mrtr-composition` — pass all substantive checks (the suite's wire-schema
 validator lacks the extension's CreateTaskResult shape — upstream harness gap).
-The draft `server-stateless` conformance scenario passes 30/30. Still pending
-for the modern era: `notifications/tasks` over `subscriptions/listen` `taskIds`,
-`x-mcp-header` parameter mirroring, and `completion/complete` (the one
-modern-dated conformance failure, 39/40).
+The draft `server-stateless` conformance scenario passes 30/30, and
+`completion/complete` is served in both eras (prompt arguments + template
+variables from per-component `completions` sources; `CompletionCapability`
+advertised in initialize and `server/discover`) — the modern-dated suite passes
+40/40. Still pending for the modern era: `notifications/tasks` over
+`subscriptions/listen` `taskIds` and `x-mcp-header` parameter mirroring.
 
 ### ✅ Implemented
 
@@ -522,6 +524,11 @@ modern-dated conformance failure, 39/40).
   the full delta list); `notifications/tasks` pending
 - **logging/setLevel** (eight RFC-5424 levels) + per-request lifecycle `@debug` log
   (method/id/duration_ms/ok), runtime-enableable
+- **Completion** (`completion/complete`, both eras): prompt-argument and
+  resource-template-variable suggestions from per-component `completions` sources
+  (static prefix-filtered vectors or `value`/`(value, context_args)` functions);
+  `CompletionCapability` in the defaults; values capped at 100 with
+  `total`/`hasMore`
 - **OAuth Resource Server** (2025-11-25 authorization): bearer validation (`JWKSValidator`
   with RFC 7517 signature verification + rate-limited key rotation, JWT claims,
   RFC 7662 introspection, GitHub tokens + allowlist/org), RFC 9728 Protected Resource
@@ -536,8 +543,9 @@ modern-dated conformance failure, 39/40).
 
 - **OAuth Authorization Server** (token issuance — DCR, PKCE; tracked in issue #51) and
   remaining RS hardening (per-tool scopes, SSE principal binding)
-- **Legacy-era elicitation** (server-initiated requests; the modern era covers this
-  via MRTR `input_required` instead); **completion** (`completion/complete`)
+- **Legacy-era elicitation/sampling** (server-initiated requests; the modern era
+  covers these via MRTR `input_required` instead — the four remaining legacy
+  conformance failures are exactly this surface, a documented non-goal)
 - **Stream resumption** (Last-Event-ID); **concurrent SYNC request handling** (Tasks give
   long calls background execution, but plain requests still go through the single serialized
   server loop today)
