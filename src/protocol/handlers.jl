@@ -665,13 +665,18 @@ function completion_values(sources, arg_name::String, value::String,
     _completion_string(v) = v isa AbstractString ? String(v) : throw(ArgumentError(
         "completion source for '$(arg_name)' must produce strings; got $(typeof(v))"))
     sources isa AbstractDict || return String[]
-    source = get(sources, arg_name, nothing)
-    source === nothing && return String[]
+    # Presence-aware: only an ABSENT entry means "no suggestions" — an explicitly
+    # configured non-Vector/non-Function value (incl. nothing) is a
+    # misconfiguration and fails loudly via the Vector check below
+    haskey(sources, arg_name) || return String[]
+    source = sources[arg_name]
     if source isa Function
         raw = applicable(source, value, context_args) ? source(value, context_args) : source(value)
         # A lone string is almost certainly a bug (it would iterate as characters)
         raw isa AbstractString && throw(ArgumentError(
             "completion source for '$(arg_name)' returned a single string; return a collection of strings"))
+        applicable(iterate, raw) || throw(ArgumentError(
+            "completion source for '$(arg_name)' returned a non-collection: $(typeof(raw))"))
         return String[_completion_string(v) for v in raw]
     end
     source isa AbstractVector || throw(ArgumentError(
@@ -715,19 +720,19 @@ function handle_complete(ctx::RequestContext, params::CompleteParams)::HandlerRe
     # so typed `(value, context::Dict{String,String})` sources are applicable
     # and a mistyped context is the client's error, not a source failure
     context_args = nothing
-    if params.context !== nothing
-        raw_args = get(params.context, "arguments", nothing)
-        if raw_args !== nothing
-            raw_args isa AbstractDict ||
+    if params.context !== nothing && haskey(params.context, "arguments")
+        # Presence-aware: an explicit JSON null is a mistyped value (-32602),
+        # never treated as absent
+        raw_args = params.context["arguments"]
+        raw_args isa AbstractDict ||
+            return invalid("context.arguments must be an object of strings")
+        args = Dict{String,String}()
+        for (k, v) in pairs(raw_args)
+            v isa AbstractString ||
                 return invalid("context.arguments must be an object of strings")
-            args = Dict{String,String}()
-            for (k, v) in pairs(raw_args)
-                v isa AbstractString ||
-                    return invalid("context.arguments must be an object of strings")
-                args[String(k)] = String(v)
-            end
-            context_args = args
+            args[String(k)] = String(v)
         end
+        context_args = args
     end
     all_values = try
         completion_values(sources, params.argument.name, params.argument.value, context_args)

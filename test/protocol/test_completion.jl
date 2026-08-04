@@ -205,6 +205,13 @@ const _CMP_MODERN_META = Dict{String,Any}(
                 "method" => "completion/complete", "params" => params))
             @test r["error"]["code"] == -32602
         end
+
+        # The parse-layer guard is SCOPED to completion: other legacy methods
+        # keep their pre-existing malformed-params classification — a mistyped
+        # cursor must still error, never silently succeed with defaults
+        r = _cmp_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => 22,
+            "method" => "resources/list", "params" => Dict("cursor" => [1])))
+        @test haskey(r, "error") && r["error"]["code"] == -32603
     end
 
     @testset "context.arguments is validated as an object of strings (Codex r1 W2)" begin
@@ -226,10 +233,12 @@ const _CMP_MODERN_META = Dict{String,Any}(
                            context = Dict("arguments" => Dict("prev" => "p")))
         @test ok["result"]["completion"]["values"] == ["p-x"]
 
-        # Mistyped contexts are the client's error
+        # Mistyped contexts are the client's error — including an explicit JSON
+        # null for arguments (presence-aware, never treated as absent)
         for ctx in (Dict("arguments" => 1),
                     Dict("arguments" => Dict("prev" => 5)),
-                    Dict("arguments" => ["a"]))
+                    Dict("arguments" => ["a"]),
+                    Dict("arguments" => nothing))
             r = _cmp_complete(server, state, Dict("type" => "ref/prompt", "name" => "typed");
                               name = "a", value = "x", context = ctx, id = 31)
             @test r["error"]["code"] == -32602
@@ -254,12 +263,20 @@ const _CMP_MODERN_META = Dict{String,Any}(
                 arguments = [PromptArgument(name = "a", required = false)],
                 messages = [PromptMessage(content = TextContent(text = "a"))],
                 completions = Dict{String,Any}("a" => "not-a-vector")),
+            MCPPrompt(name = "nothing_src", description = "d",
+                arguments = [PromptArgument(name = "a", required = false)],
+                messages = [PromptMessage(content = TextContent(text = "a"))],
+                completions = Dict{String,Any}("a" => nothing)),  # configured, not absent
+            MCPPrompt(name = "nothing_ret", description = "d",
+                arguments = [PromptArgument(name = "a", required = false)],
+                messages = [PromptMessage(content = TextContent(text = "a"))],
+                completions = Dict{String,Any}("a" => v -> nothing)),
         ]
         server = mcp_server(name = "badsrc-test", version = "0.0.1", prompts = bad)
         server.transport = StdioTransport(input = IOBuffer(), output = IOBuffer())
         state = ServerState()
         _cmp_init(server, state)
-        for prompt in ("lone", "nonstr", "static_nonstr", "scalar_src")
+        for prompt in ("lone", "nonstr", "static_nonstr", "scalar_src", "nothing_src", "nothing_ret")
             r = _cmp_complete(server, state, Dict("type" => "ref/prompt", "name" => prompt);
                               name = "a", value = "")
             @test r["error"]["code"] == -32603
