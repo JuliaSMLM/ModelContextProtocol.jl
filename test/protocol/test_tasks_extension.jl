@@ -781,12 +781,23 @@ _ext_tools() = [
         _ext_cancel(server, state, tid)
     end
 
-    @testset "mid-task input: expired parked task fails and unblocks (Codex r1 W1)" begin
+    @testset "mid-task input: expired parked task fails and unblocks (Codex r1 W1 + r2 W1)" begin
+        unblocked = Ref(false)
+        saw_client_cancel = Ref(true)
         parked = MCPTool(name="parked", description="d", parameters=[],
             task_support=:optional,
             handler=(args, ctx) -> begin
-                task_detach(ctx; ttl_ms=500)
-                task_await_input(ctx, elicit_request("Anyone there?"))
+                task_detach(ctx; ttl_ms=400)
+                try
+                    task_await_input(ctx, elicit_request("Anyone there?"))
+                catch e
+                    e isa TaskCancelledException || rethrow()
+                    # Expiry is distinguishable from a client cancel via
+                    # task_cancelled(ctx) — false here, since nobody cancelled
+                    saw_client_cancel[] = task_cancelled(ctx)
+                    unblocked[] = true
+                    rethrow()
+                end
                 TextContent(text="answered")
             end)
         server, state, buf = _ext_test_server(tools=[parked])
@@ -797,14 +808,35 @@ _ext_tools() = [
         tid = _ext_deferred_response(buf, 271)["result"]["taskId"]
         @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "input_required")
 
-        # ttl elapses while parked on client input: the next poll's sweep fails the
-        # task (one observable poll), drains the waiter, then the record expires away
-        sleep(0.7)
-        g = _ext_get(server, state, tid)
-        @test g["result"]["status"] == "failed"
-        @test occursin("expired", g["result"]["error"]["message"])
-        @test !haskey(g["result"], "inputRequests")
+        # Clock-driven: the deadline timer must unwind the waiter with NO further
+        # store activity (a lazy sweep alone would leave a vanished client's task
+        # parked forever)
+        @test _ext_wait_for(() -> unblocked[])
+        @test saw_client_cancel[] == false
+
+        # The failed record is terminal AND expired, so post-expiry polls observe
+        # task-not-found — the same as any expired task
         @test _ext_get(server, state, tid)["error"]["code"] == -32602
+    end
+
+    @testset "frozen params preserve numeric fidelity (Codex r2 W2)" begin
+        # An integer beyond Int64 in a schema const must survive freezing exactly
+        # (a JSON round-trip would degrade it to Float64)
+        big_n = big(10)^30 + 1
+        r = ModelContextProtocol._frozen_input_request(
+            sampling_request(Dict{String,Any}("maxTokens" => big_n, "messages" => Any[])))
+        @test r.params["maxTokens"] == big_n
+        @test occursin(string(big_n), JSON3.write(r.params))
+
+        # Mutation isolation holds with the owned copy, at depth
+        src = Dict{String,Any}("m" => Dict{String,Any}("x" => 1))
+        r2 = ModelContextProtocol._frozen_input_request(sampling_request(src))
+        src["m"]["x"] = 2
+        @test r2.params["m"]["x"] == 1
+
+        # Non-serializable params still refuse with a clear error
+        @test_throws ArgumentError ModelContextProtocol._frozen_input_request(
+            sampling_request(Dict{String,Any}("f" => identity)))
     end
 
     @testset "mid-task input: cancellation beats validation (Codex r1 N1)" begin

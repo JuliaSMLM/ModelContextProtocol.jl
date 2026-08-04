@@ -186,36 +186,50 @@ function create_task!(store::TaskStore, method::String;
 end
 
 """
+    expire_parked_input!(record::TaskRecord, now_utc::DateTime) -> Bool
+
+Fail an extension-era task whose ttl elapsed while parked in `input_required`: a
+task past its ttl that is waiting on CLIENT input is abandoned — the client the
+server is waiting on can no longer use the result — so it is terminalized
+(status `failed`, error inlined) and its pending inputs drained, unwinding the
+blocked `task_await_input` waiter. A no-op (returning `false`) for any record
+not in exactly that state, so the deadline timer and the store sweep can both
+call it and whichever runs first wins. Caller must hold the store lock.
+"""
+function expire_parked_input!(record::TaskRecord, now_utc::DateTime)::Bool
+    (record.era === :ext && record.status == "input_required" &&
+     task_is_expired(record, now_utc)) || return false
+    record.error = ErrorInfo(
+        code = ErrorCodes.INTERNAL_ERROR,
+        message = "Task expired while awaiting client input")
+    record.status = "failed"
+    record.status_message = "The task expired while awaiting client input."
+    record.last_updated_at = now_utc
+    drain_pending_inputs!(record)
+    notify(record.done)
+    true
+end
+
+"""
     sweep_expired!(store::TaskStore) -> Nothing
 
 Delete terminal task records whose ttl has elapsed, and fail expired
-extension-era tasks still parked in `input_required`: a task past its ttl that is
-waiting on CLIENT input is abandoned — the client the server is waiting on can no
-longer use the result — so it is terminalized (status `failed`, error inlined)
-and its pending inputs drained, unwinding the blocked `task_await_input` waiter.
-Without this, an abandoned parked task would pin its spawned handler, channels,
-and request params forever (the terminal-only delete would never reach it). Other
-non-terminal records are retained past their ttl (the spec permits but does not
-require deleting those, and their background work may still be running). Caller
-must hold `store.lock`.
+extension-era tasks still parked in `input_required` (see
+[`expire_parked_input!`](@ref) — here as a backstop; the clock-driven per-wait
+deadline timer in `task_await_input` is what guarantees the transition without
+further store activity). Once failed, such a record is terminal AND expired, so
+the next sweep deletes it — post-expiry polls simply observe task-not-found, the
+same as any expired task. Other non-terminal records are retained past their ttl
+(the spec permits but does not require deleting those, and their background work
+may still be running). Caller must hold `store.lock`.
 """
 function sweep_expired!(store::TaskStore)
     now_utc = Dates.now(Dates.UTC)
     for (id, record) in store.tasks
         if task_is_terminal(record)
             task_is_expired(record, now_utc) && delete!(store.tasks, id)
-        elseif record.era === :ext && record.status == "input_required" &&
-               task_is_expired(record, now_utc)
-            record.error = ErrorInfo(
-                code = ErrorCodes.INTERNAL_ERROR,
-                message = "Task expired while awaiting client input")
-            record.status = "failed"
-            record.status_message = "The task expired while awaiting client input."
-            record.last_updated_at = now_utc
-            drain_pending_inputs!(record)
-            notify(record.done)
-            # Deleted by a LATER sweep (now terminal + expired): the client gets
-            # one observable "failed" poll before the record disappears
+        else
+            expire_parked_input!(record, now_utc)
         end
     end
     nothing

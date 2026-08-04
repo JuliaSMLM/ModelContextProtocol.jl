@@ -218,15 +218,18 @@ end
 """
     TaskCancelledException()
 
-Thrown by [`task_await_input`](@ref) when the task is cancelled (`tasks/cancel`)
-while the handler is waiting — or was already cancelled when it asked. Handlers
-that need cleanup can catch it; otherwise it unwinds the handler, whose discarded
-outcome never overwrites the cancelled status (cancelled tasks stay cancelled).
+Thrown by [`task_await_input`](@ref) when the task reaches a terminal state while
+the handler is waiting (or had already reached one when it asked) — cancelled by
+the client via `tasks/cancel`, or failed by the server because its ttl elapsed
+while parked on client input. Handlers that need to distinguish the two can check
+`task_cancelled(ctx)`, which is `true` only for a client cancellation. Catch it
+for cleanup; otherwise it unwinds the handler, whose discarded outcome never
+overwrites the terminal status.
 """
 struct TaskCancelledException <: Exception end
 
 Base.showerror(io::IO, ::TaskCancelledException) =
-    print(io, "TaskCancelledException: the task was cancelled while waiting for client input")
+    print(io, "TaskCancelledException: the task was cancelled or expired while waiting for client input")
 
 """
     task_await_input(ctx, request::InputRequest) -> Any
@@ -248,11 +251,12 @@ Build requests with [`elicit_request`](@ref), [`sampling_request`](@ref), or
 NOT send input requests the creating request's client capabilities did not
 declare, so an undeclared capability throws (failing the task).
 
-Throws [`TaskCancelledException`](@ref) when the task is cancelled while (or
+Throws [`TaskCancelledException`](@ref) when the task goes terminal while (or
 before) waiting. An unanswered request blocks until the client answers or
-cancels, or until the task's ttl elapses — an expired task still parked on
-client input is failed and its waiters unwound, so abandoned tasks cannot pin
-handler state forever.
+cancels, or until the task's ttl elapses — a per-wait deadline timer fails an
+expired task still parked on client input and unwinds its waiters, so abandoned
+tasks cannot pin handler state forever. To distinguish expiry from a client
+cancel, check `task_cancelled(ctx)` — `true` only for the latter.
 
 The registered requests are frozen: each request's params are snapshotted to an
 owned immutable value at registration, so a key's content can never change
@@ -274,21 +278,37 @@ the MRTR round on the original request instead.
 task_await_input(ctx::RequestContext, request::InputRequest) =
     first(task_await_input(ctx, InputRequest[request]))
 
-# An owned, IMMUTABLE snapshot of an input request: a caller-held reference to
-# mutable params must not be able to change what a registered key describes on
-# later polls (spec key-stability), nor to escalate a request past the capability
-# check after it ran (e.g. adding sampling `tools` post-validation). JSON3 values
-# are read-only views, and the round-trip also proves wire-serializability up
-# front — better a clear error here than a broken tasks/get later.
+# Owned deep copy of a JSON-like value: dicts and vectors are rebuilt at every
+# level (String keys, Any containers) while scalars carry over AS-IS — numeric
+# fidelity survives, where a JSON round-trip would reparse an integer beyond
+# Int64 (e.g. 10^30 in a schema `const`) as a lossy Float64. Only called on
+# values JSON3.write already accepted, so the structure is acyclic.
+_owned_json_copy(x) = x
+function _owned_json_copy(d::AbstractDict)
+    out = LittleDict{String,Any}()
+    for (k, v) in pairs(d)
+        out[String(k)] = _owned_json_copy(v)
+    end
+    out
+end
+_owned_json_copy(v::AbstractVector) = Any[_owned_json_copy(x) for x in v]
+_owned_json_copy(t::Tuple) = Any[_owned_json_copy(x) for x in t]
+
+# An owned snapshot of an input request: a caller-held reference to mutable
+# params must not be able to change what a registered key describes on later
+# polls (spec key-stability), nor to escalate a request past the capability
+# check after it ran (e.g. adding sampling `tools` post-validation). The
+# up-front serialization proves wire-serializability (and acyclicity) — better
+# a clear error here than a broken tasks/get later.
 function _frozen_input_request(r::InputRequest)::InputRequest
     r.params === nothing && return r
-    frozen = try
-        JSON3.read(JSON3.write(r.params))
+    try
+        JSON3.write(r.params)
     catch e
         throw(ArgumentError(safe_error_message(
             "input request params must be JSON-serializable", e)))
     end
-    InputRequest(r.method, frozen)
+    InputRequest(r.method, _owned_json_copy(r.params))
 end
 
 function task_await_input(ctx::RequestContext,
@@ -328,17 +348,37 @@ function task_await_input(ctx::RequestContext,
         end
         record.last_updated_at = Dates.now(Dates.UTC)
     end
-    # Block OUTSIDE the store lock: delivery (tasks/update) and cancellation both
-    # need it. A closed channel means the task went terminal without this request
-    # ever being answered — cancellation, from the waiter's point of view.
-    responses = Any[]
-    for pending in entries
-        value = try
-            take!(pending.channel)
-        catch
-            throw(TaskCancelledException())
+    # Clock-driven ttl deadline: the store sweep only runs on LATER store
+    # activity, so without this a parked task whose client vanished would pin
+    # its spawned handler, channels, and params forever. The timer fires the
+    # same expiry transition the sweep applies (whichever runs first wins; both
+    # no-op on a task no longer parked), closing the channels below.
+    deadline = nothing
+    if record.ttl_ms !== nothing
+        remaining_ms = Dates.value(record.created_at + Millisecond(record.ttl_ms) -
+                                   Dates.now(Dates.UTC))
+        deadline = Timer(max(remaining_ms, 0) / 1000) do _
+            lock(store.lock) do
+                expire_parked_input!(record, Dates.now(Dates.UTC))
+            end
         end
-        push!(responses, value)
+    end
+    # Block OUTSIDE the store lock: delivery (tasks/update) and terminal
+    # transitions all need it. A closed channel means the task went terminal
+    # (cancel or ttl expiry) without this request ever being answered.
+    responses = Any[]
+    try
+        for pending in entries
+            value = try
+                take!(pending.channel)
+            catch
+                throw(TaskCancelledException())
+            end
+            push!(responses, value)
+        end
+    finally
+        # Base-qualified (the package's close(::Transport) shadows Base.close)
+        deadline === nothing || Base.close(deadline)
     end
     responses
 end
