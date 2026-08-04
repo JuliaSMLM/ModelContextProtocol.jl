@@ -115,8 +115,13 @@ Thread-safe registry of server-side tasks.
 - `page_size::Int`: Page size for tasks/list cursor pagination
 - `on_status_change::Base.RefValue{Any}`: Optional hook `record -> Nothing` fired
   after every status transition, while the store lock is held (see
-  `_fire_status_change`); installed by `mcp_server` to broadcast the tasks
-  extension's `notifications/tasks`. `nothing` disables it
+  `_fire_status_change`); installed for the tasks extension's
+  `notifications/tasks`. `nothing` disables it
+- `notification_seq::Base.RefValue{Int}`: Monotone sequence stamped on every
+  enqueued status notification (incremented only under the store lock).
+  Subscriptions record the counter at registration and receive only
+  later-stamped events, so a queued-but-undrained backlog never replays older
+  states to a freshly registered stream
 """
 Base.@kwdef struct TaskStore
     lock::ReentrantLock = ReentrantLock()
@@ -126,6 +131,7 @@ Base.@kwdef struct TaskStore
     poll_interval_ms::Int = TASK_POLL_INTERVAL_MS
     page_size::Int = TASKS_PAGE_SIZE
     on_status_change::Base.RefValue{Any} = Ref{Any}(nothing)
+    notification_seq::Base.RefValue{Int} = Ref(0)
 end
 
 """
@@ -133,10 +139,10 @@ end
 
 Fire the store's status-change hook for a record whose status just changed.
 Called at every transition site WHILE the store lock is held — the hook builds
-the task's wire snapshot (which requires the lock) and broadcasts it; the lock
-ordering store → subscription registry → transport channels is acyclic, and
-every delivery path enqueues without blocking. A throwing hook is swallowed: a
-notification must never break the transition that triggered it.
+the task's wire snapshot (which requires the lock) and ENQUEUES it (no
+transport I/O happens under the store lock; a dedicated dispatcher task
+broadcasts from the queue, see `install_task_notifications!`). A throwing hook
+is swallowed: a notification must never break the transition that triggered it.
 """
 function _fire_status_change(store::TaskStore, record::TaskRecord)
     hook = store.on_status_change[]

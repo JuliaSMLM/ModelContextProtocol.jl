@@ -98,10 +98,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state is pushed right after the acknowledgment, so a transition landing
   during registration can never strand a notification-only client. Deliveries
   re-check the stream's principal and scopes against the task's transition-time
-  requirements, and ride a bounded FIFO drained by a dispatcher task outside
-  the store lock — a stalled client cannot wedge the task surface, transition
-  order is preserved, and overload load-sheds (pushes are best-effort; polling
-  stays authoritative). Legacy-era (SEP-1686) tasks never reach these streams.
+  requirements (on authenticated transports — an unauthenticated stream has no
+  scopes, not insufficient ones, mirroring `tasks/get`), are sequence-guarded
+  so a queued backlog never replays older states to a freshly registered
+  stream, and ride a bounded FIFO drained by a dispatcher task outside the
+  store lock — a stalled client cannot wedge the task surface, transition order
+  is preserved, and overload load-sheds (pushes are best-effort; polling stays
+  authoritative). The dispatcher is closed on every server-loop exit and
+  revived on restart, and the listen capacity check sweeps dead routes so
+  vanished streams cannot pin the subscription surface. Legacy-era (SEP-1686)
+  tasks never reach these streams.
 
 - **Argument completion (`completion/complete`).** The completion utility,
   served in both eras: suggestions for prompt arguments (`ref/prompt`, by

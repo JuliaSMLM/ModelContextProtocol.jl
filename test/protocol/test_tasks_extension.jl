@@ -1006,29 +1006,80 @@ _ext_tools() = [
                      m["params"]["status"] == "working", msgs)))
         _ext_cancel(server, state, tid)
 
-        # Delivery-time re-authorization: a task whose required_scopes grow after
-        # the listen stops pushing to a stream that could no longer tasks/get it
+        # Unauthenticated transports have no scopes, not insufficient ones: a
+        # scoped task still pushes to an unauthenticated stream, mirroring
+        # ext_task_authorized (Codex r2 W2 — the r1 fix over-denied here)
         rec = create_task!(server.tasks, "tools/call"; era=:ext,
-                           required_scopes=String[])
+                           required_scopes=["mcp:admin"])
         @test listen("sub-authz", [rec.task_id]) === nothing
         msgs2 = []
+        cancel_task!(server.tasks, rec)
         @test _ext_wait_for(() -> (append!(msgs2, _ext_oob(buf));
             any(m -> get(m, "method", nothing) == "notifications/tasks" &&
-                     m["params"]["taskId"] == rec.task_id, msgs2)))  # initial snapshot delivered
-        push!(rec.required_scopes, "mcp:admin")  # authz requirements change post-listen
-        cancel_task!(server.tasks, rec)
+                     m["params"]["taskId"] == rec.task_id &&
+                     m["params"]["status"] == "cancelled", msgs2)))
+
+        # Authenticated streams ARE re-checked per delivery against the task's
+        # transition-time requirements: insufficient stored scopes deny
+        arec = create_task!(server.tasks, "tools/call"; era=:ext,
+                            principal="[\"prov\",\"alice\"]",
+                            required_scopes=["mcp:admin"])
+        push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+            "sub-auth-deny",
+            ModelContextProtocol.SubscriptionFilter(task_ids=Set([arec.task_id])),
+            nothing, server.transport,
+            "[\"prov\",\"alice\"]", Set(["mcp:read"]), 0))
+        cancel_task!(server.tasks, arec)
         sleep(0.3)
         append!(msgs2, _ext_oob(buf))
         @test !any(m -> get(m, "method", nothing) == "notifications/tasks" &&
-                        m["params"]["taskId"] == rec.task_id &&
-                        m["params"]["status"] == "cancelled", msgs2)
+                        m["params"]["taskId"] == arec.task_id, msgs2)
 
-        # stop! ends the dispatcher; post-stop transitions neither push nor throw
+        # Sequence guard: a stream whose registration threshold postdates an
+        # event never receives it — a queued backlog cannot replay older states
+        srec = create_task!(server.tasks, "tools/call"; era=:ext)
+        push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+            "sub-seq-hi",
+            ModelContextProtocol.SubscriptionFilter(task_ids=Set([srec.task_id])),
+            nothing, server.transport,
+            nothing, Set{String}(), server.tasks.notification_seq[] + 1000))
+        cancel_task!(server.tasks, srec)
+        sleep(0.3)
+        append!(msgs2, _ext_oob(buf))
+        @test !any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                        m["params"]["taskId"] == srec.task_id, msgs2)
+
+        # stop! ends the dispatcher (post-stop transitions neither push nor
+        # throw); ensure_task_notifications! revives the pipeline for a restart
+        q1 = server.task_notification_queue
         server.active = true
         stop!(server)
+        @test !isopen(q1)
         rec2 = create_task!(server.tasks, "tools/call"; era=:ext)
         @test cancel_task!(server.tasks, rec2)  # transition survives the closed queue
         @test rec2.status == "cancelled"
+        ModelContextProtocol.ensure_task_notifications!(server)
+        @test server.task_notification_queue !== q1
+        @test isopen(server.task_notification_queue)
+    end
+
+    @testset "dead routes cannot pin listen capacity (Codex r2 B1)" begin
+        server, state, buf = _ext_test_server(tools=_ext_tools())
+        # 64 vanished HTTP streams (routes with no registered channel are dead)
+        # previously made every new subscriptions/listen -32603 forever: the
+        # capacity precheck counted them without sweeping
+        http = HttpTransport(port = 18997)
+        for i in 1:ModelContextProtocol.MAX_SUBSCRIPTIONS
+            push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+                "dead-$i", ModelContextProtocol.SubscriptionFilter(tools_list_changed = true),
+                "r-dead-$i", http))
+        end
+        @test _ext_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => "sub-live",
+            "method" => "subscriptions/listen",
+            "params" => Dict("notifications" => Dict("toolsListChanged" => true),
+                             "_meta" => _ext_meta()))) === nothing  # corpses swept, stream registered
+        @test length(server.listen_subscriptions.subs) == 1
+        @test first(server.listen_subscriptions.subs).id == "sub-live"
     end
 
     @testset "notifications/tasks: cancellation pushes the cancelled state" begin

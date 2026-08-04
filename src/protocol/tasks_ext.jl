@@ -452,16 +452,23 @@ function install_task_notifications!(server::Server)
     queue = Channel{Any}(TASK_NOTIFICATION_QUEUE_CAP)
     server.task_notification_queue = queue
     Threads.@spawn begin
-        for (wire, task_id, principal, required_scopes) in queue
+        for (seq, wire, task_id, principal, required_scopes) in queue
             try
                 broadcast_subscription_notification(server, "notifications/tasks";
                     params = wire,
                     task_id = task_id,
-                    # Delivery-time re-authorization from the TRANSITION-time
-                    # requirements: a stream whose principal/scopes no longer
-                    # satisfy the task must not keep receiving its status
-                    authorize = s -> s.task_principal == principal &&
-                                     issubset(required_scopes, s.task_scopes))
+                    # Per-delivery checks beyond the filter match: (a) only
+                    # events stamped after the stream registered (a queued
+                    # backlog never replays older states to a fresh stream);
+                    # (b) re-authorization from the TRANSITION-time
+                    # requirements — principal equality, and (mirroring
+                    # ext_task_authorized) the scope check applies only on
+                    # authenticated transports: an unauthenticated stream has
+                    # no scopes, not insufficient ones
+                    authorize = s -> seq > s.task_seq &&
+                                     s.task_principal == principal &&
+                                     (principal === nothing ||
+                                      issubset(required_scopes, s.task_scopes)))
             catch
                 # A broken transport must not kill the dispatcher
             end
@@ -469,15 +476,32 @@ function install_task_notifications!(server::Server)
     end
     server.tasks.on_status_change[] = record -> begin
         record.era === :ext || return nothing
-        # Single producer (every call site holds the store lock), so the
-        # availability check cannot race another put!: the queue never blocks
+        # Single producer (every call site holds the store lock), so neither the
+        # availability check nor the seq increment can race: the queue never
+        # blocks and the stamps are strictly ordered
         Base.n_avail(queue) >= TASK_NOTIFICATION_QUEUE_CAP && return nothing
-        put!(queue, (ext_task_wire(record; detailed = true),
+        put!(queue, (server.tasks.notification_seq[] += 1,
+                     ext_task_wire(record; detailed = true),
                      record.task_id,
                      record.principal,
                      copy(record.required_scopes)))
         nothing
     end
+    nothing
+end
+
+"""
+    ensure_task_notifications!(server::Server) -> Nothing
+
+(Re)install the `notifications/tasks` dispatch pipeline when it is absent or its
+queue has been closed — `stop!` and the server-loop shutdown both close the
+queue (ending the dispatcher so it cannot pin the server past its lifetime), so
+a server started again needs a fresh queue and dispatcher. A live pipeline is
+left untouched.
+"""
+function ensure_task_notifications!(server::Server)
+    q = server.task_notification_queue
+    (q === nothing || !isopen(q)) && install_task_notifications!(server)
     nothing
 end
 

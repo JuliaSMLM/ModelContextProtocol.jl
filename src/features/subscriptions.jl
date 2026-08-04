@@ -62,6 +62,9 @@ One active `subscriptions/listen` stream.
   against the task's `required_scopes` at every `notifications/tasks` delivery —
   a task whose authorization requirements changed after the listen must not keep
   leaking status to a stream that could no longer `tasks/get` it
+- `task_seq::Int`: the task-notification sequence at registration; only events
+  stamped LATER are delivered to this stream, so a queued-but-undrained backlog
+  never replays states older than the stream's own initial snapshot
 """
 struct SubscriptionRecord
     id::Union{String,Int}
@@ -70,9 +73,10 @@ struct SubscriptionRecord
     transport::Any
     task_principal::Union{String,Nothing}
     task_scopes::Set{String}
+    task_seq::Int
 end
 SubscriptionRecord(id, filter, route, transport) =
-    SubscriptionRecord(id, filter, route, transport, nothing, Set{String}())
+    SubscriptionRecord(id, filter, route, transport, nothing, Set{String}(), 0)
 
 """
     SubscriptionRegistry()

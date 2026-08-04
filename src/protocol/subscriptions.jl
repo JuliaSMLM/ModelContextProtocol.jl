@@ -88,9 +88,13 @@ function handle_subscriptions_listen(ctx::RequestContext,
 
     registry = ctx.server.listen_subscriptions
 
-    # Cheap capacity precheck BEFORE the (potentially 256-id) task resolution
-    # below — the race-safe check at registration remains authoritative
+    # Capacity precheck BEFORE the (potentially 256-id) task resolution below —
+    # the race-safe check at registration remains authoritative. It must sweep
+    # dead routes exactly like registration does: counting stale records would
+    # let 64 disconnected streams on a quiet server deny the listen surface
+    # forever (nothing else would ever prune them).
     at_capacity = lock(registry.lock) do
+        filter!(s -> route_alive(s.transport, s.route), registry.subs)
         length(registry.subs) >= MAX_SUBSCRIPTIONS
     end
     if at_capacity
@@ -178,6 +182,13 @@ function handle_subscriptions_listen(ctx::RequestContext,
     # load-bearing on stdio, where the id is the only way to tell streams apart.
     task_scopes = ctx.authenticated_user === nothing ?
         Set{String}() : Set{String}(ctx.authenticated_user.scopes)
+    # Sequence threshold: only task events stamped AFTER this point are delivered
+    # to the new stream — its post-registration initial snapshot (stamped later)
+    # is its first task message, and a queued-but-undrained backlog from before
+    # the subscription can never replay older states to it. Read without the
+    # store lock: the counter is monotone, so the worst case is accepting an
+    # event stamped in the tiny window before registration — practically current.
+    task_seq = ctx.server.tasks.notification_seq[]
     status = lock(registry.lock) do
         # Sweep dead routes FIRST: a record whose connection handler already died
         # (client vanished) must not consume the capacity cap or pin its id
@@ -189,7 +200,7 @@ function handle_subscriptions_listen(ctx::RequestContext,
         route = capture_response_route(transport)
         deliver_notification(transport, route, ack) || return :unreachable
         push!(registry.subs, SubscriptionRecord(sub_id, honored, route, transport,
-                                                task_principal, task_scopes))
+                                                task_principal, task_scopes, task_seq))
         :ok
     end
 
