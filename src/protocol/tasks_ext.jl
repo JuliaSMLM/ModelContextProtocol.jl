@@ -278,28 +278,17 @@ the MRTR round on the original request instead.
 task_await_input(ctx::RequestContext, request::InputRequest) =
     first(task_await_input(ctx, InputRequest[request]))
 
-# Owned deep copy of a JSON-like value: dicts and vectors are rebuilt at every
-# level (String keys, Any containers) while scalars carry over AS-IS — numeric
-# fidelity survives, where a JSON round-trip would reparse an integer beyond
-# Int64 (e.g. 10^30 in a schema `const`) as a lossy Float64. Only called on
-# values JSON3.write already accepted, so the structure is acyclic.
-_owned_json_copy(x) = x
-function _owned_json_copy(d::AbstractDict)
-    out = LittleDict{String,Any}()
-    for (k, v) in pairs(d)
-        out[String(k)] = _owned_json_copy(v)
-    end
-    out
-end
-_owned_json_copy(v::AbstractVector) = Any[_owned_json_copy(x) for x in v]
-_owned_json_copy(t::Tuple) = Any[_owned_json_copy(x) for x in t]
-
 # An owned snapshot of an input request: a caller-held reference to mutable
 # params must not be able to change what a registered key describes on later
 # polls (spec key-stability), nor to escalate a request past the capability
 # check after it ran (e.g. adding sampling `tools` post-validation). The
 # up-front serialization proves wire-serializability (and acyclicity) — better
-# a clear error here than a broken tasks/get later.
+# a clear error here than a broken tasks/get later. The snapshot is a deepcopy:
+# it severs EVERY alias whatever the value's shape (Sets, Refs, NamedTuple
+# fields, BigInt's mutable GMP backing — a structural rebuild of just
+# dicts/vectors would carry all of those by reference) while preserving numeric
+# types exactly, where a JSON round-trip would reparse an integer beyond Int64
+# (e.g. 10^30 in a schema `const`) as a lossy Float64.
 function _frozen_input_request(r::InputRequest)::InputRequest
     r.params === nothing && return r
     try
@@ -308,7 +297,7 @@ function _frozen_input_request(r::InputRequest)::InputRequest
         throw(ArgumentError(safe_error_message(
             "input request params must be JSON-serializable", e)))
     end
-    InputRequest(r.method, _owned_json_copy(r.params))
+    InputRequest(r.method, deepcopy(r.params))
 end
 
 function task_await_input(ctx::RequestContext,
@@ -352,14 +341,24 @@ function task_await_input(ctx::RequestContext,
     # activity, so without this a parked task whose client vanished would pin
     # its spawned handler, channels, and params forever. The timer fires the
     # same expiry transition the sweep applies (whichever runs first wins; both
-    # no-op on a task no longer parked), closing the channels below.
+    # no-op on a task no longer parked), closing the channels below. It RETRIES
+    # on an interval rather than firing once: libuv timers run on the monotonic
+    # clock while task_is_expired compares millisecond wall-clock DateTimes with
+    # strict `>`, so a single fire can land at-or-before the boundary, no-op,
+    # and never come back (observed as a CI-only hang). The timer stops itself
+    # once the task is terminal, and the `finally` below covers delivery.
     deadline = nothing
     if record.ttl_ms !== nothing
         remaining_ms = Dates.value(record.created_at + Millisecond(record.ttl_ms) -
                                    Dates.now(Dates.UTC))
-        deadline = Timer(max(remaining_ms, 0) / 1000) do _
-            lock(store.lock) do
-                expire_parked_input!(record, Dates.now(Dates.UTC))
+        deadline = Timer(max(remaining_ms, 0) / 1000; interval = 0.25) do t
+            try
+                lock(store.lock) do
+                    expire_parked_input!(record, Dates.now(Dates.UTC)) ||
+                        task_is_terminal(record)
+                end && Base.close(t)
+            catch
+                # Keep the timer alive: a transient failure must not strand the waiter
             end
         end
     end

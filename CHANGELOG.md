@@ -62,19 +62,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cancelled status — and an input request whose capability the creating
   request did not declare is refused (the await throws, failing the task, since
   a server must not surface requests the client cannot handle). Registered
-  requests are **frozen**: params are snapshotted to an owned copy at
-  registration — with numeric fidelity, so an integer beyond Int64 in a schema
-  `const` survives exactly — meaning a caller-held reference can neither
-  repurpose a key's content across polls (the spec's key-stability rule) nor
-  escalate a request past the already-run capability check (e.g. adding
-  sampling `tools` afterwards). A task whose ttl elapses while parked on client
-  input is **failed and drained by a clock-driven per-wait deadline timer**
-  (with the store sweep as backstop) — abandoned parked tasks cannot pin their
+  requests are **frozen**: params are deep-copied at registration — severing
+  every alias whatever the value's shape, with numeric fidelity (an integer
+  beyond Int64 in a schema `const` survives exactly) — so a caller-held
+  reference can neither repurpose a key's content across polls (the spec's
+  key-stability rule) nor escalate a request past the already-run capability
+  check (e.g. adding sampling `tools` afterwards). A task whose ttl elapses
+  while parked on client input is **failed and drained by a clock-driven
+  per-wait deadline timer** (interval-retried past the wall-clock boundary,
+  with the store sweep as backstop) — abandoned parked tasks cannot pin their
   spawned handler, channels, and params even when the client vanishes without
-  further requests; post-expiry polls observe task-not-found like any expired
-  task, `working` tasks keep the existing retained-past-ttl behavior since
-  their background work may still be running, and handlers can distinguish
-  expiry from a client cancel via `task_cancelled(ctx)`. Conformance:
+  further requests; a post-expiry poll observes the failed record briefly or
+  task-not-found (timing-dependent), `working` tasks keep the existing
+  retained-past-ttl behavior since their background work may still be running,
+  and handlers can distinguish expiry from a client cancel via
+  `task_cancelled(ctx)`. Conformance:
   the `tasks-mrtr-input` and `tasks-mrtr-composition` scenarios and the
   dispatch suite's parked-elicitation check now pass all substantive checks
   (fixtures `confirm_delete`, `multi_input`, `test_tool_with_task`).

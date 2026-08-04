@@ -837,6 +837,25 @@ _ext_tools() = [
         # Non-serializable params still refuse with a clear error
         @test_throws ArgumentError ModelContextProtocol._frozen_input_request(
             sampling_request(Dict{String,Any}("f" => identity)))
+
+        # The snapshot severs ALIASES OF ANY SHAPE, not just dicts/vectors:
+        # JSON3-serializable mutable values (Set, Ref, a NamedTuple's mutable
+        # field) held by the caller must not be able to rewrite the frozen params
+        src_set = Set(["stop"])
+        src_ref = Ref(1)
+        src_inner = Dict{String,Any}("x" => 1)
+        r3 = ModelContextProtocol._frozen_input_request(sampling_request(Dict{String,Any}(
+            "s" => src_set, "r" => src_ref, "nt" => (inner = src_inner,))))
+        push!(src_set, "CHANGED"); src_ref[] = 99; src_inner["x"] = 99
+        w = JSON3.write(r3.params)
+        @test !occursin("CHANGED", w) && !occursin("99", w)
+
+        # Even a BigInt is snapshotted by value: its GMP backing is mutable in place
+        bn = big(7)
+        r4 = ModelContextProtocol._frozen_input_request(
+            sampling_request(Dict{String,Any}("n" => bn)))
+        Base.GMP.MPZ.add!(bn, big(1))  # in-place: the caller's bn is now 8
+        @test r4.params["n"] == 7
     end
 
     @testset "mid-task input: cancellation beats validation (Codex r1 N1)" begin

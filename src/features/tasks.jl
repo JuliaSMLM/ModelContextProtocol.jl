@@ -218,8 +218,10 @@ extension-era tasks still parked in `input_required` (see
 [`expire_parked_input!`](@ref) — here as a backstop; the clock-driven per-wait
 deadline timer in `task_await_input` is what guarantees the transition without
 further store activity). Once failed, such a record is terminal AND expired, so
-the next sweep deletes it — post-expiry polls simply observe task-not-found, the
-same as any expired task. Other non-terminal records are retained past their ttl
+the next sweep deletes it — a post-expiry poll observes either the failed record
+briefly (when its own sweep is the one that just terminalized it) or
+task-not-found, timing-dependent; neither is promised. Other non-terminal
+records are retained past their ttl
 (the spec permits but does not require deleting those, and their background work
 may still be running). Caller must hold `store.lock`.
 """
