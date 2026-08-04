@@ -284,6 +284,13 @@ const _CMP_MODERN_META = Dict{String,Any}(
         end
     end
 
+    @testset "pre-completions positional constructor shapes still work (Codex r3 W1)" begin
+        p = MCPPrompt("p", "d", PromptArgument[], PromptMessage[], nothing, nothing, nothing)
+        @test p.completions === nothing
+        t = ResourceTemplate("r", "u://{x}", nothing, "", nothing, nothing, nothing, nothing)
+        @test t.completions === nothing
+    end
+
     @testset "throwing completion source fails cleanly" begin
         boom = MCPPrompt(name = "boom", description = "d",
             arguments = [PromptArgument(name = "a", required = false)],

@@ -503,6 +503,12 @@ Base.@kwdef struct MCPPrompt
     completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per argument
 end
 
+# Back-compat: the pre-completions seven-field positional shape still constructs
+MCPPrompt(name::String, description::String, arguments::Vector{PromptArgument},
+          messages::Vector{PromptMessage}, title::Union{String,Nothing},
+          icons::Union{Vector{MCPIcon},Nothing}, _meta::Union{Nothing,Dict{String,Any}}) =
+    MCPPrompt(name, description, arguments, messages, title, icons, _meta, nothing)
+
 """
     MCPPrompt(name::String, description::String, arguments::Vector{PromptArgument}, text::String) -> MCPPrompt
 
@@ -648,6 +654,13 @@ ResourceTemplate(name::String, uri_template::String, mime_type::Union{String,Not
                  description::String, title::Union{String,Nothing},
                  icons::Union{Vector{MCPIcon},Nothing}) =
     ResourceTemplate(name, uri_template, mime_type, description, title, icons, nothing, nothing, nothing)
+
+# Back-compat: the pre-completions eight-field positional shape still constructs
+ResourceTemplate(name::String, uri_template::String, mime_type::Union{String,Nothing},
+                 description::String, title::Union{String,Nothing},
+                 icons::Union{Vector{MCPIcon},Nothing}, data_provider::Union{Function,Nothing},
+                 _meta::Union{Nothing,Dict{String,Any}}) =
+    ResourceTemplate(name, uri_template, mime_type, description, title, icons, data_provider, _meta, nothing)
 
 #==============================================================================
 # 7. Subscription and Progress Types
