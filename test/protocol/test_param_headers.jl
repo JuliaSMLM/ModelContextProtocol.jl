@@ -500,6 +500,47 @@ _ph_b64(s) = Base64.base64encode(s)
         @test mcp_server(name = "v", version = "0.0.1", tools = [mk(ok)]) isa Any
     end
 
+    @testset "context-aware scan: data keys, containers, aliasing (Codex r5)" begin
+        mk(schema) = MCPTool(name = "t", description = "d", input_schema = schema,
+                             handler = args -> TextContent(text = "x"))
+
+        # A property NAMED x-mcp-header is an ordinary argument, not an
+        # annotation — and instance-data keywords may contain the key freely
+        named = Dict{String,Any}("type" => "object",
+            "properties" => Dict{String,Any}(
+                "x-mcp-header" => Dict{String,Any}("type" => "string")))
+        @test mcp_server(name = "v", version = "0.0.1", tools = [mk(named)]) isa Any
+        for data_key in ("default", "const", "examples")
+            payload = data_key == "examples" ?
+                Any[Dict{String,Any}("x-mcp-header" => "X")] :
+                Dict{String,Any}("x-mcp-header" => "X")
+            s = Dict{String,Any}("type" => "object",
+                "properties" => Dict{String,Any}(
+                    "a" => Dict{String,Any}("type" => "object", data_key => payload)))
+            @test mcp_server(name = "v", version = "0.0.1", tools = [mk(s)]) isa Any
+        end
+
+        # Serialization-equivalent containers cannot smuggle annotations:
+        # JSON3 emits Tuples and Sets as arrays, and the normalized walk sees
+        # exactly the advertised JSON
+        annotated = Dict{String,Any}("type" => "string", "x-mcp-header" => "A")
+        tup = Dict{String,Any}("type" => "object",
+            "anyOf" => (Dict{String,Any}(
+                "properties" => Dict{String,Any}("a" => copy(annotated))),))
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                                              tools = [mk(tup)])
+
+        # An aliased subschema straddling a reachable and an unreachable
+        # position is caught: normalization duplicates it into a proper tree
+        shared = Dict{String,Any}("type" => "string", "x-mcp-header" => "A")
+        aliased = Dict{String,Any}("type" => "object",
+            "properties" => Dict{String,Any}(
+                "a" => shared,
+                "list" => Dict{String,Any}("type" => "array", "items" => shared)))
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                                              tools = [mk(aliased)])
+    end
+
     @testset "collect_param_headers gathers, strips, and flags" begin
         mk(headers) = HTTP.Request("POST", "/", headers, "")
         h = ModelContextProtocol.collect_param_headers(mk(

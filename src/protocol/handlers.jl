@@ -1059,35 +1059,63 @@ end
 # deliberately excluded by the spec, as are objects and arrays.
 const _HEADER_ANNOTATABLE_TYPES = ("string", "integer", "boolean")
 
-# Collect the annotated nodes reachable through a chain consisting SOLELY of
-# `properties` — the spec's definition of static reachability for x-mcp-header
-function _reachable_annotated_nodes!(out::Vector{Tuple{String,Any}}, node)
-    node isa AbstractDict || return nothing
-    props = get(node, "properties", get(node, :properties, nothing))
-    props isa AbstractDict || return nothing
-    for (k, v) in props
-        v isa AbstractDict || continue
-        (haskey(v, "x-mcp-header") || haskey(v, Symbol("x-mcp-header"))) &&
-            push!(out, (String(k), v))
-        _reachable_annotated_nodes!(out, v)
-    end
-    nothing
-end
+# Keywords whose content is INSTANCE DATA, not schema: an x-mcp-header key
+# inside a default value or an example is data, never an annotation
+const _SCHEMA_INSTANCE_KEYWORDS = ("default", "const", "examples", "enum",
+                                   "title", "description", "required")
 
-# Find EVERY x-mcp-header occurrence anywhere in the schema — a generic deep
-# scan over all dicts and vectors, so no schema-valued keyword (items,
-# composition, conditionals, dependentSchemas, unevaluated*, older-draft paths,
-# anything future) can smuggle an annotation past validation
-function _scan_all_annotations!(out::Vector{Any}, node)
-    if node isa AbstractDict
-        (haskey(node, "x-mcp-header") || haskey(node, Symbol("x-mcp-header"))) &&
-            push!(out, node)
-        for (_, v) in pairs(node)
-            _scan_all_annotations!(out, v)
-        end
-    elseif node isa AbstractVector
+# Keywords whose value is a NAME-KEYED MAP of subschemas: the keys are names
+# (a key "x-mcp-header" there names a property/definition, it does not annotate),
+# and the values are schemas in an UNREACHABLE position
+const _SCHEMA_NAME_MAP_KEYWORDS = ("patternProperties", "\$defs", "definitions",
+                                   "dependentSchemas")
+
+# Context-aware walk of a NORMALIZED (JSON round-tripped, hence Symbol-keyed,
+# tree-shaped) schema. `reachable` marks nodes on a pure `properties` chain —
+# the spec's definition of where x-mcp-header is valid. A node's own annotation
+# is checked at visit time; `properties` descends as a name-map preserving
+# reachability; name-map keywords descend unreachable; instance-valued keyword
+# contents are skipped entirely; EVERYTHING else (items, composition,
+# conditionals, unknown keywords — any container) descends generically as
+# unreachable, so no schema-valued path can smuggle an annotation past
+# validation while plain data cannot false-trip it.
+function _walk_schema_annotations(tool_name::String, node,
+                                  prop_name::Union{Nothing,String}, reachable::Bool,
+                                  seen::Dict{String,String})
+    if node isa AbstractVector
         for v in node
-            _scan_all_annotations!(out, v)
+            _walk_schema_annotations(tool_name, v, nothing, false, seen)
+        end
+        return nothing
+    end
+    node isa AbstractDict || return nothing
+    if haskey(node, Symbol("x-mcp-header"))
+        h = node[Symbol("x-mcp-header")]
+        (reachable && prop_name !== nothing) || throw(ArgumentError(
+            "tool '$(tool_name)': an x-mcp-header annotation is not statically " *
+            "reachable — only properties reached through a pure `properties` " *
+            "chain may be mirrored (never array items, composition branches, " *
+            "conditionals, or definitions)"))
+        _check_header_suffix(tool_name, "property '$(prop_name)'", h, seen)
+        t = get(node, :type, nothing)
+        t in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
+            "tool '$(tool_name)': x-mcp-header on property '$(prop_name)' requires " *
+            "declared type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(t))"))
+    end
+    for (k, v) in pairs(node)
+        key = String(k)
+        key == "x-mcp-header" && continue
+        key in _SCHEMA_INSTANCE_KEYWORDS && continue
+        if key == "properties" && v isa AbstractDict
+            for (pk, pv) in pairs(v)
+                _walk_schema_annotations(tool_name, pv, String(pk), reachable, seen)
+            end
+        elseif key in _SCHEMA_NAME_MAP_KEYWORDS && v isa AbstractDict
+            for (_, pv) in pairs(v)
+                _walk_schema_annotations(tool_name, pv, nothing, false, seen)
+            end
+        else
+            _walk_schema_annotations(tool_name, v, nothing, false, seen)
         end
     end
     nothing
@@ -1111,33 +1139,20 @@ a clear error. Throws `ArgumentError` on violation.
 function validate_tool_headers(tool::MCPTool)
     seen = Dict{String,String}()
     if !isnothing(tool.input_schema)
-        # Whitelist by construction: collect the annotations reachable through
-        # pure `properties` chains, then deep-scan the WHOLE schema — any
-        # occurrence outside the reachable set (items, composition branches,
-        # conditionals, definitions, whatever keyword carried it) is invalid.
-        # Comparison is by node identity; a schema aliasing one subschema
-        # object into both a reachable and an unreachable position is not
-        # distinguished (write distinct nodes).
-        reachable = Tuple{String,Any}[]
-        _reachable_annotated_nodes!(reachable, tool.input_schema)
-        reachable_ids = Set{UInt}(objectid(n) for (_, n) in reachable)
-        everywhere = Any[]
-        _scan_all_annotations!(everywhere, tool.input_schema)
-        for n in everywhere
-            objectid(n) in reachable_ids || throw(ArgumentError(
-                "tool '$(tool.name)': an x-mcp-header annotation is not statically " *
-                "reachable — only properties reached through a pure `properties` " *
-                "chain may be mirrored (never array items, composition branches, " *
-                "conditionals, or definitions)"))
+        # Validate the schema AS IT WILL BE ADVERTISED: a JSON round-trip
+        # normalizes every serialization-equivalent container (Tuples and Sets
+        # become arrays) and duplicates any aliased subschema into a proper
+        # tree, so the context-aware walk sees exactly what tools/list will
+        # emit — nothing can hide in a container the walk would not descend,
+        # and no aliased node can straddle a reachable and an unreachable
+        # position.
+        normalized = try
+            JSON3.read(JSON3.write(tool.input_schema))
+        catch
+            throw(ArgumentError(
+                "tool '$(tool.name)': input_schema is not JSON-serializable"))
         end
-        for (pname, n) in reachable
-            h = get(n, "x-mcp-header", get(n, Symbol("x-mcp-header"), nothing))
-            _check_header_suffix(tool.name, "property '$(pname)'", h, seen)
-            t = get(n, "type", get(n, :type, nothing))
-            t in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
-                "tool '$(tool.name)': x-mcp-header on property '$(pname)' requires " *
-                "declared type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(t))"))
-        end
+        _walk_schema_annotations(tool.name, normalized, nothing, true, seen)
     else
         for tp in tool.parameters
             tp.header === nothing && continue
