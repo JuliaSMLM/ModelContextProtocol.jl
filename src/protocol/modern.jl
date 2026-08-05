@@ -482,9 +482,9 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
     # stdio (param_headers === nothing) carries no headers to validate.
     if param_headers !== nothing && request.method == "tools/call" &&
        request.params isa CallToolParams
-        tool_idx = findfirst(t -> t.name == request.params.name, server.tools)
-        if tool_idx !== nothing
-            violation = param_header_violation(server.tools[tool_idx],
+        mirror_table = get(server.tool_header_paths, request.params.name, nothing)
+        if mirror_table !== nothing && !isempty(mirror_table)
+            violation = param_header_violation(mirror_table,
                                                request.params.arguments, param_headers)
             if violation !== nothing
                 return JSONRPCError(

@@ -992,46 +992,6 @@ end
 _bounded_name(s::AbstractString, cap::Int=120) =
     ncodeunits(s) <= cap ? String(s) : String(first(s, cap)) * "…"
 
-# Recursively collect x-mcp-header annotations from a schema's properties —
-# SEP-2243 permits them at any nesting depth along object paths (arrays cannot
-# mirror per-element values, so `items` is not descended)
-function _collect_header_paths!(out::Vector{Tuple{Vector{String},String}},
-                                props, prefix::Vector{String})
-    props isa AbstractDict || return nothing
-    for (k, v) in props
-        v isa AbstractDict || continue
-        path = vcat(prefix, String(k))
-        h = get(v, "x-mcp-header", get(v, Symbol("x-mcp-header"), nothing))
-        h isa AbstractString && push!(out, (path, String(h)))
-        nested = get(v, "properties", get(v, :properties, nothing))
-        nested === nothing || _collect_header_paths!(out, nested, path)
-    end
-    nothing
-end
-
-"""
-    tool_header_params(tool::MCPTool) -> Vector{Tuple{Vector{String},String}}
-
-The tool's `x-mcp-header` annotated parameters (SEP-2243 mirroring), each as a
-property PATH into the arguments (annotations are valid at any object nesting
-depth) paired with its header suffix (the header is `Mcp-Param-<suffix>`) —
-read from a raw `input_schema`'s properties when one is set, else from the
-`ToolParameter.header` fields (always top-level paths).
-"""
-function tool_header_params(tool::MCPTool)::Vector{Tuple{Vector{String},String}}
-    out = Tuple{Vector{String},String}[]
-    if !isnothing(tool.input_schema)
-        props = get(tool.input_schema, "properties",
-                    get(tool.input_schema, :properties, nothing))
-        _collect_header_paths!(out, props, String[])
-    else
-        for tp in tool.parameters
-            tp.header === nothing || push!(out, ([tp.name], tp.header))
-        end
-    end
-    out
-end
-
 # RFC 9110 token characters — the only bytes valid in a header-name suffix.
 # \A/\z anchors, not ^/$: PCRE's $ matches BEFORE a trailing newline, which
 # would let "Route\n" register
@@ -1059,100 +1019,115 @@ end
 # deliberately excluded by the spec, as are objects and arrays.
 const _HEADER_ANNOTATABLE_TYPES = ("string", "integer", "boolean")
 
-# Keywords whose content is INSTANCE DATA, not schema: an x-mcp-header key
-# inside a default value or an example is data, never an annotation
-const _SCHEMA_INSTANCE_KEYWORDS = ("default", "const", "examples", "enum",
-                                   "title", "description", "required")
+# Keywords whose value is (or contains) SUBSCHEMAS in a non-`properties`
+# position — an annotation there is not statically reachable and must reject
+const _SCHEMA_SUBSCHEMA_KEYWORDS = ("items", "prefixItems", "additionalItems",
+    "contains", "additionalProperties", "unevaluatedProperties",
+    "unevaluatedItems", "propertyNames", "if", "then", "else", "not",
+    "allOf", "anyOf", "oneOf")
 
-# Keywords whose value is a NAME-KEYED MAP of subschemas: the keys are names
-# (a key "x-mcp-header" there names a property/definition, it does not annotate),
-# and the values are schemas in an UNREACHABLE position
+# Keywords whose value is a NAME-KEYED MAP: the keys are property/definition
+# names (a key "x-mcp-header" there is a NAME, not an annotation), and
+# dict-shaped values are subschemas in an unreachable position. Draft-07
+# `dependencies` is mixed — its array-valued entries are data and skipped.
 const _SCHEMA_NAME_MAP_KEYWORDS = ("patternProperties", "\$defs", "definitions",
-                                   "dependentSchemas")
+                                   "dependentSchemas", "dependencies")
 
 # Context-aware walk of a NORMALIZED (JSON round-tripped, hence Symbol-keyed,
-# tree-shaped) schema. `reachable` marks nodes on a pure `properties` chain —
-# the spec's definition of where x-mcp-header is valid. A node's own annotation
-# is checked at visit time; `properties` descends as a name-map preserving
-# reachability; name-map keywords descend unreachable; instance-valued keyword
-# contents are skipped entirely; EVERYTHING else (items, composition,
-# conditionals, unknown keywords — any container) descends generically as
-# unreachable, so no schema-valued path can smuggle an annotation past
-# validation while plain data cannot false-trip it.
+# tree-shaped) schema, collecting the mirror table as it validates. `path` is
+# the property path when this node was reached through a pure `properties`
+# chain (the spec's reachability definition), else `nothing`. A node's own
+# annotation is checked at visit time; `properties` descends as a name-map
+# extending the path; name-map keywords descend their dict values unreachable;
+# the known subschema keywords descend unreachable; EVERYTHING ELSE — instance
+# keywords (default/const/examples/...) and unrecognized keywords, which JSON
+# Schema 2020-12 defines as annotations whose value is DATA — is skipped, so
+# plain data containing an "x-mcp-header" key can never false-trip validation.
 function _walk_schema_annotations(tool_name::String, node,
-                                  prop_name::Union{Nothing,String}, reachable::Bool,
-                                  seen::Dict{String,String})
+                                  path::Union{Nothing,Vector{String}},
+                                  reachable::Bool, seen::Dict{String,String},
+                                  out::Vector{Tuple{Vector{String},String}})
     if node isa AbstractVector
         for v in node
-            _walk_schema_annotations(tool_name, v, nothing, false, seen)
+            _walk_schema_annotations(tool_name, v, nothing, false, seen, out)
         end
         return nothing
     end
     node isa AbstractDict || return nothing
     if haskey(node, Symbol("x-mcp-header"))
         h = node[Symbol("x-mcp-header")]
-        (reachable && prop_name !== nothing) || throw(ArgumentError(
+        (reachable && path !== nothing) || throw(ArgumentError(
             "tool '$(tool_name)': an x-mcp-header annotation is not statically " *
             "reachable — only properties reached through a pure `properties` " *
             "chain may be mirrored (never array items, composition branches, " *
             "conditionals, or definitions)"))
-        _check_header_suffix(tool_name, "property '$(prop_name)'", h, seen)
+        pname = join(path, ".")
+        _check_header_suffix(tool_name, "property '$(pname)'", h, seen)
         t = get(node, :type, nothing)
         t in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
-            "tool '$(tool_name)': x-mcp-header on property '$(prop_name)' requires " *
+            "tool '$(tool_name)': x-mcp-header on property '$(pname)' requires " *
             "declared type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(t))"))
+        push!(out, (path, String(h)))
     end
+    prefix = path === nothing ? String[] : path
     for (k, v) in pairs(node)
         key = String(k)
-        key == "x-mcp-header" && continue
-        key in _SCHEMA_INSTANCE_KEYWORDS && continue
         if key == "properties" && v isa AbstractDict
             for (pk, pv) in pairs(v)
-                _walk_schema_annotations(tool_name, pv, String(pk), reachable, seen)
+                _walk_schema_annotations(tool_name, pv, vcat(prefix, String(pk)),
+                                         reachable, seen, out)
             end
         elseif key in _SCHEMA_NAME_MAP_KEYWORDS && v isa AbstractDict
             for (_, pv) in pairs(v)
-                _walk_schema_annotations(tool_name, pv, nothing, false, seen)
+                pv isa AbstractDict &&
+                    _walk_schema_annotations(tool_name, pv, nothing, false, seen, out)
             end
-        else
-            _walk_schema_annotations(tool_name, v, nothing, false, seen)
+        elseif key in _SCHEMA_SUBSCHEMA_KEYWORDS
+            _walk_schema_annotations(tool_name, v, nothing, false, seen, out)
         end
+        # everything else: instance data or an unrecognized keyword — data by
+        # the JSON Schema core rules, never walked
     end
     nothing
 end
 
 """
-    validate_tool_headers(tool::MCPTool) -> Nothing
+    validate_tool_headers(tool::MCPTool) -> Vector{Tuple{Vector{String},String}}
 
-Reject invalid SEP-2243 `x-mcp-header` annotations at registration: every
-annotation value must be a string, every suffix a nonempty HTTP token (it
-becomes part of the `Mcp-Param-*` header NAME), suffixes case-insensitively
-unique within the tool (header names are case-insensitive, so `"Route"` and
-`"route"` would collapse onto one mirrored header), the annotated property must
-declare an annotatable type (`string`, `integer`, or `boolean` — the spec
-excludes `number`, objects, and arrays), and annotations are only valid on
-statically reachable properties (never under array `items`, composition
-branches, or definitions). Advertising an invalid annotation would force
-conforming clients to discard the tool — better to refuse it server-side with
-a clear error. Throws `ArgumentError` on violation.
+Reject invalid SEP-2243 `x-mcp-header` annotations at registration and return
+the tool's MIRROR TABLE — the (property path, header suffix) pairs runtime
+enforcement uses. Rules: every annotation value must be a string, every suffix
+a nonempty HTTP token (it becomes part of the `Mcp-Param-*` header NAME),
+suffixes case-insensitively unique within the tool (header names are
+case-insensitive, so `"Route"` and `"route"` would collapse onto one mirrored
+header), the annotated property must declare an annotatable type (`string`,
+`integer`, or `boolean` — the spec excludes `number`, objects, and arrays),
+and annotations are only valid on statically reachable properties (never under
+array `items`, composition branches, or definitions). Advertising an invalid
+annotation would force conforming clients to discard the tool — better to
+refuse it server-side with a clear error. Throws `ArgumentError` on violation.
+
+The table is derived from the NORMALIZED schema — the same JSON tree
+`tools/list` advertises — so validation, advertisement, and enforcement can
+never diverge (a NamedTuple-shaped raw schema serializes to ordinary JSON
+objects and is honored exactly as advertised).
 """
-function validate_tool_headers(tool::MCPTool)
+function validate_tool_headers(tool::MCPTool)::Vector{Tuple{Vector{String},String}}
     seen = Dict{String,String}()
+    out = Tuple{Vector{String},String}[]
     if !isnothing(tool.input_schema)
-        # Validate the schema AS IT WILL BE ADVERTISED: a JSON round-trip
-        # normalizes every serialization-equivalent container (Tuples and Sets
-        # become arrays) and duplicates any aliased subschema into a proper
-        # tree, so the context-aware walk sees exactly what tools/list will
-        # emit — nothing can hide in a container the walk would not descend,
-        # and no aliased node can straddle a reachable and an unreachable
-        # position.
+        # Validate and collect from the schema AS IT WILL BE ADVERTISED: a JSON
+        # round-trip normalizes every serialization-equivalent container
+        # (Tuples, Sets, NamedTuples, Chars) and duplicates any aliased
+        # subschema into a proper tree, so the context-aware walk sees exactly
+        # what tools/list will emit.
         normalized = try
             JSON3.read(JSON3.write(tool.input_schema))
         catch
             throw(ArgumentError(
                 "tool '$(tool.name)': input_schema is not JSON-serializable"))
         end
-        _walk_schema_annotations(tool.name, normalized, nothing, true, seen)
+        _walk_schema_annotations(tool.name, normalized, nothing, true, seen, out)
     else
         for tp in tool.parameters
             tp.header === nothing && continue
@@ -1160,9 +1135,10 @@ function validate_tool_headers(tool::MCPTool)
             tp.type in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
                 "tool '$(tool.name)': header-mirrored parameter '$(tp.name)' requires " *
                 "type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(tp.type))"))
+            push!(out, ([tp.name], String(tp.header)))
         end
     end
-    nothing
+    out
 end
 
 """
@@ -1214,27 +1190,29 @@ function _resolve_argument_path(arguments, path::Vector{String})
 end
 
 """
-    param_header_violation(tool::MCPTool, arguments, headers::Dict{String,Any})
+    param_header_violation(annotated::Vector{Tuple{Vector{String},String}},
+                           arguments, headers::Dict{String,Any})
         -> Union{String,Nothing}
 
 Validate a modern-era HTTP `tools/call`'s `Mcp-Param-*` headers against its body
-(SEP-2243 custom-header mirroring): for every `x-mcp-header` annotated parameter
-path PRESENT in the request's arguments with a non-null value, the mirrored
-header must exist, must not be duplicated or unsafe, must decode (a
-`=?base64?...?=` sentinel is validated STRICTLY; anything else is a literal),
-and must match the body value — strings compare exactly, booleans through
-`true`/`false`, and numbers NUMERICALLY (a JavaScript client's `String(1e-7)`
-is `"1e-7"` while Julia would print `"1.0e-7"`; parsing the header instead of
-string-comparing makes both representations of the same number match).
+(SEP-2243 custom-header mirroring), driven by the tool's MIRROR TABLE — the
+(property path, suffix) pairs `validate_tool_headers` derived from the
+NORMALIZED schema at registration, so enforcement matches advertisement
+exactly. For every annotated path PRESENT in the request's arguments with a
+non-null value, the mirrored header must exist, must not be duplicated or
+unsafe, must decode (a `=?base64?...?=` sentinel is validated STRICTLY;
+anything else is a literal), and must match the body value — strings compare
+exactly, booleans through `true`/`false`, integers exactly through the full
+JSON number grammar, and non-integral numbers numerically.
 
 Skipped per spec: absent paths (nothing to mirror), explicit JSON `null` values
 (clients omit the header for null, servers must not expect it), headers whose
 path is not in the body, and `Mcp-Param-*` headers matching no annotation
 (forward compatibility). Returns the violation description, or `nothing`.
 """
-function param_header_violation(tool::MCPTool, arguments,
+function param_header_violation(annotated::Vector{Tuple{Vector{String},String}},
+                                arguments,
                                 headers::Dict{String,Any})::Union{String,Nothing}
-    annotated = tool_header_params(tool)
     isempty(annotated) && return nothing
     arguments isa AbstractDict || return nothing
     for (path, suffix) in annotated

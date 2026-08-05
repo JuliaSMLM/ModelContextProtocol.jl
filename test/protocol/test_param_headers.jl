@@ -483,7 +483,6 @@ _ph_b64(s) = Base64.base64encode(s)
             Dict{String,Any}("propertyNames" => copy(annotated)),
             Dict{String,Any}("unevaluatedProperties" => copy(annotated)),
             Dict{String,Any}("additionalItems" => copy(annotated)),
-            Dict{String,Any}("someFutureKeyword" => inner),
         )
             schema = merge(Dict{String,Any}("type" => "object"), wrap)
             @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
@@ -539,6 +538,60 @@ _ph_b64(s) = Base64.base64encode(s)
                 "list" => Dict{String,Any}("type" => "array", "items" => shared)))
         @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
                                               tools = [mk(aliased)])
+    end
+
+    @testset "advertised-schema fidelity: enforcement matches normalization (Codex r6)" begin
+        mk(name, schema) = MCPTool(name = name, description = "d", input_schema = schema,
+                                   handler = args -> TextContent(text = "x"))
+
+        # A NamedTuple-shaped properties map serializes as an ordinary JSON
+        # object: the mirror table is derived from that SAME normalized tree,
+        # so enforcement cannot silently disappear for exotic raw containers
+        nt_tool = mk("nt", Dict{String,Any}(
+            "type" => "object",
+            "properties" => (route = Dict{String,Any}("type" => "string",
+                                                      "x-mcp-header" => "Route"),)))
+        # A Char annotation serializes as a string and is honored as one
+        char_tool = mk("ch", Dict{String,Any}(
+            "type" => "object",
+            "properties" => Dict{String,Any}(
+                "a" => Dict{String,Any}("type" => "string", "x-mcp-header" => 'A'))))
+        server = mcp_server(name = "fid", version = "0.0.1", tools = [nt_tool, char_tool])
+        server.transport = StdioTransport(input = IOBuffer(), output = IOBuffer())
+        state = ServerState()
+        r = _ph_call(server, state, "nt", Dict("route" => "r1"); headers = Dict{String,Any}())
+        @test r["error"]["code"] == -32020  # enforced despite the NamedTuple raw shape
+        @test haskey(_ph_call(server, state, "nt", Dict("route" => "r1");
+                              headers = Dict{String,Any}("route" => "r1"), id = 2), "result")
+        r2 = _ph_call(server, state, "ch", Dict("a" => "v"); headers = Dict{String,Any}())
+        @test r2["error"]["code"] == -32020 && occursin("Mcp-Param-A", r2["error"]["message"])
+
+        # dependentRequired values are property-NAME arrays (2020-12 data, not
+        # schemas) — a key named x-mcp-header there is valid
+        dep_req = mk("dr", Dict{String,Any}("type" => "object",
+            "properties" => Dict{String,Any}("other" => Dict{String,Any}("type" => "string")),
+            "dependentRequired" => Dict{String,Any}("x-mcp-header" => ["other"])))
+        @test mcp_server(name = "v", version = "0.0.1", tools = [dep_req]) isa Any
+
+        # Unknown keywords are annotations whose value is DATA per JSON Schema
+        # core — an x-mcp-header inside custom metadata never false-trips
+        custom = mk("cm", Dict{String,Any}("type" => "object",
+            "x-ui-metadata" => Dict{String,Any}("x-mcp-header" => "Label")))
+        @test mcp_server(name = "v", version = "0.0.1", tools = [custom]) isa Any
+
+        # Draft-07 dependencies: schema-valued entries are unreachable schemas
+        # (annotations reject); array-valued entries are data (names pass)
+        dep_schema = mk("ds", Dict{String,Any}("type" => "object",
+            "dependencies" => Dict{String,Any}(
+                "a" => Dict{String,Any}(
+                    "properties" => Dict{String,Any}(
+                        "b" => Dict{String,Any}("type" => "string",
+                                                "x-mcp-header" => "B"))))))
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                                              tools = [dep_schema])
+        dep_array = mk("da", Dict{String,Any}("type" => "object",
+            "dependencies" => Dict{String,Any}("x-mcp-header" => ["other"])))
+        @test mcp_server(name = "v", version = "0.0.1", tools = [dep_array]) isa Any
     end
 
     @testset "collect_param_headers gathers, strips, and flags" begin

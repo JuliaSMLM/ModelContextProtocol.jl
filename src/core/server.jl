@@ -16,10 +16,13 @@ Register a tool, resource, or prompt with the MCP server.
 function register! end
 
 function register!(server::Server, tool::Tool)
-    # SEP-2243: x-mcp-header suffixes must be valid, case-insensitively unique
-    # HTTP tokens — an invalid annotation is rejected at registration instead of
-    # being advertised to clients that would have to discard the tool
-    tool isa MCPTool && validate_tool_headers(tool)
+    # SEP-2243: annotations are validated against the NORMALIZED schema (what
+    # tools/list will advertise) — invalid ones are rejected at registration
+    # instead of being advertised to clients that would have to discard the
+    # tool — and the resulting mirror table is persisted for the
+    # handle_modern_request preflight, so enforcement can never diverge from
+    # advertisement
+    tool isa MCPTool && (server.tool_header_paths[tool.name] = validate_tool_headers(tool))
     push!(server.tools, tool)
     server
 end
