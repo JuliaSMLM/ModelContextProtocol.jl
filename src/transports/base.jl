@@ -46,6 +46,18 @@ Return the authenticated user associated with the message most recently read fro
 pending_auth_context(::Transport) = nothing
 
 """
+    pending_param_headers(transport::Transport) -> Union{Nothing,Dict{String,Any}}
+
+Return the `Mcp-Param-*` custom headers (SEP-2243 parameter mirroring) of the
+message most recently read from `transport`: a Dict keyed by LOWERCASED header
+suffix, with `String` values (OWS-stripped) or `:invalid` for duplicated/unsafe
+headers — or `nothing` when the transport carries no HTTP headers (e.g. stdio),
+which disables the mirroring validation entirely. HTTP overrides this; the
+default is `nothing`.
+"""
+pending_param_headers(::Transport) = nothing
+
+"""
     write_message(transport::Transport, message::String) -> Nothing
 
 Write a message to the transport.

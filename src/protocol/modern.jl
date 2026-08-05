@@ -379,7 +379,8 @@ opt-in: its response stream IS the subscription stream, and the spec forbids
 - `Union{Response,Nothing}`: The response to send
 """
 function handle_modern_request(server::Server, state::ServerState, request::Request;
-                               authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
+                               authenticated_user::Union{AuthenticatedUser,Nothing}=nothing,
+                               param_headers::Union{Nothing,Dict{String,Any}}=nothing)::Union{Response,Nothing}
     # Suppress notifications/message from here through the END of this loop
     # iteration (the loop re-arms the flag per message): parser/dispatch/post-
     # dispatch log records must not reach a modern client that set no logLevel,
@@ -521,7 +522,7 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         rl = ModernRequestLogger(lg, server.transport, route, level)
         try
             return with_logger(rl) do
-                serve_modern(server, request, version, mrtr_state, authenticated_user)
+                serve_modern(server, request, version, mrtr_state, authenticated_user, param_headers)
             end
         finally
             # The response is on its way: late child-task records must drop to the
@@ -540,7 +541,7 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         end
     end
     try
-        serve_modern(server, request, version, mrtr_state, authenticated_user)
+        serve_modern(server, request, version, mrtr_state, authenticated_user, param_headers)
     finally
         # No logger scope existed to hand off; just clear the worker flag (even on
         # a throw) so it cannot leak into a later request on this loop task and
@@ -612,7 +613,8 @@ around the whole serve path.
 - `Union{Response,Nothing}`: The response to send (`nothing` when deferred)
 """
 function serve_modern(server::Server, request::Request, version::String, mrtr_state,
-                      authenticated_user::Union{AuthenticatedUser,Nothing})::Union{Response,Nothing}
+                      authenticated_user::Union{AuthenticatedUser,Nothing},
+                      param_headers::Union{Nothing,Dict{String,Any}}=nothing)::Union{Response,Nothing}
     # Fresh state: modern requests are stateless, and handlers (including ctx-aware
     # tool handlers) must not see or mutate the legacy session's ServerState
     ctx = RequestContext(
@@ -625,7 +627,8 @@ function serve_modern(server::Server, request::Request, version::String, mrtr_st
         input_responses = request.meta.input_responses,
         input_state = mrtr_state,
         client_capabilities = request.meta.client_capabilities,
-        params_digest = request.meta.params_digest
+        params_digest = request.meta.params_digest,
+        param_headers = param_headers
     )
 
     request_start = time()

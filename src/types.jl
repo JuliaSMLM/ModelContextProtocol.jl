@@ -324,7 +324,8 @@ end
 ==============================================================================#
 
 """
-    ToolParameter(; name::String, description::String, type::String, required::Bool=false, default::Any=nothing)
+    ToolParameter(; name::String, description::String, type::String, required::Bool=false,
+                  default::Any=nothing, header::Union{String,Nothing}=nothing)
 
 Define a parameter for an MCP tool.
 
@@ -334,13 +335,18 @@ Define a parameter for an MCP tool.
 - `type::String`: Type of the parameter as specified in the MCP schema (e.g., "string", "number", "boolean")
 - `required::Bool`: Whether the parameter is required for tool invocation
 - `default::Any`: Default value for the parameter if not provided (nothing means no default)
+- `header::Union{String,Nothing}`: Optional SEP-2243 header-mirroring suffix,
+  emitted as `x-mcp-header` in the generated schema: modern HTTP clients mirror
+  the argument as an `Mcp-Param-<header>` request header (for routing), which
+  the server validates against the body
 """
 Base.@kwdef struct ToolParameter
     name::String
     description::String
-    type::String 
+    type::String
     required::Bool = false
     default::Any = nothing
+    header::Union{String,Nothing} = nothing
 end
 
 """

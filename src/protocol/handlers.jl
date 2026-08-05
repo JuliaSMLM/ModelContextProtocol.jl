@@ -33,6 +33,7 @@ Base.@kwdef mutable struct RequestContext
     client_capabilities::Any = nothing  # modern-era _meta clientCapabilities (raw parsed view); nothing on legacy requests
     params_digest::Union{Nothing,String} = nothing  # canonical params digest of a modern MRTR-method request
     detach::Union{Nothing,TaskDetachState} = nothing  # set for detachable modern tool calls (tasks extension); enables task_detach(ctx)
+    param_headers::Union{Nothing,Dict{String,Any}} = nothing  # Mcp-Param-* headers of a modern HTTP request (SEP-2243 mirroring); nothing on stdio/legacy
 end
 
 """
@@ -987,6 +988,76 @@ function handle_unsubscribe_resource(ctx::RequestContext, params::UnsubscribePar
 end
 
 """
+    tool_header_params(tool::MCPTool) -> Dict{String,String}
+
+The tool's `x-mcp-header` annotated parameters (SEP-2243 mirroring), as a map
+from parameter name to header suffix (the header is `Mcp-Param-<suffix>`) —
+read from a raw `input_schema`'s properties when one is set, else from the
+`ToolParameter.header` fields.
+"""
+function tool_header_params(tool::MCPTool)::Dict{String,String}
+    out = Dict{String,String}()
+    if !isnothing(tool.input_schema)
+        props = get(tool.input_schema, "properties",
+                    get(tool.input_schema, :properties, nothing))
+        if props isa AbstractDict
+            for (k, v) in props
+                v isa AbstractDict || continue
+                h = get(v, "x-mcp-header", get(v, Symbol("x-mcp-header"), nothing))
+                h isa AbstractString && (out[String(k)] = String(h))
+            end
+        end
+    else
+        for tp in tool.parameters
+            tp.header === nothing || (out[tp.name] = tp.header)
+        end
+    end
+    out
+end
+
+"""
+    param_header_violation(tool::MCPTool, arguments, headers::Dict{String,Any})
+        -> Union{String,Nothing}
+
+Validate a modern-era HTTP `tools/call`'s `Mcp-Param-*` headers against its body
+(SEP-2243 custom-header mirroring): for every `x-mcp-header` annotated parameter
+PRESENT in the request's arguments, the mirrored header must exist, must not be
+duplicated or unsafe, must decode (a `=?base64?...?=` sentinel is validated
+STRICTLY; anything else is a literal), and must equal the body value's string
+form. Headers for parameters absent from the arguments, and `Mcp-Param-*`
+headers matching no annotated parameter, are ignored (forward compatibility —
+the MUSTs cover only mirrored body values). Returns the violation description,
+or `nothing` when valid.
+"""
+function param_header_violation(tool::MCPTool, arguments,
+                                headers::Dict{String,Any})::Union{String,Nothing}
+    annotated = tool_header_params(tool)
+    isempty(annotated) && return nothing
+    arguments isa AbstractDict || return nothing
+    for (pname, suffix) in annotated
+        value = if haskey(arguments, pname)
+            arguments[pname]
+        elseif haskey(arguments, Symbol(pname))
+            arguments[Symbol(pname)]
+        else
+            continue  # param not sent: nothing to mirror
+        end
+        raw = get(headers, lowercase(suffix), nothing)
+        raw === nothing &&
+            return "required header Mcp-Param-$(suffix) is missing for argument '$(pname)'"
+        raw isa AbstractString ||
+            return "Mcp-Param-$(suffix) header is duplicated or contains unsafe characters"
+        decoded = decode_mcp_header_value(raw)
+        decoded === nothing &&
+            return "Mcp-Param-$(suffix) header carries a malformed Base64 sentinel value"
+        expected = value isa AbstractString ? String(value) : string(value)
+        decoded == expected ||
+            return "Mcp-Param-$(suffix) header does not match body argument '$(pname)'"
+    end
+    nothing
+end
+
+"""
     handle_call_tool(ctx::RequestContext, params::CallToolParams) -> HandlerResult
 
 Handle requests to call a specific tool with the provided parameters.
@@ -1013,6 +1084,23 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
     end
 
     tool = ctx.server.tools[tool_idx]
+
+    # SEP-2243 parameter mirroring (modern HTTP): every x-mcp-header annotated
+    # param present in the request's arguments must arrive with a matching
+    # Mcp-Param-<suffix> header. Checked before defaults are applied (the header
+    # mirrors what the client actually SENT) and before any execution path; a
+    # violation is -32020, which the HTTP layer maps to 400. Skipped when the
+    # transport carries no headers (stdio: param_headers === nothing) or the
+    # request is legacy-era.
+    if ctx.protocol_version !== nothing && ctx.param_headers !== nothing
+        violation = param_header_violation(tool, params.arguments, ctx.param_headers)
+        violation !== nothing && return HandlerResult(
+            error=ErrorInfo(
+                code=ErrorCodes.HEADER_MISMATCH,
+                message="Header mismatch: $violation"
+            )
+        )
+    end
 
     # Per-tool scope enforcement. When a tool declares `required_scopes` and the request
     # carries an authenticated principal (HTTP auth active), every required scope must be
@@ -1560,6 +1648,10 @@ function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::Handle
                             if !isnothing(param.default)
                                 param_schema["default"] = param.default
                             end
+                            # SEP-2243 header mirroring annotation
+                            if !isnothing(param.header)
+                                param_schema["x-mcp-header"] = param.header
+                            end
                             param_schema
                         end for param in tool.parameters
                     ),
@@ -1668,7 +1760,8 @@ Any exceptions thrown during processing are caught and converted to INTERNAL_ERR
 - `Response`: Either a successful response or an error response depending on the handler result
 """
 function handle_request(server::Server, state::ServerState, request::Request;
-                        authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
+                        authenticated_user::Union{AuthenticatedUser,Nothing}=nothing,
+                        param_headers::Union{Nothing,Dict{String,Any}}=nothing)::Union{Response,Nothing}
     # Era dispatch: a request carrying io.modelcontextprotocol/protocolVersion in its
     # params _meta is modern-era (2026-07-28+) and served statelessly; everything
     # below this branch is the legacy (initialize-handshake) era. server/discover is
@@ -1676,7 +1769,8 @@ function handle_request(server::Server, state::ServerState, request::Request;
     # fields must get the modern validation error (-32602), not fall through to the
     # legacy era's "unknown method".
     if request.meta.protocol_version !== nothing || request.method == "server/discover"
-        return handle_modern_request(server, state, request; authenticated_user=authenticated_user)
+        return handle_modern_request(server, state, request; authenticated_user=authenticated_user,
+                                     param_headers=param_headers)
     end
 
     ctx = RequestContext(

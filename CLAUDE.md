@@ -490,8 +490,12 @@ advertised in initialize and `server/discover`) — the modern-dated suite passe
 40/40. `notifications/tasks` is in: `subscriptions/listen` accepts a `taskIds`
 filter (-32021 without the declared extension; ack echoes only the ids the
 requestor could `tasks/get`), and every extension-era status transition pushes
-the complete DetailedTask to subscribed streams. Still pending for the modern
-era: `x-mcp-header` parameter mirroring (the optional SEP-2243 half).
+the complete DetailedTask to subscribed streams. `x-mcp-header` parameter
+mirroring is in too (`ToolParameter(header=...)` or raw-schema `x-mcp-header`;
+`Mcp-Param-<suffix>` validated against the body with strict Base64 sentinel
+handling, -32020/400 on violation; conformance
+`http-custom-header-server-validation` 10/10) — **the modern-era surface is
+complete: nothing on the 2026-07-28 spec's server side remains unimplemented.**
 
 ### ✅ Implemented
 

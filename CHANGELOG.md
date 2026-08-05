@@ -83,6 +83,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatch suite's parked-elicitation check now pass all substantive checks
   (fixtures `confirm_delete`, `multi_input`, `test_tool_with_task`).
 
+- **Custom header parameter mirroring (`x-mcp-header`, SEP-2243).** A tool
+  parameter may declare a header-mirroring suffix — `ToolParameter(header =
+  "Routing-Key")`, emitted as `x-mcp-header` in the generated schema, or the
+  same key in a raw `input_schema` — and modern HTTP clients mirror that
+  argument as an `Mcp-Param-<suffix>` request header for transport-level
+  routing. The server validates every mirror against the body before any
+  execution path: strict `=?base64?...?=` sentinel decoding (invalid padding
+  or characters rejected), literal comparison otherwise, and `-32020` (HTTP
+  400) when the header is missing while its argument is in the body,
+  duplicated, malformed, or mismatched. Headers for absent arguments and
+  unrecognized `Mcp-Param-*` headers are ignored (forward compatibility);
+  stdio and legacy-era requests are untouched. The headers travel from the
+  connection handler to the dispatch layer inside the request envelope — never
+  via shared transport state — and the conformance suite's
+  `http-custom-header-server-validation` scenario passes 10/10.
+
 - **Tasks extension status notifications (`notifications/tasks`).** A
   `subscriptions/listen` request may now subscribe to task status updates via a
   `taskIds` filter entry: every extension-era transition — parking on input,

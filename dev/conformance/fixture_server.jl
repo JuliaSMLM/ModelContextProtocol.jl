@@ -218,6 +218,12 @@ tools = [
             error("protocol_error_job: simulated internal failure")
         end),
     MCPTool(
+        name = "test_header_param",
+        description = "SEP-2243 custom-header mirroring: routing_key mirrors Mcp-Param-Routing-Key",
+        parameters = [ToolParameter(name = "routing_key", description = "Routed value",
+                                    type = "string", required = true, header = "Routing-Key")],
+        handler = args -> TextContent(text = "routed: $(args["routing_key"])")),
+    MCPTool(
         name = "confirm_delete",
         description = "Task-supporting confirmation: parks on one elicitation inputRequest, completes on the response",
         parameters = [ToolParameter(name = "filename", description = "File to delete",
