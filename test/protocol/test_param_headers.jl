@@ -482,7 +482,6 @@ _ph_b64(s) = Base64.base64encode(s)
             Dict{String,Any}("dependentSchemas" => Dict{String,Any}("x" => inner)),
             Dict{String,Any}("propertyNames" => copy(annotated)),
             Dict{String,Any}("unevaluatedProperties" => copy(annotated)),
-            Dict{String,Any}("additionalItems" => copy(annotated)),
         )
             schema = merge(Dict{String,Any}("type" => "object"), wrap)
             @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
@@ -582,6 +581,7 @@ _ph_b64(s) = Base64.base64encode(s)
         # Draft-07 dependencies: schema-valued entries are unreachable schemas
         # (annotations reject); array-valued entries are data (names pass)
         dep_schema = mk("ds", Dict{String,Any}("type" => "object",
+            "\$schema" => "http://json-schema.org/draft-07/schema#",
             "dependencies" => Dict{String,Any}(
                 "a" => Dict{String,Any}(
                     "properties" => Dict{String,Any}(
@@ -590,8 +590,62 @@ _ph_b64(s) = Base64.base64encode(s)
         @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
                                               tools = [dep_schema])
         dep_array = mk("da", Dict{String,Any}("type" => "object",
+            "\$schema" => "http://json-schema.org/draft-07/schema#",
             "dependencies" => Dict{String,Any}("x-mcp-header" => ["other"])))
         @test mcp_server(name = "v", version = "0.0.1", tools = [dep_array]) isa Any
+    end
+
+    @testset "dialect-aware keywords, replacement, duplicate params (Codex r7)" begin
+        mk(name, schema) = MCPTool(name = name, description = "d", input_schema = schema,
+                                   handler = args -> TextContent(text = "x"))
+        annotated = Dict{String,Any}("type" => "string", "x-mcp-header" => "A")
+
+        # 2020-12 (the default): contentSchema IS schema-valued — annotations
+        # inside reject; additionalItems is a REMOVED keyword — its content is
+        # data and registers freely
+        content = mk("cs", Dict{String,Any}("type" => "object",
+            "properties" => Dict{String,Any}(
+                "doc" => Dict{String,Any}("type" => "string",
+                    "contentSchema" => Dict{String,Any}(
+                        "properties" => Dict{String,Any}("inner" => copy(annotated)))))))
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                                              tools = [content])
+        add_items = mk("ai", Dict{String,Any}("type" => "object",
+            "additionalItems" => copy(annotated)))
+        @test mcp_server(name = "v", version = "0.0.1", tools = [add_items]) isa Any
+
+        # draft-07 (declared): prefixItems is unknown there — data, registers
+        d7_prefix = mk("d7p", Dict{String,Any}("type" => "object",
+            "\$schema" => "http://json-schema.org/draft-07/schema#",
+            "prefixItems" => [copy(annotated)]))
+        @test mcp_server(name = "v", version = "0.0.1", tools = [d7_prefix]) isa Any
+
+        # Same-name re-registration REPLACES tool AND table atomically: the old
+        # annotated handler cannot stay dispatchable with its enforcement gone
+        server = mcp_server(name = "rep", version = "0.0.1", tools = [MCPTool(
+            name = "r", description = "d",
+            parameters = [ToolParameter(name = "a", description = "d",
+                                        type = "string", header = "A")],
+            handler = args -> TextContent(text = "v1"))])
+        server.transport = StdioTransport(input = IOBuffer(), output = IOBuffer())
+        state = ServerState()
+        register!(server, MCPTool(name = "r", description = "d",
+            parameters = [ToolParameter(name = "a", description = "d", type = "string")],
+            handler = args -> TextContent(text = "v2")))
+        @test count(t -> t.name == "r", server.tools) == 1
+        r = _ph_call(server, state, "r", Dict("a" => "x"); headers = Dict{String,Any}())
+        @test r["result"]["content"][1]["text"] == "v2"  # new handler, no enforcement
+
+        # Duplicate parameter names with mirroring in use are refused: schema
+        # generation collapses duplicates, which would split advertisement from
+        # enforcement
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+            tools = [MCPTool(name = "dup", description = "d",
+                parameters = [ToolParameter(name = "x", description = "d",
+                                            type = "string", header = "X"),
+                              ToolParameter(name = "x", description = "d",
+                                            type = "string")],
+                handler = args -> TextContent(text = "x"))])
     end
 
     @testset "collect_param_headers gathers, strips, and flags" begin

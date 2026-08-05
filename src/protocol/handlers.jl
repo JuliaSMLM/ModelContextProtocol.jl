@@ -1019,19 +1019,22 @@ end
 # deliberately excluded by the spec, as are objects and arrays.
 const _HEADER_ANNOTATABLE_TYPES = ("string", "integer", "boolean")
 
-# Keywords whose value is (or contains) SUBSCHEMAS in a non-`properties`
-# position — an annotation there is not statically reachable and must reject
-const _SCHEMA_SUBSCHEMA_KEYWORDS = ("items", "prefixItems", "additionalItems",
-    "contains", "additionalProperties", "unevaluatedProperties",
-    "unevaluatedItems", "propertyNames", "if", "then", "else", "not",
+# Keyword classification is DIALECT-SPECIFIC: MCP schemas follow their declared
+# `\$schema` dialect (2020-12 by default). A keyword only carries subschemas in
+# the dialects that define it — in any other dialect it is an unrecognized
+# keyword, i.e. DATA per the JSON Schema core rules (2020-12 removed
+# `additionalItems` and `definitions`/`dependencies`; draft-07 predates
+# `prefixItems`, `unevaluated*`, `contentSchema`, `\$defs`, and
+# `dependentSchemas`).
+const _SUBSCHEMA_KEYWORDS_2020 = ("items", "prefixItems", "contains",
+    "additionalProperties", "unevaluatedProperties", "unevaluatedItems",
+    "propertyNames", "if", "then", "else", "not", "allOf", "anyOf", "oneOf",
+    "contentSchema")
+const _NAME_MAP_KEYWORDS_2020 = ("patternProperties", "\$defs", "dependentSchemas")
+const _SUBSCHEMA_KEYWORDS_D7 = ("items", "additionalItems", "contains",
+    "additionalProperties", "propertyNames", "if", "then", "else", "not",
     "allOf", "anyOf", "oneOf")
-
-# Keywords whose value is a NAME-KEYED MAP: the keys are property/definition
-# names (a key "x-mcp-header" there is a NAME, not an annotation), and
-# dict-shaped values are subschemas in an unreachable position. Draft-07
-# `dependencies` is mixed — its array-valued entries are data and skipped.
-const _SCHEMA_NAME_MAP_KEYWORDS = ("patternProperties", "\$defs", "definitions",
-                                   "dependentSchemas", "dependencies")
+const _NAME_MAP_KEYWORDS_D7 = ("patternProperties", "definitions", "dependencies")
 
 # Context-aware walk of a NORMALIZED (JSON round-tripped, hence Symbol-keyed,
 # tree-shaped) schema, collecting the mirror table as it validates. `path` is
@@ -1046,10 +1049,11 @@ const _SCHEMA_NAME_MAP_KEYWORDS = ("patternProperties", "\$defs", "definitions",
 function _walk_schema_annotations(tool_name::String, node,
                                   path::Union{Nothing,Vector{String}},
                                   reachable::Bool, seen::Dict{String,String},
-                                  out::Vector{Tuple{Vector{String},String}})
+                                  out::Vector{Tuple{Vector{String},String}},
+                                  subkw::Tuple, mapkw::Tuple)
     if node isa AbstractVector
         for v in node
-            _walk_schema_annotations(tool_name, v, nothing, false, seen, out)
+            _walk_schema_annotations(tool_name, v, nothing, false, seen, out, subkw, mapkw)
         end
         return nothing
     end
@@ -1075,15 +1079,15 @@ function _walk_schema_annotations(tool_name::String, node,
         if key == "properties" && v isa AbstractDict
             for (pk, pv) in pairs(v)
                 _walk_schema_annotations(tool_name, pv, vcat(prefix, String(pk)),
-                                         reachable, seen, out)
+                                         reachable, seen, out, subkw, mapkw)
             end
-        elseif key in _SCHEMA_NAME_MAP_KEYWORDS && v isa AbstractDict
+        elseif key in mapkw && v isa AbstractDict
             for (_, pv) in pairs(v)
                 pv isa AbstractDict &&
-                    _walk_schema_annotations(tool_name, pv, nothing, false, seen, out)
+                    _walk_schema_annotations(tool_name, pv, nothing, false, seen, out, subkw, mapkw)
             end
-        elseif key in _SCHEMA_SUBSCHEMA_KEYWORDS
-            _walk_schema_annotations(tool_name, v, nothing, false, seen, out)
+        elseif key in subkw
+            _walk_schema_annotations(tool_name, v, nothing, false, seen, out, subkw, mapkw)
         end
         # everything else: instance data or an unrecognized keyword — data by
         # the JSON Schema core rules, never walked
@@ -1127,8 +1131,28 @@ function validate_tool_headers(tool::MCPTool)::Vector{Tuple{Vector{String},Strin
             throw(ArgumentError(
                 "tool '$(tool.name)': input_schema is not JSON-serializable"))
         end
-        _walk_schema_annotations(tool.name, normalized, nothing, true, seen, out)
+        # Keyword classification follows the schema's DECLARED dialect
+        # (2020-12 is MCP's default when \$schema is absent)
+        dialect = get(normalized, Symbol("\$schema"), nothing)
+        is_d7 = dialect isa AbstractString && occursin("draft-07", dialect)
+        subkw = is_d7 ? _SUBSCHEMA_KEYWORDS_D7 : _SUBSCHEMA_KEYWORDS_2020
+        mapkw = is_d7 ? _NAME_MAP_KEYWORDS_D7 : _NAME_MAP_KEYWORDS_2020
+        _walk_schema_annotations(tool.name, normalized, nothing, true, seen, out,
+                                 subkw, mapkw)
     else
+        # Duplicate parameter names collapse in schema generation (last wins);
+        # with any header annotation present that would desynchronize the
+        # advertised schema from the mirror table — refuse the ambiguity
+        if any(tp -> tp.header !== nothing, tool.parameters)
+            names = Set{String}()
+            for tp in tool.parameters
+                tp.name in names && throw(ArgumentError(
+                    "tool '$(tool.name)': duplicate parameter name '$(tp.name)' " *
+                    "with header mirroring in use — schema generation collapses " *
+                    "duplicates, splitting advertisement from enforcement"))
+                push!(names, tp.name)
+            end
+        end
         for tp in tool.parameters
             tp.header === nothing && continue
             _check_header_suffix(tool.name, "parameter '$(tp.name)'", tp.header, seen)

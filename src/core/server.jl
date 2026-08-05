@@ -20,9 +20,20 @@ function register!(server::Server, tool::Tool)
     # tools/list will advertise) — invalid ones are rejected at registration
     # instead of being advertised to clients that would have to discard the
     # tool — and the resulting mirror table is persisted for the
-    # handle_modern_request preflight, so enforcement can never diverge from
-    # advertisement
-    tool isa MCPTool && (server.tool_header_paths[tool.name] = validate_tool_headers(tool))
+    # handle_modern_request preflight. For register!-managed tools the three
+    # artifacts (advertised schema, validation, enforcement) cannot diverge;
+    # direct mutation of server fields bypasses this like any raw mutation.
+    if tool isa MCPTool
+        server.tool_header_paths[tool.name] = validate_tool_headers(tool)
+        # Same-name re-registration REPLACES the tool: dispatch resolves by
+        # first match, so appending would leave the OLD handler active while
+        # the persisted mirror table already described the new tool
+        idx = findfirst(t -> t isa MCPTool && t.name == tool.name, server.tools)
+        if idx !== nothing
+            server.tools[idx] = tool
+            return server
+        end
+    end
     push!(server.tools, tool)
     server
 end
