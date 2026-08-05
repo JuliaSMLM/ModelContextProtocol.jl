@@ -543,8 +543,8 @@ end
 Collect the request's `Mcp-Param-*` custom headers (SEP-2243 parameter
 mirroring) into a Dict keyed by LOWERCASED header suffix. Values are
 OWS-stripped `String`s, or `:invalid` when the header is duplicated or carries
-unsafe bytes (the same rules `mcp_standard_header` applies) — the validation in
-`handle_call_tool` rejects `:invalid` entries with -32020. Always returns a Dict
+unsafe bytes (the same rules `mcp_standard_header` applies) — the preflight in
+`handle_modern_request` rejects `:invalid` entries with -32020. Always returns a Dict
 (possibly empty) for HTTP requests: an EMPTY Dict still arms the
 missing-header-with-body-value check, which `nothing` (a transport with no
 headers at all, e.g. stdio) disables.
@@ -683,17 +683,37 @@ errors) → 200.
 - `Int`: The HTTP status code to use
 """
 function modern_error_http_status(payload::String)::Int
-    # Every mappable error response is a small validation/dispatch error body; skip
-    # the sniff-and-parse entirely for large payloads (big tool results would
-    # otherwise pay a second full parse whenever they contain the string "error")
-    ncodeunits(payload) > 4096 && return 200
-    contains(payload, "\"error\"") || return 200
-    code = try
-        msg = JSON3.read(payload)
-        haskey(msg, "error") ? Int(msg.error.code) : nothing
-    catch
-        nothing
+    # Small payloads (every ordinary validation/dispatch error) get the exact
+    # parse. Larger ones are NOT unconditionally 200: an error envelope whose
+    # echoed request id is huge must still map (400 is a spec MUST for header
+    # violations), so a structural sniff runs instead of a full parse. The
+    # needles are un-spoofable from inside JSON STRING content — a quote in a
+    # string value serializes escaped (\"), so the unescaped sequences below
+    # can only occur as real JSON structure — and a success payload whose
+    # nested data legitimately contains error-shaped keys is excluded by the
+    # top-level "result" key preceding any such nesting.
+    if ncodeunits(payload) <= 4096
+        contains(payload, "\"error\"") || return 200
+        code = try
+            msg = JSON3.read(payload)
+            haskey(msg, "error") ? Int(msg.error.code) : nothing
+        catch
+            nothing
+        end
+        code == -32601 && return 404
+        code in (-32020, -32021, -32022) && return 400
+        return 200
     end
+    err = findfirst("\"error\":{\"code\":", payload)
+    err === nothing && return 200
+    res = findfirst("\"result\":", payload)
+    res !== nothing && first(res) < first(err) && return 200
+    # ASCII needle: byte indexing after it is safe
+    window_start = last(err) + 1
+    window_end = min(window_start + 8, ncodeunits(payload))
+    m = match(r"\A-?\d+", SubString(payload, window_start, window_end))
+    m === nothing && return 200
+    code = tryparse(Int, m.match)
     code == -32601 && return 404
     code in (-32020, -32021, -32022) && return 400
     return 200
@@ -1816,7 +1836,8 @@ end
 
 Return the `Mcp-Param-*` headers of the message most recently read from the queue
 (set in `read_message`, consumed immediately by the single server loop) — the
-SEP-2243 parameter-mirroring context that reaches `RequestContext.param_headers`.
+SEP-2243 parameter-mirroring context validated by the `handle_modern_request`
+preflight.
 """
 function pending_param_headers(transport::HttpTransport)::Union{Nothing,Dict{String,Any}}
     return transport.current_request_param_headers

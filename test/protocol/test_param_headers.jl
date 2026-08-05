@@ -295,6 +295,91 @@ _ph_b64(s) = Base64.base64encode(s)
         @test ModelContextProtocol.modern_error_http_status(JSON3.write(r)) == 400
     end
 
+    @testset "exact integer mirrors and constrained number syntax (Codex r2 B1)" begin
+        server, state = _ph_server()
+        base = Dict{String,Any}("routing_key" => "e")
+        hdr(level) = Dict{String,Any}("routing-key" => "e", "level" => level)
+
+        # Integers compare EXACTLY: a Float64 round-trip would collapse values
+        # beyond 2^53
+        big_body = Dict{String,Any}(base..., "level" => 9007199254740993)
+        @test haskey(_ph_call(server, state, "routed", big_body;
+                              headers = hdr("9007199254740993")), "result")
+        r = _ph_call(server, state, "routed", big_body;
+                     headers = hdr("9007199254740992"), id = 2)
+        @test r["error"]["code"] == -32020
+
+        # Julia-parseable exotica are NOT valid mirrors: hex, Inf, NaN
+        int_body = Dict{String,Any}(base..., "level" => 16)
+        @test _ph_call(server, state, "routed", int_body;
+                       headers = hdr("0x10"), id = 3)["error"]["code"] == -32020
+        @test haskey(_ph_call(server, state, "routed", int_body;
+                              headers = hdr("16"), id = 4), "result")
+        float_body = Dict{String,Any}(base..., "level" => 1.5)
+        for bad in ("Inf", "NaN", "0x1.8p0")
+            @test _ph_call(server, state, "routed", float_body;
+                           headers = hdr(bad), id = 5)["error"]["code"] == -32020
+        end
+    end
+
+    @testset "huge request ids cannot demote 400 to 200 (Codex r2 B2)" begin
+        # An error envelope whose echoed id blows past the small-payload parse
+        # must still map: the structural sniff reads the code regardless of size
+        long_id = "i" ^ 5000
+        for (code, want) in ((-32020, 400), (-32021, 400), (-32022, 400), (-32601, 404))
+            # Through the REAL serializer: the sniff keys on its stable field order
+            payload = ModelContextProtocol.serialize_message(ModelContextProtocol.JSONRPCError(
+                id = long_id,
+                error = ModelContextProtocol.ErrorInfo(code = code, message = "m")))
+            @test ncodeunits(payload) > 4096
+            @test ModelContextProtocol.modern_error_http_status(payload) == want
+        end
+        # A large SUCCESS payload whose nested data contains error-shaped keys
+        # stays 200 (the top-level result key precedes any such nesting), and
+        # error-shaped TEXT inside strings serializes escaped, so it never
+        # matches the structural needles
+        big_success = JSON3.write(Dict{String,Any}(
+            "jsonrpc" => "2.0", "id" => 1,
+            "result" => Dict{String,Any}(
+                "content" => [Dict{String,Any}("type" => "text",
+                                               "text" => "x" ^ 5000 * "\"error\":{\"code\":-32020}")],
+                "structuredContent" => Dict{String,Any}(
+                    "error" => Dict{String,Any}("code" => -32020)))))
+        @test ModelContextProtocol.modern_error_http_status(big_success) == 200
+    end
+
+    @testset "registration rejects every invalid annotation shape (Codex r2 W1)" begin
+        # Trailing newline: PCRE \$ would match before it — \\z anchoring must not
+        trailing = MCPTool(name = "tn", description = "d",
+            parameters = [ToolParameter(name = "a", description = "d", type = "string",
+                                        header = "Route\n")],
+            handler = args -> TextContent(text = "x"))
+        # Non-string annotation value in a raw schema
+        nonstring = MCPTool(name = "ns", description = "d",
+            input_schema = Dict{String,Any}(
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    "a" => Dict{String,Any}("type" => "string", "x-mcp-header" => 17))),
+            handler = args -> TextContent(text = "x"))
+        # Annotation under an array's items: unsatisfiable, must be refused
+        under_items = MCPTool(name = "ui", description = "d",
+            input_schema = Dict{String,Any}(
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    "list" => Dict{String,Any}(
+                        "type" => "array",
+                        "items" => Dict{String,Any}(
+                            "type" => "object",
+                            "properties" => Dict{String,Any}(
+                                "id" => Dict{String,Any}("type" => "string",
+                                                         "x-mcp-header" => "Id")))))),
+            handler = args -> TextContent(text = "x"))
+        for tool in (trailing, nonstring, under_items)
+            @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                                                  tools = [tool])
+        end
+    end
+
     @testset "collect_param_headers gathers, strips, and flags" begin
         mk(headers) = HTTP.Request("POST", "/", headers, "")
         h = ModelContextProtocol.collect_param_headers(mk(

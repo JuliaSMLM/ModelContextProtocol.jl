@@ -1032,33 +1032,82 @@ function tool_header_params(tool::MCPTool)::Vector{Tuple{Vector{String},String}}
     out
 end
 
-# RFC 9110 token characters — the only bytes valid in a header-name suffix
-const _HEADER_TOKEN_RE = r"^[!#$%&'*+\-.^_`|~A-Za-z0-9]+$"
+# RFC 9110 token characters — the only bytes valid in a header-name suffix.
+# \A/\z anchors, not ^/$: PCRE's $ matches BEFORE a trailing newline, which
+# would let "Route\n" register
+const _HEADER_TOKEN_RE = r"\A[!#$%&'*+\-.^_`|~A-Za-z0-9]+\z"
+
+function _check_header_suffix(tool_name::String, where_desc::String, suffix,
+                              seen::Dict{String,String})
+    suffix isa AbstractString || throw(ArgumentError(
+        "tool '$(tool_name)': x-mcp-header for $(where_desc) must be a string; got $(typeof(suffix))"))
+    occursin(_HEADER_TOKEN_RE, suffix) || throw(ArgumentError(
+        "tool '$(tool_name)': x-mcp-header suffix $(repr(suffix)) for $(where_desc) " *
+        "is not a valid HTTP token"))
+    key = lowercase(suffix)
+    if haskey(seen, key)
+        throw(ArgumentError(
+            "tool '$(tool_name)': x-mcp-header suffix $(repr(suffix)) collides " *
+            "case-insensitively with $(repr(seen[key])) (header names are case-insensitive)"))
+    end
+    seen[key] = String(suffix)
+    nothing
+end
+
+# Walk a raw schema rejecting EVERY invalid annotation — including non-string
+# values (which the mirroring collector would skip but tools/list would still
+# advertise) and annotations under array `items` (per-element values cannot be
+# mirrored into one header, so such an annotation is unsatisfiable)
+function _validate_header_annotations(tool_name::String, node, in_items::Bool,
+                                      seen::Dict{String,String})
+    node isa AbstractDict || return nothing
+    props = get(node, "properties", get(node, :properties, nothing))
+    if props isa AbstractDict
+        for (k, v) in props
+            v isa AbstractDict || continue
+            if haskey(v, "x-mcp-header") || haskey(v, Symbol("x-mcp-header"))
+                h = get(v, "x-mcp-header", get(v, Symbol("x-mcp-header"), nothing))
+                in_items && throw(ArgumentError(
+                    "tool '$(tool_name)': x-mcp-header on property '$(String(k))' inside an " *
+                    "array's items cannot be mirrored (one header cannot carry per-element values)"))
+                _check_header_suffix(tool_name, "property '$(String(k))'", h, seen)
+            end
+            _validate_header_annotations(tool_name, v, in_items, seen)
+        end
+    end
+    items = get(node, "items", get(node, :items, nothing))
+    if items isa AbstractDict
+        _validate_header_annotations(tool_name, items, true, seen)
+    elseif items isa AbstractVector
+        for it in items
+            it isa AbstractDict && _validate_header_annotations(tool_name, it, true, seen)
+        end
+    end
+    nothing
+end
 
 """
     validate_tool_headers(tool::MCPTool) -> Nothing
 
 Reject invalid SEP-2243 `x-mcp-header` annotations at registration: every
-suffix must be a nonempty HTTP token (it becomes part of the `Mcp-Param-*`
-header NAME), and suffixes must be case-insensitively unique within the tool
-(header names are case-insensitive, so `"Route"` and `"route"` would collapse
-onto one mirrored header). Advertising an invalid annotation would force
-conforming clients to discard the tool — better to refuse it server-side with
-a clear error. Throws `ArgumentError` on violation.
+annotation value must be a string, every suffix a nonempty HTTP token (it
+becomes part of the `Mcp-Param-*` header NAME), suffixes case-insensitively
+unique within the tool (header names are case-insensitive, so `"Route"` and
+`"route"` would collapse onto one mirrored header), and no annotation may sit
+under an array's `items` (unsatisfiable — one header cannot mirror per-element
+values). Advertising an invalid annotation would force conforming clients to
+discard the tool — better to refuse it server-side with a clear error. Throws
+`ArgumentError` on violation.
 """
 function validate_tool_headers(tool::MCPTool)
     seen = Dict{String,String}()
-    for (path, suffix) in tool_header_params(tool)
-        occursin(_HEADER_TOKEN_RE, suffix) || throw(ArgumentError(
-            "tool '$(tool.name)': x-mcp-header suffix $(repr(suffix)) for parameter " *
-            "'$(join(path, "."))' is not a valid HTTP token"))
-        key = lowercase(suffix)
-        if haskey(seen, key)
-            throw(ArgumentError(
-                "tool '$(tool.name)': x-mcp-header suffix $(repr(suffix)) collides " *
-                "case-insensitively with $(repr(seen[key])) (header names are case-insensitive)"))
+    if !isnothing(tool.input_schema)
+        _validate_header_annotations(tool.name, tool.input_schema, false, seen)
+    else
+        for tp in tool.parameters
+            tp.header === nothing ||
+                _check_header_suffix(tool.name, "parameter '$(tp.name)'", tp.header, seen)
         end
-        seen[key] = suffix
     end
     nothing
 end
@@ -1121,9 +1170,18 @@ function param_header_violation(tool::MCPTool, arguments,
             decoded == String(value)
         elseif value isa Bool
             decoded == string(value)
-        elseif value isa Real
-            parsed = tryparse(Float64, decoded)
-            parsed !== nothing && Float64(value) == parsed
+        elseif value isa Integer
+            # EXACT integer path: a Float64 round-trip would collapse distinct
+            # values beyond 2^53 (9007199254740993 would match ...92), and
+            # tryparse(Float64, "0x10") accepts hex. The mirror of an integer
+            # body value is its integer digit string, compared exactly.
+            occursin(r"\A-?(0|[1-9][0-9]*)\z", decoded) &&
+                tryparse(BigInt, decoded) == BigInt(value)
+        elseif value isa AbstractFloat
+            # Floats compare numerically, but only through the JSON number
+            # grammar — no hex, Inf, NaN, or other Julia-parseable exotica
+            occursin(r"\A-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?\z", decoded) &&
+                (parsed = tryparse(Float64, decoded); parsed !== nothing && Float64(value) == parsed)
         else
             decoded == string(value)
         end
