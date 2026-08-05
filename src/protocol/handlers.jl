@@ -1054,33 +1054,55 @@ function _check_header_suffix(tool_name::String, where_desc::String, suffix,
     nothing
 end
 
-# Walk a raw schema rejecting EVERY invalid annotation — including non-string
-# values (which the mirroring collector would skip but tools/list would still
-# advertise) and annotations under array `items` (per-element values cannot be
-# mirrored into one header, so such an annotation is unsatisfiable)
-function _validate_header_annotations(tool_name::String, node, in_items::Bool,
-                                      seen::Dict{String,String})
+# The JSON Schema types a mirrored parameter may declare (SEP-2243): scalar
+# values with an unambiguous single-header representation. `number` is
+# deliberately excluded by the spec, as are objects and arrays.
+const _HEADER_ANNOTATABLE_TYPES = ("string", "integer", "boolean")
+
+# Walk a raw schema rejecting EVERY invalid annotation — non-string values,
+# annotations on properties without an annotatable declared type, and
+# annotations anywhere that is not a statically reachable property (array
+# items, composition branches, definitions: those values cannot be faithfully
+# mirrored into one header). `prop_name` names the property this node defines
+# (nothing for structural nodes); `reachable` is false once the walk descends
+# through any non-property structure.
+function _validate_header_annotations(tool_name::String, node,
+                                      prop_name::Union{Nothing,String},
+                                      reachable::Bool, seen::Dict{String,String})
     node isa AbstractDict || return nothing
+    if haskey(node, "x-mcp-header") || haskey(node, Symbol("x-mcp-header"))
+        h = get(node, "x-mcp-header", get(node, Symbol("x-mcp-header"), nothing))
+        (reachable && prop_name !== nothing) || throw(ArgumentError(
+            "tool '$(tool_name)': x-mcp-header on " *
+            (prop_name === nothing ? "a non-property node" : "property '$(prop_name)'") *
+            " is not statically reachable (array items, composition branches, and " *
+            "definitions cannot be mirrored into one header)"))
+        _check_header_suffix(tool_name, "property '$(prop_name)'", h, seen)
+        t = get(node, "type", get(node, :type, nothing))
+        t in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
+            "tool '$(tool_name)': x-mcp-header on property '$(prop_name)' requires " *
+            "declared type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(t))"))
+    end
     props = get(node, "properties", get(node, :properties, nothing))
     if props isa AbstractDict
         for (k, v) in props
-            v isa AbstractDict || continue
-            if haskey(v, "x-mcp-header") || haskey(v, Symbol("x-mcp-header"))
-                h = get(v, "x-mcp-header", get(v, Symbol("x-mcp-header"), nothing))
-                in_items && throw(ArgumentError(
-                    "tool '$(tool_name)': x-mcp-header on property '$(String(k))' inside an " *
-                    "array's items cannot be mirrored (one header cannot carry per-element values)"))
-                _check_header_suffix(tool_name, "property '$(String(k))'", h, seen)
-            end
-            _validate_header_annotations(tool_name, v, in_items, seen)
+            _validate_header_annotations(tool_name, v, String(k), reachable, seen)
         end
     end
-    items = get(node, "items", get(node, :items, nothing))
-    if items isa AbstractDict
-        _validate_header_annotations(tool_name, items, true, seen)
-    elseif items isa AbstractVector
-        for it in items
-            it isa AbstractDict && _validate_header_annotations(tool_name, it, true, seen)
+    for key in ("items", "prefixItems", "allOf", "anyOf", "oneOf", "not",
+                "additionalProperties", "patternProperties", "\$defs", "definitions")
+        sub = get(node, key, get(node, Symbol(key), nothing))
+        sub === nothing && continue
+        if key in ("patternProperties", "\$defs", "definitions") && sub isa AbstractDict
+            for (_, v) in sub
+                _validate_header_annotations(tool_name, v, nothing, false, seen)
+            end
+        elseif sub isa AbstractDict
+            _validate_header_annotations(tool_name, sub, nothing, false, seen)
+        elseif sub isa AbstractVector
+            for it in sub
+                _validate_header_annotations(tool_name, it, nothing, false, seen)
+            end
         end
     end
     nothing
@@ -1093,23 +1115,56 @@ Reject invalid SEP-2243 `x-mcp-header` annotations at registration: every
 annotation value must be a string, every suffix a nonempty HTTP token (it
 becomes part of the `Mcp-Param-*` header NAME), suffixes case-insensitively
 unique within the tool (header names are case-insensitive, so `"Route"` and
-`"route"` would collapse onto one mirrored header), and no annotation may sit
-under an array's `items` (unsatisfiable — one header cannot mirror per-element
-values). Advertising an invalid annotation would force conforming clients to
-discard the tool — better to refuse it server-side with a clear error. Throws
-`ArgumentError` on violation.
+`"route"` would collapse onto one mirrored header), the annotated property must
+declare an annotatable type (`string`, `integer`, or `boolean` — the spec
+excludes `number`, objects, and arrays), and annotations are only valid on
+statically reachable properties (never under array `items`, composition
+branches, or definitions). Advertising an invalid annotation would force
+conforming clients to discard the tool — better to refuse it server-side with
+a clear error. Throws `ArgumentError` on violation.
 """
 function validate_tool_headers(tool::MCPTool)
     seen = Dict{String,String}()
     if !isnothing(tool.input_schema)
-        _validate_header_annotations(tool.name, tool.input_schema, false, seen)
+        _validate_header_annotations(tool.name, tool.input_schema, nothing, true, seen)
     else
         for tp in tool.parameters
-            tp.header === nothing ||
-                _check_header_suffix(tool.name, "parameter '$(tp.name)'", tp.header, seen)
+            tp.header === nothing && continue
+            _check_header_suffix(tool.name, "parameter '$(tp.name)'", tp.header, seen)
+            tp.type in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
+                "tool '$(tool.name)': header-mirrored parameter '$(tp.name)' requires " *
+                "type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(tp.type))"))
         end
     end
     nothing
+end
+
+"""
+    _json_integer_value(s::AbstractString) -> Union{BigInt,Nothing}
+
+Evaluate a JSON-number token EXACTLY, returning its value when it denotes an
+integer: `"42"`, `"42.0"`, `"4.2e1"`, and `"-0.0"` all evaluate (to 42, 42, 42,
+and 0), while non-numbers, non-integral values, and tokens with unreasonably
+large exponents (a `"1e999999"` mirror must not allocate a gigadigit BigInt)
+return `nothing`. Never goes through Float64, so distinct integers beyond 2^53
+stay distinct.
+"""
+function _json_integer_value(s::AbstractString)::Union{BigInt,Nothing}
+    m = match(r"\A(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?\z", s)
+    m === nothing && return nothing
+    frac = something(m.captures[3], "")
+    ex = m.captures[4] === nothing ? 0 : parse(Int, m.captures[4])
+    abs(ex) > 64 && return nothing
+    scale = ex - length(frac)
+    n = parse(BigInt, m.captures[2] * frac)
+    if scale >= 0
+        v = n * BigInt(10)^scale
+    else
+        d = BigInt(10)^(-scale)
+        n % d == 0 || return nothing
+        v = n ÷ d
+    end
+    m.captures[1] == "-" ? -v : v
 end
 
 # Resolve a property path in the request arguments; (found, value)
@@ -1166,20 +1221,28 @@ function param_header_violation(tool::MCPTool, arguments,
         decoded = decode_mcp_header_value(raw)
         decoded === nothing &&
             return "Mcp-Param-$(sfx) header carries a malformed Base64 sentinel value"
+        if value isa Integer && !(value isa Bool) &&
+           !(-9007199254740991 <= value <= 9007199254740991)
+            # SEP-2243 limits mirrored integers to the JavaScript-safe range —
+            # a value JS clients cannot even represent has no faithful mirror
+            return "argument '$(pname)' is outside the JavaScript-safe integer range and cannot be mirrored"
+        end
         matched = if value isa AbstractString
             decoded == String(value)
         elseif value isa Bool
             decoded == string(value)
         elseif value isa Integer
-            # EXACT integer path: a Float64 round-trip would collapse distinct
-            # values beyond 2^53 (9007199254740993 would match ...92), and
-            # tryparse(Float64, "0x10") accepts hex. The mirror of an integer
-            # body value is its integer digit string, compared exactly.
-            occursin(r"\A-?(0|[1-9][0-9]*)\z", decoded) &&
-                tryparse(BigInt, decoded) == BigInt(value)
+            # EXACT integer comparison through the full JSON number grammar:
+            # JSON3 normalizes integral tokens like 42.0 and 1e3 to Int64, so
+            # the mirror may legitimately arrive in decimal or exponent form —
+            # but the comparison must stay exact (a Float64 round-trip would
+            # collapse distinct values, and tryparse(Float64, "0x10") accepts
+            # hex). _json_integer_value evaluates the token exactly.
+            parsed = _json_integer_value(decoded)
+            parsed !== nothing && parsed == BigInt(value)
         elseif value isa AbstractFloat
-            # Floats compare numerically, but only through the JSON number
-            # grammar — no hex, Inf, NaN, or other Julia-parseable exotica
+            # Non-integral floats compare numerically, but only through the
+            # JSON number grammar — no hex, Inf, NaN, or other exotica
             occursin(r"\A-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?\z", decoded) &&
                 (parsed = tryparse(Float64, decoded); parsed !== nothing && Float64(value) == parsed)
         else

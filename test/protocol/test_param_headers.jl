@@ -19,7 +19,7 @@ function _ph_server()
                 ToolParameter(name = "routing_key", description = "d",
                               type = "string", required = true, header = "Routing-Key"),
                 ToolParameter(name = "level", description = "d",
-                              type = "number", header = "Level"),
+                              type = "integer", header = "Level"),
                 ToolParameter(name = "plain", description = "d", type = "string"),
             ],
             handler = args -> TextContent(text = "ok: $(args["routing_key"])")),
@@ -295,31 +295,90 @@ _ph_b64(s) = Base64.base64encode(s)
         @test ModelContextProtocol.modern_error_http_status(JSON3.write(r)) == 400
     end
 
-    @testset "exact integer mirrors and constrained number syntax (Codex r2 B1)" begin
+    @testset "exact integer mirrors and constrained number syntax (Codex r2 B1 + r3 B1)" begin
         server, state = _ph_server()
         base = Dict{String,Any}("routing_key" => "e")
         hdr(level) = Dict{String,Any}("routing-key" => "e", "level" => level)
 
-        # Integers compare EXACTLY: a Float64 round-trip would collapse values
-        # beyond 2^53
+        # Integers beyond the JavaScript-safe range cannot be mirrored at all
+        # (SEP-2243) — whatever the header says
         big_body = Dict{String,Any}(base..., "level" => 9007199254740993)
-        @test haskey(_ph_call(server, state, "routed", big_body;
-                              headers = hdr("9007199254740993")), "result")
-        r = _ph_call(server, state, "routed", big_body;
-                     headers = hdr("9007199254740992"), id = 2)
-        @test r["error"]["code"] == -32020
+        for h in ("9007199254740993", "9007199254740992")
+            r = _ph_call(server, state, "routed", big_body; headers = hdr(h))
+            @test r["error"]["code"] == -32020
+            @test occursin("JavaScript-safe", r["error"]["message"])
+        end
+        # The safe-range boundary compares EXACTLY (never through Float64)
+        max_safe = Dict{String,Any}(base..., "level" => 9007199254740991)
+        @test haskey(_ph_call(server, state, "routed", max_safe;
+                              headers = hdr("9007199254740991"), id = 2), "result")
+        @test _ph_call(server, state, "routed", max_safe;
+                       headers = hdr("9007199254740990"), id = 3)["error"]["code"] == -32020
+
+        # JSON3 normalizes integral tokens (42.0, 1e3) to Int64 — every JSON
+        # spelling of the same integer is a valid mirror, compared exactly
+        for (body, goods, bads) in (
+            (Dict{String,Any}(base..., "level" => 42.0), ("42", "42.0", "4.2e1"), ("42.5", "43")),
+            (Dict{String,Any}(base..., "level" => 1e3), ("1e3", "1000", "1.0e3"), ("1e4",)),
+            (Dict{String,Any}(base..., "level" => -0.0), ("-0.0", "0"), ()),
+        )
+            for g in goods
+                @test haskey(_ph_call(server, state, "routed", body;
+                                      headers = hdr(g), id = 4), "result")
+            end
+            for b in bads
+                @test _ph_call(server, state, "routed", body;
+                               headers = hdr(b), id = 5)["error"]["code"] == -32020
+            end
+        end
 
         # Julia-parseable exotica are NOT valid mirrors: hex, Inf, NaN
         int_body = Dict{String,Any}(base..., "level" => 16)
         @test _ph_call(server, state, "routed", int_body;
-                       headers = hdr("0x10"), id = 3)["error"]["code"] == -32020
+                       headers = hdr("0x10"), id = 6)["error"]["code"] == -32020
         @test haskey(_ph_call(server, state, "routed", int_body;
-                              headers = hdr("16"), id = 4), "result")
+                              headers = hdr("16"), id = 7), "result")
         float_body = Dict{String,Any}(base..., "level" => 1.5)
         for bad in ("Inf", "NaN", "0x1.8p0")
             @test _ph_call(server, state, "routed", float_body;
-                           headers = hdr(bad), id = 5)["error"]["code"] == -32020
+                           headers = hdr(bad), id = 8)["error"]["code"] == -32020
         end
+        # A gigadigit exponent must not allocate: rejected by the exponent cap
+        @test _ph_call(server, state, "routed", int_body;
+                       headers = hdr("16e999999"), id = 9)["error"]["code"] == -32020
+    end
+
+    @testset "annotatable types and reachability at registration (Codex r3 B2)" begin
+        mk(schema) = MCPTool(name = "t", description = "d", input_schema = schema,
+                             handler = args -> TextContent(text = "x"))
+        # number is spec-excluded; objects/missing types likewise
+        for t in ("number", "object", nothing)
+            props = Dict{String,Any}("a" => Dict{String,Any}("x-mcp-header" => "A"))
+            t === nothing || (props["a"]["type"] = t)
+            @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                tools = [mk(Dict{String,Any}("type" => "object", "properties" => props))])
+        end
+        # ToolParameter path enforces the same constraint
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+            tools = [MCPTool(name = "np", description = "d",
+                parameters = [ToolParameter(name = "a", description = "d",
+                                            type = "number", header = "A")],
+                handler = args -> TextContent(text = "x"))])
+        # An annotation directly ON an items node (not one of its properties)
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+            tools = [mk(Dict{String,Any}("type" => "object",
+                "properties" => Dict{String,Any}(
+                    "list" => Dict{String,Any}(
+                        "type" => "array",
+                        "items" => Dict{String,Any}("type" => "string",
+                                                    "x-mcp-header" => "Id")))))])
+        # Composition branches are not statically reachable
+        @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+            tools = [mk(Dict{String,Any}("type" => "object",
+                "anyOf" => [Dict{String,Any}(
+                    "properties" => Dict{String,Any}(
+                        "a" => Dict{String,Any}("type" => "string",
+                                                "x-mcp-header" => "A")))]))])
     end
 
     @testset "huge request ids cannot demote 400 to 200 (Codex r2 B2)" begin

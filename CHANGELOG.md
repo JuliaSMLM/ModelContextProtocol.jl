@@ -93,17 +93,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can never be committed as an SSE 200 by a preceding notification): strict
   `=?base64?...?=` sentinel decoding (invalid padding or characters rejected),
   literal comparison otherwise, annotations honored at ANY object nesting
-  depth, numbers compared numerically (a JavaScript client's `String(1e-7)` is
-  `"1e-7"`, not Julia's `"1.0e-7"`), and `-32020` (HTTP 400) when the header
-  is missing while its argument is in the body, duplicated, malformed, or
-  mismatched. Absent arguments, explicit JSON `null` values (clients omit the
-  header for null), and unrecognized `Mcp-Param-*` headers are ignored
+  depth, integers compared EXACTLY through the full JSON number grammar (JSON3
+  normalizes `42.0`/`1e3` to integers, distinct values beyond 2^53 never
+  collapse through Float64, hex/Inf/NaN reject, and values outside the
+  JavaScript-safe integer range refuse to mirror at all per the spec),
+  non-integral numbers numerically (a JavaScript client's `String(1e-7)` is
+  `"1e-7"`, not Julia's `"1.0e-7"`), and `-32020` (HTTP 400 — mapped reliably
+  whatever the envelope size, via a structural sniff that huge echoed request
+  ids cannot evade and embedded error-shaped strings cannot spoof) when the
+  header is missing while its argument is in the body, duplicated, malformed,
+  or mismatched. Absent arguments, explicit JSON `null` values (clients omit
+  the header for null), and unrecognized `Mcp-Param-*` headers are ignored
   (forward compatibility); stdio and legacy-era requests are untouched.
   Registration refuses invalid annotations — suffixes must be nonempty HTTP
-  tokens, case-insensitively unique per tool — instead of advertising tools
-  clients would have to discard, and violation messages bound schema-derived
-  names so the error envelope stays within the transport's status-mapping
-  path. The headers travel from the connection handler to the dispatch layer
+  tokens, case-insensitively unique per tool; the annotated property must
+  declare type `string`, `integer`, or `boolean` (the spec excludes `number`,
+  objects, and arrays); and annotations are valid only on statically reachable
+  properties (never under array `items`, composition branches, or definitions)
+  — instead of advertising tools clients would have to discard, and violation
+  messages bound schema-derived names so the error envelope stays small. The headers travel from the connection handler to the dispatch layer
   inside the request envelope — never via shared transport state — and the
   conformance suite's `http-custom-header-server-validation` scenario passes
   10/10.
