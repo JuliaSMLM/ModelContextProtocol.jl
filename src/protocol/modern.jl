@@ -474,6 +474,30 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
             )
         )
     end
+    # SEP-2243 parameter-mirroring preflight: validated with the OTHER
+    # transport-level checks, BEFORE the per-request log opt-in installs — a
+    # violation must reject with 400/-32020, and any notifications/message
+    # emitted first would commit the response as an SSE stream with status 200.
+    # Unknown tools and malformed params skip (dispatch owns those errors);
+    # stdio (param_headers === nothing) carries no headers to validate.
+    if param_headers !== nothing && request.method == "tools/call" &&
+       request.params isa CallToolParams
+        tool_idx = findfirst(t -> t.name == request.params.name, server.tools)
+        if tool_idx !== nothing
+            violation = param_header_violation(server.tools[tool_idx],
+                                               request.params.arguments, param_headers)
+            if violation !== nothing
+                return JSONRPCError(
+                    id = request.id,
+                    error = ErrorInfo(
+                        code = ErrorCodes.HEADER_MISMATCH,
+                        message = "Header mismatch: $violation"
+                    )
+                )
+            end
+        end
+    end
+
     mrtr_state = nothing
     if request.meta.request_state !== nothing
         ok, payload = verify_request_state(server, request.meta.request_state,
@@ -522,7 +546,7 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         rl = ModernRequestLogger(lg, server.transport, route, level)
         try
             return with_logger(rl) do
-                serve_modern(server, request, version, mrtr_state, authenticated_user, param_headers)
+                serve_modern(server, request, version, mrtr_state, authenticated_user)
             end
         finally
             # The response is on its way: late child-task records must drop to the
@@ -541,7 +565,7 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
         end
     end
     try
-        serve_modern(server, request, version, mrtr_state, authenticated_user, param_headers)
+        serve_modern(server, request, version, mrtr_state, authenticated_user)
     finally
         # No logger scope existed to hand off; just clear the worker flag (even on
         # a throw) so it cannot leak into a later request on this loop task and
@@ -613,8 +637,7 @@ around the whole serve path.
 - `Union{Response,Nothing}`: The response to send (`nothing` when deferred)
 """
 function serve_modern(server::Server, request::Request, version::String, mrtr_state,
-                      authenticated_user::Union{AuthenticatedUser,Nothing},
-                      param_headers::Union{Nothing,Dict{String,Any}}=nothing)::Union{Response,Nothing}
+                      authenticated_user::Union{AuthenticatedUser,Nothing})::Union{Response,Nothing}
     # Fresh state: modern requests are stateless, and handlers (including ctx-aware
     # tool handlers) must not see or mutate the legacy session's ServerState
     ctx = RequestContext(
@@ -627,8 +650,7 @@ function serve_modern(server::Server, request::Request, version::String, mrtr_st
         input_responses = request.meta.input_responses,
         input_state = mrtr_state,
         client_capabilities = request.meta.client_capabilities,
-        params_digest = request.meta.params_digest,
-        param_headers = param_headers
+        params_digest = request.meta.params_digest
     )
 
     request_start = time()

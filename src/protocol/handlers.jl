@@ -33,7 +33,6 @@ Base.@kwdef mutable struct RequestContext
     client_capabilities::Any = nothing  # modern-era _meta clientCapabilities (raw parsed view); nothing on legacy requests
     params_digest::Union{Nothing,String} = nothing  # canonical params digest of a modern MRTR-method request
     detach::Union{Nothing,TaskDetachState} = nothing  # set for detachable modern tool calls (tasks extension); enables task_detach(ctx)
-    param_headers::Union{Nothing,Dict{String,Any}} = nothing  # Mcp-Param-* headers of a modern HTTP request (SEP-2243 mirroring); nothing on stdio/legacy
 end
 
 """
@@ -987,32 +986,97 @@ function handle_unsubscribe_resource(ctx::RequestContext, params::UnsubscribePar
     )
 end
 
-"""
-    tool_header_params(tool::MCPTool) -> Dict{String,String}
+# Bound schema-derived names inside violation messages: the -32020 response
+# must stay well under the transport's small-error-envelope sniff cap, whatever
+# the schema author put in property names
+_bounded_name(s::AbstractString, cap::Int=120) =
+    ncodeunits(s) <= cap ? String(s) : String(first(s, cap)) * "…"
 
-The tool's `x-mcp-header` annotated parameters (SEP-2243 mirroring), as a map
-from parameter name to header suffix (the header is `Mcp-Param-<suffix>`) —
-read from a raw `input_schema`'s properties when one is set, else from the
-`ToolParameter.header` fields.
+# Recursively collect x-mcp-header annotations from a schema's properties —
+# SEP-2243 permits them at any nesting depth along object paths (arrays cannot
+# mirror per-element values, so `items` is not descended)
+function _collect_header_paths!(out::Vector{Tuple{Vector{String},String}},
+                                props, prefix::Vector{String})
+    props isa AbstractDict || return nothing
+    for (k, v) in props
+        v isa AbstractDict || continue
+        path = vcat(prefix, String(k))
+        h = get(v, "x-mcp-header", get(v, Symbol("x-mcp-header"), nothing))
+        h isa AbstractString && push!(out, (path, String(h)))
+        nested = get(v, "properties", get(v, :properties, nothing))
+        nested === nothing || _collect_header_paths!(out, nested, path)
+    end
+    nothing
+end
+
 """
-function tool_header_params(tool::MCPTool)::Dict{String,String}
-    out = Dict{String,String}()
+    tool_header_params(tool::MCPTool) -> Vector{Tuple{Vector{String},String}}
+
+The tool's `x-mcp-header` annotated parameters (SEP-2243 mirroring), each as a
+property PATH into the arguments (annotations are valid at any object nesting
+depth) paired with its header suffix (the header is `Mcp-Param-<suffix>`) —
+read from a raw `input_schema`'s properties when one is set, else from the
+`ToolParameter.header` fields (always top-level paths).
+"""
+function tool_header_params(tool::MCPTool)::Vector{Tuple{Vector{String},String}}
+    out = Tuple{Vector{String},String}[]
     if !isnothing(tool.input_schema)
         props = get(tool.input_schema, "properties",
                     get(tool.input_schema, :properties, nothing))
-        if props isa AbstractDict
-            for (k, v) in props
-                v isa AbstractDict || continue
-                h = get(v, "x-mcp-header", get(v, Symbol("x-mcp-header"), nothing))
-                h isa AbstractString && (out[String(k)] = String(h))
-            end
-        end
+        _collect_header_paths!(out, props, String[])
     else
         for tp in tool.parameters
-            tp.header === nothing || (out[tp.name] = tp.header)
+            tp.header === nothing || push!(out, ([tp.name], tp.header))
         end
     end
     out
+end
+
+# RFC 9110 token characters — the only bytes valid in a header-name suffix
+const _HEADER_TOKEN_RE = r"^[!#$%&'*+\-.^_`|~A-Za-z0-9]+$"
+
+"""
+    validate_tool_headers(tool::MCPTool) -> Nothing
+
+Reject invalid SEP-2243 `x-mcp-header` annotations at registration: every
+suffix must be a nonempty HTTP token (it becomes part of the `Mcp-Param-*`
+header NAME), and suffixes must be case-insensitively unique within the tool
+(header names are case-insensitive, so `"Route"` and `"route"` would collapse
+onto one mirrored header). Advertising an invalid annotation would force
+conforming clients to discard the tool — better to refuse it server-side with
+a clear error. Throws `ArgumentError` on violation.
+"""
+function validate_tool_headers(tool::MCPTool)
+    seen = Dict{String,String}()
+    for (path, suffix) in tool_header_params(tool)
+        occursin(_HEADER_TOKEN_RE, suffix) || throw(ArgumentError(
+            "tool '$(tool.name)': x-mcp-header suffix $(repr(suffix)) for parameter " *
+            "'$(join(path, "."))' is not a valid HTTP token"))
+        key = lowercase(suffix)
+        if haskey(seen, key)
+            throw(ArgumentError(
+                "tool '$(tool.name)': x-mcp-header suffix $(repr(suffix)) collides " *
+                "case-insensitively with $(repr(seen[key])) (header names are case-insensitive)"))
+        end
+        seen[key] = suffix
+    end
+    nothing
+end
+
+# Resolve a property path in the request arguments; (found, value)
+function _resolve_argument_path(arguments, path::Vector{String})
+    v = arguments
+    for k in path
+        v isa AbstractDict || return (false, nothing)
+        if haskey(v, k)
+            v = v[k]
+        elseif haskey(v, Symbol(k))
+            v = v[Symbol(k)]
+        else
+            return (false, nothing)
+        end
+    end
+    (true, v)
 end
 
 """
@@ -1021,38 +1085,50 @@ end
 
 Validate a modern-era HTTP `tools/call`'s `Mcp-Param-*` headers against its body
 (SEP-2243 custom-header mirroring): for every `x-mcp-header` annotated parameter
-PRESENT in the request's arguments, the mirrored header must exist, must not be
-duplicated or unsafe, must decode (a `=?base64?...?=` sentinel is validated
-STRICTLY; anything else is a literal), and must equal the body value's string
-form. Headers for parameters absent from the arguments, and `Mcp-Param-*`
-headers matching no annotated parameter, are ignored (forward compatibility —
-the MUSTs cover only mirrored body values). Returns the violation description,
-or `nothing` when valid.
+path PRESENT in the request's arguments with a non-null value, the mirrored
+header must exist, must not be duplicated or unsafe, must decode (a
+`=?base64?...?=` sentinel is validated STRICTLY; anything else is a literal),
+and must match the body value — strings compare exactly, booleans through
+`true`/`false`, and numbers NUMERICALLY (a JavaScript client's `String(1e-7)`
+is `"1e-7"` while Julia would print `"1.0e-7"`; parsing the header instead of
+string-comparing makes both representations of the same number match).
+
+Skipped per spec: absent paths (nothing to mirror), explicit JSON `null` values
+(clients omit the header for null, servers must not expect it), headers whose
+path is not in the body, and `Mcp-Param-*` headers matching no annotation
+(forward compatibility). Returns the violation description, or `nothing`.
 """
 function param_header_violation(tool::MCPTool, arguments,
                                 headers::Dict{String,Any})::Union{String,Nothing}
     annotated = tool_header_params(tool)
     isempty(annotated) && return nothing
     arguments isa AbstractDict || return nothing
-    for (pname, suffix) in annotated
-        value = if haskey(arguments, pname)
-            arguments[pname]
-        elseif haskey(arguments, Symbol(pname))
-            arguments[Symbol(pname)]
-        else
-            continue  # param not sent: nothing to mirror
-        end
+    for (path, suffix) in annotated
+        found, value = _resolve_argument_path(arguments, path)
+        found || continue          # path not sent: nothing to mirror
+        value === nothing && continue  # explicit JSON null: clients omit the header
+        pname = _bounded_name(join(path, "."))
+        sfx = _bounded_name(suffix)
         raw = get(headers, lowercase(suffix), nothing)
         raw === nothing &&
-            return "required header Mcp-Param-$(suffix) is missing for argument '$(pname)'"
+            return "required header Mcp-Param-$(sfx) is missing for argument '$(pname)'"
         raw isa AbstractString ||
-            return "Mcp-Param-$(suffix) header is duplicated or contains unsafe characters"
+            return "Mcp-Param-$(sfx) header is duplicated or contains unsafe characters"
         decoded = decode_mcp_header_value(raw)
         decoded === nothing &&
-            return "Mcp-Param-$(suffix) header carries a malformed Base64 sentinel value"
-        expected = value isa AbstractString ? String(value) : string(value)
-        decoded == expected ||
-            return "Mcp-Param-$(suffix) header does not match body argument '$(pname)'"
+            return "Mcp-Param-$(sfx) header carries a malformed Base64 sentinel value"
+        matched = if value isa AbstractString
+            decoded == String(value)
+        elseif value isa Bool
+            decoded == string(value)
+        elseif value isa Real
+            parsed = tryparse(Float64, decoded)
+            parsed !== nothing && Float64(value) == parsed
+        else
+            decoded == string(value)
+        end
+        matched ||
+            return "Mcp-Param-$(sfx) header does not match body argument '$(pname)'"
     end
     nothing
 end
@@ -1084,23 +1160,6 @@ function handle_call_tool(ctx::RequestContext, params::CallToolParams)::HandlerR
     end
 
     tool = ctx.server.tools[tool_idx]
-
-    # SEP-2243 parameter mirroring (modern HTTP): every x-mcp-header annotated
-    # param present in the request's arguments must arrive with a matching
-    # Mcp-Param-<suffix> header. Checked before defaults are applied (the header
-    # mirrors what the client actually SENT) and before any execution path; a
-    # violation is -32020, which the HTTP layer maps to 400. Skipped when the
-    # transport carries no headers (stdio: param_headers === nothing) or the
-    # request is legacy-era.
-    if ctx.protocol_version !== nothing && ctx.param_headers !== nothing
-        violation = param_header_violation(tool, params.arguments, ctx.param_headers)
-        violation !== nothing && return HandlerResult(
-            error=ErrorInfo(
-                code=ErrorCodes.HEADER_MISMATCH,
-                message="Header mismatch: $violation"
-            )
-        )
-    end
 
     # Per-tool scope enforcement. When a tool declares `required_scopes` and the request
     # carries an authenticated principal (HTTP auth active), every required scope must be

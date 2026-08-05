@@ -172,6 +172,129 @@ _ph_b64(s) = Base64.base64encode(s)
         @test haskey(JSON3.read(rl), "result")
     end
 
+    @testset "pre-header positional ToolParameter still constructs (Codex r1 B5)" begin
+        tp = ToolParameter("v", "d", "string", false, nothing)
+        @test tp.header === nothing
+        tp2 = ToolParameter("v", "d", "string", true, "x")
+        @test tp2.default == "x"
+    end
+
+    @testset "nested annotations validate at depth (Codex r1 B2)" begin
+        nested = MCPTool(
+            name = "nested",
+            description = "d",
+            input_schema = Dict{String,Any}(
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    "tenant" => Dict{String,Any}(
+                        "type" => "object",
+                        "properties" => Dict{String,Any}(
+                            "id" => Dict{String,Any}("type" => "string",
+                                                     "x-mcp-header" => "Tenant"))))),
+            handler = args -> TextContent(text = "n ok"))
+        server = mcp_server(name = "nested-test", version = "0.0.1", tools = [nested])
+        server.transport = StdioTransport(input = IOBuffer(), output = IOBuffer())
+        state = ServerState()
+
+        args = Dict("tenant" => Dict("id" => "body-A"))
+        # Missing mirror for a nested annotated value
+        r = _ph_call(server, state, "nested", args; headers = Dict{String,Any}())
+        @test r["error"]["code"] == -32020 && occursin("tenant.id", r["error"]["message"])
+        # Mismatch
+        r2 = _ph_call(server, state, "nested", args;
+                      headers = Dict{String,Any}("tenant" => "header-B"), id = 2)
+        @test r2["error"]["code"] == -32020
+        # Match
+        r3 = _ph_call(server, state, "nested", args;
+                      headers = Dict{String,Any}("tenant" => "body-A"), id = 3)
+        @test haskey(r3, "result")
+        # Explicit null at the leaf: clients omit the header, servers must not expect it
+        r4 = _ph_call(server, state, "nested",
+                      Dict("tenant" => Dict("id" => nothing));
+                      headers = Dict{String,Any}(), id = 4)
+        @test !haskey(r4, "error") || r4["error"]["code"] != -32020
+    end
+
+    @testset "explicit null and numeric representations (Codex r1 B3+B4)" begin
+        server, state = _ph_server()
+        # Explicit JSON null: no header expected
+        r = _ph_call(server, state, "routed",
+                     Dict{String,Any}("routing_key" => "e", "level" => nothing);
+                     headers = Dict{String,Any}("routing-key" => "e"))
+        @test haskey(r, "result")
+
+        # Numbers compare NUMERICALLY: a JS client's String(1e-7) is "1e-7",
+        # Julia would print "1.0e-7" — both must match the same body number
+        for hdr in ("1e-7", "0.0000001", "1.0e-7")
+            rn = _ph_call(server, state, "routed",
+                          Dict{String,Any}("routing_key" => "e", "level" => 1e-7);
+                          headers = Dict{String,Any}("routing-key" => "e", "level" => hdr),
+                          id = 2)
+            @test haskey(rn, "result")
+        end
+        # A genuinely different number still rejects
+        rm = _ph_call(server, state, "routed",
+                      Dict{String,Any}("routing_key" => "e", "level" => 1e-7);
+                      headers = Dict{String,Any}("routing-key" => "e", "level" => "2e-7"),
+                      id = 3)
+        @test rm["error"]["code"] == -32020
+    end
+
+    @testset "violations reject before the log opt-in can stream (Codex r1 B1)" begin
+        server, state = _ph_server()
+        # A debug logLevel opt-in must not let a notification precede the -32020:
+        # the preflight answers the error as the request's ONLY message
+        meta = merge(_PH_META, Dict{String,Any}("io.modelcontextprotocol/logLevel" => "debug"))
+        r = process_message(server, state, JSON3.write(
+                Dict("jsonrpc" => "2.0", "id" => 9, "method" => "tools/call",
+                     "params" => Dict("name" => "routed",
+                                      "arguments" => Dict("routing_key" => "east-1"),
+                                      "_meta" => meta)));
+            param_headers = Dict{String,Any}())
+        task_local_storage(:mcp_suppress_log_notifications, false)
+        @test JSON3.read(r)["error"]["code"] == -32020
+    end
+
+    @testset "invalid suffixes are refused at registration (Codex r1 W1)" begin
+        bad_token = MCPTool(name = "bt", description = "d",
+            parameters = [ToolParameter(name = "a", description = "d", type = "string",
+                                        header = "no spaces")],
+            handler = args -> TextContent(text = "x"))
+        empty_sfx = MCPTool(name = "es", description = "d",
+            parameters = [ToolParameter(name = "a", description = "d", type = "string",
+                                        header = "")],
+            handler = args -> TextContent(text = "x"))
+        colliding = MCPTool(name = "cc", description = "d",
+            parameters = [ToolParameter(name = "a", description = "d", type = "string",
+                                        header = "Route"),
+                          ToolParameter(name = "b", description = "d", type = "string",
+                                        header = "route")],
+            handler = args -> TextContent(text = "x"))
+        for tool in (bad_token, empty_sfx, colliding)
+            @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                                                  tools = [tool])
+        end
+
+        # Bounded violation messages: schema-controlled names cannot inflate the
+        # -32020 envelope past the transport's small-error sniff cap
+        long_name = "p" ^ 5000
+        long_tool = MCPTool(name = "long", description = "d",
+            input_schema = Dict{String,Any}(
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    long_name => Dict{String,Any}("type" => "string",
+                                                  "x-mcp-header" => "L"))),
+            handler = args -> TextContent(text = "x"))
+        server = mcp_server(name = "long-test", version = "0.0.1", tools = [long_tool])
+        server.transport = StdioTransport(input = IOBuffer(), output = IOBuffer())
+        state = ServerState()
+        r = _ph_call(server, state, "long", Dict(long_name => "v");
+                     headers = Dict{String,Any}())
+        @test r["error"]["code"] == -32020
+        @test ncodeunits(r["error"]["message"]) < 1000
+        @test ModelContextProtocol.modern_error_http_status(JSON3.write(r)) == 400
+    end
+
     @testset "collect_param_headers gathers, strips, and flags" begin
         mk(headers) = HTTP.Request("POST", "/", headers, "")
         h = ModelContextProtocol.collect_param_headers(mk(
