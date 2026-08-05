@@ -113,6 +113,17 @@ Thread-safe registry of server-side tasks.
 - `max_ttl_ms::Int`: Upper bound applied to requested ttls
 - `poll_interval_ms::Int`: Suggested polling interval included in task responses
 - `page_size::Int`: Page size for tasks/list cursor pagination
+- `on_status_change::Base.RefValue{Any}`: Optional hook `record -> Nothing` fired
+  after every status transition, while the store lock is held (see
+  `_fire_status_change`); installed for the tasks extension's
+  `notifications/tasks`. `nothing` disables it
+- `notification_seq::Threads.Atomic{Int}`: Monotone sequence stamped on every
+  enqueued status notification. Atomic on purpose: it is written at transition
+  sites (under the store lock) but read for registration thresholds under the
+  unrelated registry lock — a plain `Ref` would be a data race on a threaded
+  runtime. Subscriptions record the counter at registration and receive only
+  later-stamped events, so a queued-but-undrained backlog never replays older
+  states to a freshly registered stream
 """
 Base.@kwdef struct TaskStore
     lock::ReentrantLock = ReentrantLock()
@@ -121,6 +132,28 @@ Base.@kwdef struct TaskStore
     max_ttl_ms::Int = TASK_MAX_TTL_MS
     poll_interval_ms::Int = TASK_POLL_INTERVAL_MS
     page_size::Int = TASKS_PAGE_SIZE
+    on_status_change::Base.RefValue{Any} = Ref{Any}(nothing)
+    notification_seq::Threads.Atomic{Int} = Threads.Atomic{Int}(0)
+end
+
+"""
+    _fire_status_change(store::TaskStore, record::TaskRecord) -> Nothing
+
+Fire the store's status-change hook for a record whose status just changed.
+Called at every transition site WHILE the store lock is held — the hook builds
+the task's wire snapshot (which requires the lock) and ENQUEUES it (no
+transport I/O happens under the store lock; a dedicated dispatcher task
+broadcasts from the queue, see `install_task_notifications!`). A throwing hook
+is swallowed: a notification must never break the transition that triggered it.
+"""
+function _fire_status_change(store::TaskStore, record::TaskRecord)
+    hook = store.on_status_change[]
+    hook === nothing && return nothing
+    try
+        hook(record)
+    catch
+    end
+    nothing
 end
 
 """
@@ -186,7 +219,7 @@ function create_task!(store::TaskStore, method::String;
 end
 
 """
-    expire_parked_input!(record::TaskRecord, now_utc::DateTime) -> Bool
+    expire_parked_input!(store::TaskStore, record::TaskRecord, now_utc::DateTime) -> Bool
 
 Fail an extension-era task whose ttl elapsed while parked in `input_required`: a
 task past its ttl that is waiting on CLIENT input is abandoned — the client the
@@ -196,7 +229,8 @@ blocked `task_await_input` waiter. A no-op (returning `false`) for any record
 not in exactly that state, so the deadline timer and the store sweep can both
 call it and whichever runs first wins. Caller must hold the store lock.
 """
-function expire_parked_input!(record::TaskRecord, now_utc::DateTime)::Bool
+function expire_parked_input!(store::TaskStore, record::TaskRecord,
+                              now_utc::DateTime)::Bool
     (record.era === :ext && record.status == "input_required" &&
      task_is_expired(record, now_utc)) || return false
     record.error = ErrorInfo(
@@ -207,6 +241,7 @@ function expire_parked_input!(record::TaskRecord, now_utc::DateTime)::Bool
     record.last_updated_at = now_utc
     drain_pending_inputs!(record)
     notify(record.done)
+    _fire_status_change(store, record)
     true
 end
 
@@ -231,7 +266,7 @@ function sweep_expired!(store::TaskStore)
         if task_is_terminal(record)
             task_is_expired(record, now_utc) && delete!(store.tasks, id)
         else
-            expire_parked_input!(record, now_utc)
+            expire_parked_input!(store, record, now_utc)
         end
     end
     nothing
@@ -318,6 +353,7 @@ function finish_task!(store::TaskStore, record::TaskRecord,
         # parked must not leave that waiter blocked forever
         drain_pending_inputs!(record)
         notify(record.done)
+        _fire_status_change(store, record)
         true
     end
 end
@@ -339,6 +375,7 @@ function cancel_task!(store::TaskStore, record::TaskRecord)::Bool
         record.last_updated_at = Dates.now(Dates.UTC)
         drain_pending_inputs!(record)
         notify(record.done)
+        _fire_status_change(store, record)
         true
     end
 end

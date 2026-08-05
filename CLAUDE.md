@@ -487,8 +487,11 @@ The draft `server-stateless` conformance scenario passes 30/30, and
 `completion/complete` is served in both eras (prompt arguments + template
 variables from per-component `completions` sources; `CompletionCapability`
 advertised in initialize and `server/discover`) — the modern-dated suite passes
-40/40. Still pending for the modern era: `notifications/tasks` over
-`subscriptions/listen` `taskIds` and `x-mcp-header` parameter mirroring.
+40/40. `notifications/tasks` is in: `subscriptions/listen` accepts a `taskIds`
+filter (-32021 without the declared extension; ack echoes only the ids the
+requestor could `tasks/get`), and every extension-era status transition pushes
+the complete DetailedTask to subscribed streams. Still pending for the modern
+era: `x-mcp-header` parameter mirroring (the optional SEP-2243 half).
 
 ### ✅ Implemented
 
@@ -516,12 +519,13 @@ advertised in initialize and `server/discover`) — the modern-dated suite passe
   on unauthenticated HTTP; capability only advertised to 2025-11-25 sessions (older
   sessions: task metadata ignored, sync execution per spec); `task_cancelled(ctx)` for
   cooperative cancellation
-- **Tasks extension core + mid-task input (SEP-2663, modern era)**: `task_detach(ctx)`
+- **Tasks extension (SEP-2663, modern era), complete**: `task_detach(ctx)`
   server-directed handoff, `tasks/get`/`tasks/update`/`tasks/cancel` with -32021
-  capability gating, era-isolated from the legacy store, and `task_await_input(ctx, ...)`
+  capability gating, era-isolated from the legacy store, `task_await_input(ctx, ...)`
   mid-task input (input_required parking, `inputRequests` snapshots, `tasks/update`
-  delivery with partial fulfillment; see the compliance-status paragraph above for
-  the full delta list); `notifications/tasks` pending
+  delivery with partial fulfillment), and `notifications/tasks` status pushes via
+  `subscriptions/listen` `taskIds` (see the compliance-status paragraph above for
+  the full delta list)
 - **logging/setLevel** (eight RFC-5424 levels) + per-request lifecycle `@debug` log
   (method/id/duration_ms/ok), runtime-enableable
 - **Completion** (`completion/complete`, both eras): prompt-argument and

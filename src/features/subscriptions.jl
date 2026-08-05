@@ -12,9 +12,13 @@
 # every resources/updated broadcast and held for the subscription's whole lifetime.
 const MAX_RESOURCE_SUBSCRIPTIONS = 256
 
+# Same bound for watched task ids (tasks extension `notifications/tasks`)
+const MAX_TASK_SUBSCRIPTIONS = 256
+
 """
     SubscriptionFilter(; tools_list_changed=false, prompts_list_changed=false,
-                       resources_list_changed=false, resource_uris=Set{String}())
+                       resources_list_changed=false, resource_uris=Set{String}(),
+                       task_ids=Set{String}())
 
 The notification types a `subscriptions/listen` stream opted into. A server MUST NOT
 send notification types the client did not explicitly request, so every delivery is
@@ -26,16 +30,21 @@ checked against this filter.
 - `resources_list_changed::Bool`: deliver `notifications/resources/list_changed`
 - `resource_uris::Set{String}`: deliver `notifications/resources/updated` for these
   URIs (a set: membership is checked on every update broadcast)
+- `task_ids::Set{String}`: deliver `notifications/tasks` status updates for these
+  task ids (tasks extension, SEP-2663; only ids the requestor could `tasks/get` are
+  ever agreed to)
 """
 Base.@kwdef struct SubscriptionFilter
     tools_list_changed::Bool = false
     prompts_list_changed::Bool = false
     resources_list_changed::Bool = false
     resource_uris::Set{String} = Set{String}()
+    task_ids::Set{String} = Set{String}()
 end
 
 """
-    SubscriptionRecord(id, filter, route, transport)
+    SubscriptionRecord(id, filter, route, transport,
+                       task_principal=nothing, task_scopes=Set{String}())
 
 One active `subscriptions/listen` stream.
 
@@ -47,13 +56,27 @@ One active `subscriptions/listen` stream.
   (`nothing` for stream transports like stdio, which share one channel)
 - `transport::Any`: the transport to deliver over (`Transport`; typed `Any` to avoid
   include-order coupling)
+- `task_principal::Union{String,Nothing}`: the listen requestor's extension-task
+  principal, re-checked at every `notifications/tasks` delivery
+- `task_scopes::Set{String}`: the listen requestor's token scopes, re-checked
+  against the task's `required_scopes` at every `notifications/tasks` delivery —
+  a task whose authorization requirements changed after the listen must not keep
+  leaking status to a stream that could no longer `tasks/get` it
+- `task_seq::Int`: the task-notification sequence at registration; only events
+  stamped LATER are delivered to this stream, so a queued-but-undrained backlog
+  never replays states older than the stream's own initial snapshot
 """
 struct SubscriptionRecord
     id::Union{String,Int}
     filter::SubscriptionFilter
     route::Any
     transport::Any
+    task_principal::Union{String,Nothing}
+    task_scopes::Set{String}
+    task_seq::Int
 end
+SubscriptionRecord(id, filter, route, transport) =
+    SubscriptionRecord(id, filter, route, transport, nothing, Set{String}(), 0)
 
 """
     SubscriptionRegistry()
@@ -116,13 +139,26 @@ function parse_subscription_filter(notifications)::Union{SubscriptionFilter,Stri
             push!(uris, String(u))
         end
     end
+    tids = Set{String}()
+    if haskey(notifications, "taskIds")
+        ids = notifications["taskIds"]
+        ids isa AbstractVector || return "taskIds must be an array of strings"
+        length(ids) > MAX_TASK_SUBSCRIPTIONS &&
+            return "taskIds exceeds the limit of $(MAX_TASK_SUBSCRIPTIONS) ids"
+        for t in ids
+            t isa AbstractString || return "taskIds must be an array of strings"
+            push!(tids, String(t))
+        end
+    end
     f = SubscriptionFilter(
         tools_list_changed = get(notifications, "toolsListChanged", false) === true,
         prompts_list_changed = get(notifications, "promptsListChanged", false) === true,
         resources_list_changed = get(notifications, "resourcesListChanged", false) === true,
-        resource_uris = uris
+        resource_uris = uris,
+        task_ids = tids
     )
-    if !(f.tools_list_changed || f.prompts_list_changed || f.resources_list_changed) && isempty(uris)
+    if !(f.tools_list_changed || f.prompts_list_changed || f.resources_list_changed) &&
+       isempty(uris) && isempty(tids)
         return "at least one notification type must be requested"
     end
     f
@@ -148,24 +184,30 @@ function filter_to_wire(f::SubscriptionFilter)::LittleDict{String,Any}
     f.prompts_list_changed && (d["promptsListChanged"] = true)
     f.resources_list_changed && (d["resourcesListChanged"] = true)
     isempty(f.resource_uris) || (d["resourceSubscriptions"] = sort!(collect(f.resource_uris)))
+    isempty(f.task_ids) || (d["taskIds"] = sort!(collect(f.task_ids)))
     d
 end
 
 """
-    filter_wants(f::SubscriptionFilter, method::String, uri::Union{String,Nothing}) -> Bool
+    filter_wants(f::SubscriptionFilter, method::String,
+                 uri::Union{String,Nothing}=nothing,
+                 task_id::Union{String,Nothing}=nothing) -> Bool
 
-Whether a notification of `method` (for resource updates, of `uri`) was opted into.
+Whether a notification of `method` (for resource updates, of `uri`; for task status
+updates, of `task_id`) was opted into.
 
 # Arguments
 - `f::SubscriptionFilter`: The subscription's filter
 - `method::String`: The notification method
 - `uri::Union{String,Nothing}`: The resource URI for `notifications/resources/updated`
+- `task_id::Union{String,Nothing}`: The task id for `notifications/tasks`
 
 # Returns
 - `Bool`: true when the notification may be delivered on this stream
 """
 function filter_wants(f::SubscriptionFilter, method::String,
-                      uri::Union{String,Nothing} = nothing)::Bool
+                      uri::Union{String,Nothing} = nothing,
+                      task_id::Union{String,Nothing} = nothing)::Bool
     if method == "notifications/tools/list_changed"
         return f.tools_list_changed
     elseif method == "notifications/prompts/list_changed"
@@ -174,6 +216,8 @@ function filter_wants(f::SubscriptionFilter, method::String,
         return f.resources_list_changed
     elseif method == "notifications/resources/updated"
         return uri !== nothing && uri in f.resource_uris
+    elseif method == "notifications/tasks"
+        return task_id !== nothing && task_id in f.task_ids
     end
     return false
 end

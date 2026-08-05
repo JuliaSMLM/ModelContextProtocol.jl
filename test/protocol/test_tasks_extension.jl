@@ -898,6 +898,214 @@ _ext_tools() = [
         @test_throws TaskCancelledException task_await_input(ctx, roots_request())
     end
 
+    @testset "notifications/tasks over subscriptions/listen taskIds" begin
+        confirmer = MCPTool(name="confirmer", description="d", parameters=[],
+            task_support=:optional,
+            handler=(args, ctx) -> begin
+                task_detach(ctx)
+                resp = task_await_input(ctx, elicit_request("Proceed?"))
+                TextContent(text="notified: $(JSON3.write(resp))")
+            end)
+        server, state, buf = _ext_test_server(tools=[confirmer])
+        elicit_caps = Dict{String,Any}(
+            "elicitation" => Dict{String,Any}(),
+            "extensions" => Dict{String,Any}("io.modelcontextprotocol/tasks" => Dict{String,Any}()))
+        listen(id, task_ids; caps=_EXT_CAPS) = _ext_rpc(server, state,
+            Dict("jsonrpc" => "2.0", "id" => id, "method" => "subscriptions/listen",
+                 "params" => Dict("notifications" => Dict("taskIds" => task_ids),
+                                  "_meta" => _ext_meta(caps=caps))))
+
+        # taskIds without the extension declared: the extension's -32021, pre-stream
+        gated = listen("sub-gated", ["whatever"]; caps=Dict{String,Any}())
+        @test gated["error"]["code"] == -32021
+        @test haskey(gated["error"]["data"]["requiredCapabilities"]["extensions"],
+                     "io.modelcontextprotocol/tasks")
+
+        # Malformed taskIds is a filter violation
+        @test _ext_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => "sub-bad",
+            "method" => "subscriptions/listen",
+            "params" => Dict("notifications" => Dict("taskIds" => "not-an-array"),
+                             "_meta" => _ext_meta())))["error"]["code"] == -32602
+
+        # Park a task, then subscribe to it (plus an unknown id, which is dropped
+        # from the acknowledged set — indistinguishable from not-found)
+        @test _ext_call(server, state, "confirmer"; caps=elicit_caps, id=301) === nothing
+        tid = _ext_deferred_response(buf, 301)["result"]["taskId"]
+        @test _ext_wait_for(() -> _ext_get(server, state, tid)["result"]["status"] == "input_required")
+        key = String(first(keys(_ext_get(server, state, tid)["result"]["inputRequests"])))
+
+        @test listen("sub-1", [tid, "never-issued-id"]) === nothing  # deferred stream
+        msgs = []
+        _ext_wait_for(() -> (append!(msgs, _ext_oob(buf));
+            any(m -> get(m, "method", nothing) == "notifications/subscriptions/acknowledged", msgs)))
+        ack = first(m for m in msgs
+                    if get(m, "method", nothing) == "notifications/subscriptions/acknowledged")
+        @test ack["params"]["notifications"]["taskIds"] == [tid]
+        @test ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == "sub-1"
+
+        # Answering the input drives working -> completed; each transition pushes a
+        # complete DetailedTask identical to a tasks/get at that moment
+        _ext_update(server, state, tid; responses=Dict{String,Any}(
+            key => Dict{String,Any}("action" => "accept",
+                                    "content" => Dict{String,Any}("go" => "yes"))))
+        _ext_wait_for(() -> (append!(msgs, _ext_oob(buf));
+            any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                     m["params"]["status"] == "completed", msgs)))
+        notes = [m for m in msgs if get(m, "method", nothing) == "notifications/tasks"]
+        @test all(m -> m["params"]["taskId"] == tid, notes)
+        @test all(m -> m["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == "sub-1", notes)
+        @test any(m -> m["params"]["status"] == "working", notes)
+        done_note = first(m for m in notes if m["params"]["status"] == "completed")
+        @test occursin("notified:", done_note["params"]["result"]["content"][1]["text"])
+        @test done_note["params"]["ttlMs"] isa Integer
+
+        # A task the stream did not subscribe to stays silent on it
+        @test _ext_call(server, state, "confirmer"; caps=elicit_caps, id=302) === nothing
+        tid2 = _ext_deferred_response(buf, 302)["result"]["taskId"]
+        @test _ext_wait_for(() -> _ext_get(server, state, tid2)["result"]["status"] == "input_required")
+        c = _ext_cancel(server, state, tid2)
+        @test c["result"]["resultType"] == "complete"
+        sleep(0.2)
+        append!(msgs, _ext_oob(buf))
+        @test !any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                        m["params"]["taskId"] == tid2, msgs)
+
+        # Legacy-era transitions never reach the extension's notification stream
+        legacy = create_task!(server.tasks, "tools/call")
+        cancel_task!(server.tasks, legacy)
+        sleep(0.1)
+        append!(msgs, _ext_oob(buf))
+        @test !any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                        m["params"]["taskId"] == legacy.task_id, msgs)
+    end
+
+    @testset "notifications/tasks hardening (Codex r1)" begin
+        server, state, buf = _ext_test_server(tools=_ext_tools())
+        listen(id, task_ids; caps=_EXT_CAPS) = _ext_rpc(server, state,
+            Dict("jsonrpc" => "2.0", "id" => id, "method" => "subscriptions/listen",
+                 "params" => Dict("notifications" => Dict("taskIds" => task_ids),
+                                  "_meta" => _ext_meta(caps=caps))))
+
+        # Gating precedes shape validation: a non-declaring client gets the
+        # extension's -32021 even for an over-limit or empty taskIds entry
+        @test listen("g1", ["id-$(i)" for i in 1:257]; caps=Dict{String,Any}())["error"]["code"] == -32021
+        @test listen("g2", String[]; caps=Dict{String,Any}())["error"]["code"] == -32021
+        # Declared client, over-limit: the ordinary filter violation
+        @test listen("g3", ["id-$(i)" for i in 1:257])["error"]["code"] == -32602
+
+        # Initial snapshot: subscribing to an already-parked task pushes its
+        # CURRENT state immediately — a transition landing between authorization
+        # and registration can no longer strand a notification-only client
+        @test _ext_call(server, state, "slow"; id=321) === nothing
+        tid = _ext_deferred_response(buf, 321)["result"]["taskId"]
+        @test listen("sub-snap", [tid]) === nothing
+        msgs = []
+        @test _ext_wait_for(() -> (append!(msgs, _ext_oob(buf));
+            any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                     m["params"]["taskId"] == tid &&
+                     m["params"]["status"] == "working", msgs)))
+        _ext_cancel(server, state, tid)
+
+        # Unauthenticated transports have no scopes, not insufficient ones: a
+        # scoped task still pushes to an unauthenticated stream, mirroring
+        # ext_task_authorized (Codex r2 W2 — the r1 fix over-denied here)
+        rec = create_task!(server.tasks, "tools/call"; era=:ext,
+                           required_scopes=["mcp:admin"])
+        @test listen("sub-authz", [rec.task_id]) === nothing
+        msgs2 = []
+        cancel_task!(server.tasks, rec)
+        @test _ext_wait_for(() -> (append!(msgs2, _ext_oob(buf));
+            any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                     m["params"]["taskId"] == rec.task_id &&
+                     m["params"]["status"] == "cancelled", msgs2)))
+
+        # Authenticated streams ARE re-checked per delivery against the task's
+        # transition-time requirements: insufficient stored scopes deny
+        arec = create_task!(server.tasks, "tools/call"; era=:ext,
+                            principal="[\"prov\",\"alice\"]",
+                            required_scopes=["mcp:admin"])
+        push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+            "sub-auth-deny",
+            ModelContextProtocol.SubscriptionFilter(task_ids=Set([arec.task_id])),
+            nothing, server.transport,
+            "[\"prov\",\"alice\"]", Set(["mcp:read"]), 0))
+        cancel_task!(server.tasks, arec)
+        sleep(0.3)
+        append!(msgs2, _ext_oob(buf))
+        @test !any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                        m["params"]["taskId"] == arec.task_id, msgs2)
+
+        # Sequence guard: a stream whose registration threshold postdates an
+        # event never receives it — a queued backlog cannot replay older states
+        srec = create_task!(server.tasks, "tools/call"; era=:ext)
+        push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+            "sub-seq-hi",
+            ModelContextProtocol.SubscriptionFilter(task_ids=Set([srec.task_id])),
+            nothing, server.transport,
+            nothing, Set{String}(), server.tasks.notification_seq[] + 1000))
+        cancel_task!(server.tasks, srec)
+        sleep(0.3)
+        append!(msgs2, _ext_oob(buf))
+        @test !any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                        m["params"]["taskId"] == srec.task_id, msgs2)
+
+        # stop! ends the dispatcher (post-stop transitions neither push nor
+        # throw); ensure_task_notifications! revives the pipeline for a restart
+        q1 = server.task_notification_queue
+        server.active = true
+        stop!(server)
+        @test !isopen(q1)
+        rec2 = create_task!(server.tasks, "tools/call"; era=:ext)
+        @test cancel_task!(server.tasks, rec2)  # transition survives the closed queue
+        @test rec2.status == "cancelled"
+        ModelContextProtocol.ensure_task_notifications!(server)
+        @test server.task_notification_queue !== q1
+        @test isopen(server.task_notification_queue)
+
+        # Generational teardown: an old run's shutdown closes only ITS queue — a
+        # fresh queue installed by an overlapping restart must survive it
+        old_q = server.task_notification_queue
+        ModelContextProtocol.install_task_notifications!(server)  # the "new run"
+        new_q = server.task_notification_queue
+        Base.close(old_q)  # the old run's generation-local finally
+        @test isopen(new_q)
+    end
+
+    @testset "dead routes cannot pin listen capacity (Codex r2 B1)" begin
+        server, state, buf = _ext_test_server(tools=_ext_tools())
+        # 64 vanished HTTP streams (routes with no registered channel are dead)
+        # previously made every new subscriptions/listen -32603 forever: the
+        # capacity precheck counted them without sweeping
+        http = HttpTransport(port = 18997)
+        for i in 1:ModelContextProtocol.MAX_SUBSCRIPTIONS
+            push!(server.listen_subscriptions.subs, ModelContextProtocol.SubscriptionRecord(
+                "dead-$i", ModelContextProtocol.SubscriptionFilter(tools_list_changed = true),
+                "r-dead-$i", http))
+        end
+        @test _ext_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => "sub-live",
+            "method" => "subscriptions/listen",
+            "params" => Dict("notifications" => Dict("toolsListChanged" => true),
+                             "_meta" => _ext_meta()))) === nothing  # corpses swept, stream registered
+        @test length(server.listen_subscriptions.subs) == 1
+        @test first(server.listen_subscriptions.subs).id == "sub-live"
+    end
+
+    @testset "notifications/tasks: cancellation pushes the cancelled state" begin
+        server, state, buf = _ext_test_server(tools=_ext_tools())
+        @test _ext_call(server, state, "slow"; id=311) === nothing
+        tid = _ext_deferred_response(buf, 311)["result"]["taskId"]
+        @test _ext_rpc(server, state, Dict("jsonrpc" => "2.0", "id" => "sub-c",
+            "method" => "subscriptions/listen",
+            "params" => Dict("notifications" => Dict("taskIds" => [tid]),
+                             "_meta" => _ext_meta()))) === nothing
+        _ext_cancel(server, state, tid)
+        msgs = []
+        @test _ext_wait_for(() -> (append!(msgs, _ext_oob(buf));
+            any(m -> get(m, "method", nothing) == "notifications/tasks" &&
+                     m["params"]["status"] == "cancelled" &&
+                     m["params"]["taskId"] == tid, msgs)))
+    end
+
     @testset "Mcp-Name routing header mirrors taskId (SEP-2243)" begin
         body = """{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"taskId":"abc-123","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"""
         msg = JSON3.read(body)

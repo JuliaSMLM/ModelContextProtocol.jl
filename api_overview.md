@@ -1033,6 +1033,11 @@ confirming_tool = MCPTool(
   request to have declared the matching client capability (e.g. `elicitation`);
   request params are frozen at registration (owned plain-JSON snapshot; exotic
   values are rejected); a task whose ttl elapses while parked is failed and drained
+- Status pushes: `subscriptions/listen` with a `notifications.taskIds` filter
+  delivers `notifications/tasks` (a complete DetailedTask, like `tasks/get`) on
+  every transition of the subscribed ids; the ack echoes only ids the requestor
+  could `tasks/get`, and requesting `taskIds` without the declared extension is
+  `-32021`
 - Extension tasks and legacy (SEP-1686) tasks live in era-isolated stores; on HTTP,
   `Mcp-Name` must mirror `params.taskId` for `tasks/*` requests
 

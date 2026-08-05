@@ -374,6 +374,9 @@ function task_await_input(ctx::RequestContext,
             record.status_message = "Waiting for client input."
         end
         record.last_updated_at = Dates.now(Dates.UTC)
+        # Fired even for a second parallel registration (status already
+        # input_required): the observable inputRequests snapshot changed
+        _fire_status_change(store, record)
     end
     # Clock-driven ttl deadline: the store sweep only runs on LATER store
     # activity, so without this a parked task whose client vanished would pin
@@ -392,7 +395,7 @@ function task_await_input(ctx::RequestContext,
         deadline = Timer(max(remaining_ms, 0) / 1000; interval = 0.25) do t
             try
                 lock(store.lock) do
-                    expire_parked_input!(record, Dates.now(Dates.UTC)) ||
+                    expire_parked_input!(store, record, Dates.now(Dates.UTC)) ||
                         task_is_terminal(record)
                 end && Base.close(t)
             catch
@@ -418,6 +421,95 @@ function task_await_input(ctx::RequestContext,
         deadline === nothing || Base.close(deadline)
     end
     responses
+end
+
+# Bound on queued-but-undelivered task status notifications. Past it new
+# notifications are load-shed (dropped): they are best-effort pushes, and
+# polling tasks/get stays authoritative.
+const TASK_NOTIFICATION_QUEUE_CAP = 1024
+
+"""
+    install_task_notifications!(server::Server) -> Nothing
+
+Wire the tasks extension's `notifications/tasks` status updates: install the
+store's status-change hook so every extension-era transition (parking on input,
+resuming, completing, failing, cancelling, expiring) pushes the task's complete
+DetailedTask — identical to what `tasks/get` would return at that moment — to
+the `subscriptions/listen` streams that subscribed to the task's id.
+
+The hook runs under the store lock (which the wire snapshot requires) but does
+NO transport I/O there: it enqueues the snapshot — plus the task's
+transition-time principal and `required_scopes`, re-checked per stream at
+delivery — onto a bounded FIFO consumed by a single dispatcher task, which
+broadcasts OUTSIDE the store lock. A stalled client can therefore never wedge
+the task store (a synchronous stdio write under the lock would block every
+tasks/* request once the client's pipe fills), the single consumer preserves
+transition order, and a full queue load-sheds (best-effort pushes; polling
+stays authoritative). Installed by `mcp_server`; `stop!` closes the queue,
+ending the dispatcher.
+"""
+function install_task_notifications!(server::Server)
+    queue = Channel{Any}(TASK_NOTIFICATION_QUEUE_CAP)
+    server.task_notification_queue = queue
+    Threads.@spawn begin
+        for (seq, wire, task_id, principal, required_scopes) in queue
+            try
+                broadcast_subscription_notification(server, "notifications/tasks";
+                    params = wire,
+                    task_id = task_id,
+                    # Per-delivery checks beyond the filter match: (a) only
+                    # events stamped after the stream registered (a queued
+                    # backlog never replays older states to a fresh stream);
+                    # (b) re-authorization from the TRANSITION-time
+                    # requirements — principal equality, and (mirroring
+                    # ext_task_authorized) the scope check applies only on
+                    # authenticated transports: an unauthenticated stream has
+                    # no scopes, not insufficient ones
+                    authorize = s -> seq > s.task_seq &&
+                                     s.task_principal == principal &&
+                                     (principal === nothing ||
+                                      issubset(required_scopes, s.task_scopes)))
+            catch
+                # A broken transport must not kill the dispatcher
+            end
+        end
+    end
+    # The hook is READ at transition sites under the store lock, so its
+    # publication must happen under the same lock — a restart racing an old
+    # detached task's completion must never let that transition observe a
+    # half-published closure
+    lock(server.tasks.lock) do
+        server.tasks.on_status_change[] = record -> begin
+            record.era === :ext || return nothing
+            # Single producer (every call site holds the store lock), so the
+            # availability check cannot race another put!: the queue never
+            # blocks, and the atomic stamps are strictly ordered (atomic_add!
+            # returns the previous value)
+            Base.n_avail(queue) >= TASK_NOTIFICATION_QUEUE_CAP && return nothing
+            put!(queue, (Threads.atomic_add!(server.tasks.notification_seq, 1) + 1,
+                         ext_task_wire(record; detailed = true),
+                         record.task_id,
+                         record.principal,
+                         copy(record.required_scopes)))
+            nothing
+        end
+    end
+    nothing
+end
+
+"""
+    ensure_task_notifications!(server::Server) -> Nothing
+
+(Re)install the `notifications/tasks` dispatch pipeline when it is absent or its
+queue has been closed — `stop!` and the server-loop shutdown both close the
+queue (ending the dispatcher so it cannot pin the server past its lifetime), so
+a server started again needs a fresh queue and dispatcher. A live pipeline is
+left untouched.
+"""
+function ensure_task_notifications!(server::Server)
+    q = server.task_notification_queue
+    (q === nothing || !isopen(q)) && install_task_notifications!(server)
+    nothing
 end
 
 # End the current request's ModernRequestLogger scope from the worker task (the
@@ -683,6 +775,7 @@ function handle_ext_update_task(ctx::RequestContext, params::UpdateTaskParams)::
                 record.status_message = "The operation is now in progress."
             end
             record.last_updated_at = Dates.now(Dates.UTC)
+            _fire_status_change(store, record)
         end
     end
     HandlerResult(response = JSONRPCResponse(
