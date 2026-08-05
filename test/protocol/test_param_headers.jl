@@ -439,6 +439,67 @@ _ph_b64(s) = Base64.base64encode(s)
         end
     end
 
+    @testset "Float64-fallback integers and exponent overflows (Codex r4 B1+B2)" begin
+        server, state = _ph_server()
+        base = Dict{String,Any}("routing_key" => "e")
+        hdr(level) = Dict{String,Any}("routing-key" => "e", "level" => level)
+
+        # Integer tokens beyond Int64 arrive as Float64 from JSON3 — the
+        # JavaScript-safe range check must catch integral floats too, or
+        # 9223372036854775808 and ...809 would collapse in the float compare
+        huge = Dict{String,Any}(base..., "level" => Int128(9223372036854775808))
+        for h in ("9223372036854775808", "9223372036854775809")
+            r = _ph_call(server, state, "routed", huge; headers = hdr(h))
+            @test r["error"]["code"] == -32020
+            @test occursin("JavaScript-safe", r["error"]["message"])
+        end
+        r2 = _ph_call(server, state, "routed", Dict{String,Any}(base..., "level" => 1e20);
+                      headers = hdr("1e20"), id = 2)
+        @test r2["error"]["code"] == -32020
+
+        # Oversized exponent lexemes are a MISMATCH (-32020), never a thrown
+        # OverflowError surfacing as -32603/HTTP 200
+        int_body = Dict{String,Any}(base..., "level" => 16)
+        for h in ("1e999999999999999999999999999999", "1e-9223372036854775808")
+            r3 = _ph_call(server, state, "routed", int_body; headers = hdr(h), id = 3)
+            @test r3["error"]["code"] == -32020
+        end
+    end
+
+    @testset "every non-properties schema path rejects annotations (Codex r4 B3)" begin
+        mk(schema) = MCPTool(name = "t", description = "d", input_schema = schema,
+                             handler = args -> TextContent(text = "x"))
+        annotated = Dict{String,Any}("type" => "string", "x-mcp-header" => "A")
+        inner = Dict{String,Any}("type" => "object",
+                                 "properties" => Dict{String,Any}("a" => annotated))
+        # The deep scan catches annotations under ANY schema-valued keyword —
+        # including ones no keyword blacklist would have listed
+        for wrap in (
+            Dict{String,Any}("if" => inner),
+            Dict{String,Any}("then" => inner),
+            Dict{String,Any}("else" => inner),
+            Dict{String,Any}("contains" => copy(annotated)),
+            Dict{String,Any}("dependentSchemas" => Dict{String,Any}("x" => inner)),
+            Dict{String,Any}("propertyNames" => copy(annotated)),
+            Dict{String,Any}("unevaluatedProperties" => copy(annotated)),
+            Dict{String,Any}("additionalItems" => copy(annotated)),
+            Dict{String,Any}("someFutureKeyword" => inner),
+        )
+            schema = merge(Dict{String,Any}("type" => "object"), wrap)
+            @test_throws ArgumentError mcp_server(name = "v", version = "0.0.1",
+                                                  tools = [mk(schema)])
+        end
+        # Pure properties chains (at depth) remain valid
+        ok = Dict{String,Any}("type" => "object",
+            "properties" => Dict{String,Any}(
+                "outer" => Dict{String,Any}(
+                    "type" => "object",
+                    "properties" => Dict{String,Any}(
+                        "a" => Dict{String,Any}("type" => "string",
+                                                "x-mcp-header" => "A")))))
+        @test mcp_server(name = "v", version = "0.0.1", tools = [mk(ok)]) isa Any
+    end
+
     @testset "collect_param_headers gathers, strips, and flags" begin
         mk(headers) = HTTP.Request("POST", "/", headers, "")
         h = ModelContextProtocol.collect_param_headers(mk(

@@ -1059,50 +1059,35 @@ end
 # deliberately excluded by the spec, as are objects and arrays.
 const _HEADER_ANNOTATABLE_TYPES = ("string", "integer", "boolean")
 
-# Walk a raw schema rejecting EVERY invalid annotation — non-string values,
-# annotations on properties without an annotatable declared type, and
-# annotations anywhere that is not a statically reachable property (array
-# items, composition branches, definitions: those values cannot be faithfully
-# mirrored into one header). `prop_name` names the property this node defines
-# (nothing for structural nodes); `reachable` is false once the walk descends
-# through any non-property structure.
-function _validate_header_annotations(tool_name::String, node,
-                                      prop_name::Union{Nothing,String},
-                                      reachable::Bool, seen::Dict{String,String})
+# Collect the annotated nodes reachable through a chain consisting SOLELY of
+# `properties` — the spec's definition of static reachability for x-mcp-header
+function _reachable_annotated_nodes!(out::Vector{Tuple{String,Any}}, node)
     node isa AbstractDict || return nothing
-    if haskey(node, "x-mcp-header") || haskey(node, Symbol("x-mcp-header"))
-        h = get(node, "x-mcp-header", get(node, Symbol("x-mcp-header"), nothing))
-        (reachable && prop_name !== nothing) || throw(ArgumentError(
-            "tool '$(tool_name)': x-mcp-header on " *
-            (prop_name === nothing ? "a non-property node" : "property '$(prop_name)'") *
-            " is not statically reachable (array items, composition branches, and " *
-            "definitions cannot be mirrored into one header)"))
-        _check_header_suffix(tool_name, "property '$(prop_name)'", h, seen)
-        t = get(node, "type", get(node, :type, nothing))
-        t in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
-            "tool '$(tool_name)': x-mcp-header on property '$(prop_name)' requires " *
-            "declared type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(t))"))
-    end
     props = get(node, "properties", get(node, :properties, nothing))
-    if props isa AbstractDict
-        for (k, v) in props
-            _validate_header_annotations(tool_name, v, String(k), reachable, seen)
-        end
+    props isa AbstractDict || return nothing
+    for (k, v) in props
+        v isa AbstractDict || continue
+        (haskey(v, "x-mcp-header") || haskey(v, Symbol("x-mcp-header"))) &&
+            push!(out, (String(k), v))
+        _reachable_annotated_nodes!(out, v)
     end
-    for key in ("items", "prefixItems", "allOf", "anyOf", "oneOf", "not",
-                "additionalProperties", "patternProperties", "\$defs", "definitions")
-        sub = get(node, key, get(node, Symbol(key), nothing))
-        sub === nothing && continue
-        if key in ("patternProperties", "\$defs", "definitions") && sub isa AbstractDict
-            for (_, v) in sub
-                _validate_header_annotations(tool_name, v, nothing, false, seen)
-            end
-        elseif sub isa AbstractDict
-            _validate_header_annotations(tool_name, sub, nothing, false, seen)
-        elseif sub isa AbstractVector
-            for it in sub
-                _validate_header_annotations(tool_name, it, nothing, false, seen)
-            end
+    nothing
+end
+
+# Find EVERY x-mcp-header occurrence anywhere in the schema — a generic deep
+# scan over all dicts and vectors, so no schema-valued keyword (items,
+# composition, conditionals, dependentSchemas, unevaluated*, older-draft paths,
+# anything future) can smuggle an annotation past validation
+function _scan_all_annotations!(out::Vector{Any}, node)
+    if node isa AbstractDict
+        (haskey(node, "x-mcp-header") || haskey(node, Symbol("x-mcp-header"))) &&
+            push!(out, node)
+        for (_, v) in pairs(node)
+            _scan_all_annotations!(out, v)
+        end
+    elseif node isa AbstractVector
+        for v in node
+            _scan_all_annotations!(out, v)
         end
     end
     nothing
@@ -1126,7 +1111,33 @@ a clear error. Throws `ArgumentError` on violation.
 function validate_tool_headers(tool::MCPTool)
     seen = Dict{String,String}()
     if !isnothing(tool.input_schema)
-        _validate_header_annotations(tool.name, tool.input_schema, nothing, true, seen)
+        # Whitelist by construction: collect the annotations reachable through
+        # pure `properties` chains, then deep-scan the WHOLE schema — any
+        # occurrence outside the reachable set (items, composition branches,
+        # conditionals, definitions, whatever keyword carried it) is invalid.
+        # Comparison is by node identity; a schema aliasing one subschema
+        # object into both a reachable and an unreachable position is not
+        # distinguished (write distinct nodes).
+        reachable = Tuple{String,Any}[]
+        _reachable_annotated_nodes!(reachable, tool.input_schema)
+        reachable_ids = Set{UInt}(objectid(n) for (_, n) in reachable)
+        everywhere = Any[]
+        _scan_all_annotations!(everywhere, tool.input_schema)
+        for n in everywhere
+            objectid(n) in reachable_ids || throw(ArgumentError(
+                "tool '$(tool.name)': an x-mcp-header annotation is not statically " *
+                "reachable — only properties reached through a pure `properties` " *
+                "chain may be mirrored (never array items, composition branches, " *
+                "conditionals, or definitions)"))
+        end
+        for (pname, n) in reachable
+            h = get(n, "x-mcp-header", get(n, Symbol("x-mcp-header"), nothing))
+            _check_header_suffix(tool.name, "property '$(pname)'", h, seen)
+            t = get(n, "type", get(n, :type, nothing))
+            t in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
+                "tool '$(tool.name)': x-mcp-header on property '$(pname)' requires " *
+                "declared type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(t))"))
+        end
     else
         for tp in tool.parameters
             tp.header === nothing && continue
@@ -1153,8 +1164,12 @@ function _json_integer_value(s::AbstractString)::Union{BigInt,Nothing}
     m = match(r"\A(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?\z", s)
     m === nothing && return nothing
     frac = something(m.captures[3], "")
-    ex = m.captures[4] === nothing ? 0 : parse(Int, m.captures[4])
-    abs(ex) > 64 && return nothing
+    # tryparse, never parse: an exponent lexeme beyond Int64 must reject as a
+    # mismatch, not throw (and the range check uses explicit bounds — abs of
+    # typemin(Int) itself throws)
+    ex = m.captures[4] === nothing ? 0 :
+         something(tryparse(Int, m.captures[4]), typemax(Int))
+    (-64 <= ex <= 64) || return nothing
     scale = ex - length(frac)
     n = parse(BigInt, m.captures[2] * frac)
     if scale >= 0
@@ -1221,10 +1236,14 @@ function param_header_violation(tool::MCPTool, arguments,
         decoded = decode_mcp_header_value(raw)
         decoded === nothing &&
             return "Mcp-Param-$(sfx) header carries a malformed Base64 sentinel value"
-        if value isa Integer && !(value isa Bool) &&
-           !(-9007199254740991 <= value <= 9007199254740991)
-            # SEP-2243 limits mirrored integers to the JavaScript-safe range —
-            # a value JS clients cannot even represent has no faithful mirror
+        # SEP-2243 limits mirrored integers to the JavaScript-safe range — a
+        # value JS clients cannot even represent has no faithful mirror. The
+        # check covers integral FLOATS too: JSON3 parses integer tokens beyond
+        # Int64 as Float64, which would otherwise slide into the approximate
+        # float comparison (where 9223372036854775808 and ...809 collapse)
+        is_integral = (value isa Integer && !(value isa Bool)) ||
+                      (value isa AbstractFloat && isinteger(value))
+        if is_integral && !(-9007199254740991 <= value <= 9007199254740991)
             return "argument '$(pname)' is outside the JavaScript-safe integer range and cannot be mirrored"
         end
         matched = if value isa AbstractString
