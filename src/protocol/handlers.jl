@@ -986,6 +986,310 @@ function handle_unsubscribe_resource(ctx::RequestContext, params::UnsubscribePar
     )
 end
 
+# Bound schema-derived names inside violation messages: the -32020 response
+# must stay well under the transport's small-error-envelope sniff cap, whatever
+# the schema author put in property names
+_bounded_name(s::AbstractString, cap::Int=120) =
+    ncodeunits(s) <= cap ? String(s) : String(first(s, cap)) * "…"
+
+# RFC 9110 token characters — the only bytes valid in a header-name suffix.
+# \A/\z anchors, not ^/$: PCRE's $ matches BEFORE a trailing newline, which
+# would let "Route\n" register
+const _HEADER_TOKEN_RE = r"\A[!#$%&'*+\-.^_`|~A-Za-z0-9]+\z"
+
+function _check_header_suffix(tool_name::String, where_desc::String, suffix,
+                              seen::Dict{String,String})
+    suffix isa AbstractString || throw(ArgumentError(
+        "tool '$(tool_name)': x-mcp-header for $(where_desc) must be a string; got $(typeof(suffix))"))
+    occursin(_HEADER_TOKEN_RE, suffix) || throw(ArgumentError(
+        "tool '$(tool_name)': x-mcp-header suffix $(repr(suffix)) for $(where_desc) " *
+        "is not a valid HTTP token"))
+    key = lowercase(suffix)
+    if haskey(seen, key)
+        throw(ArgumentError(
+            "tool '$(tool_name)': x-mcp-header suffix $(repr(suffix)) collides " *
+            "case-insensitively with $(repr(seen[key])) (header names are case-insensitive)"))
+    end
+    seen[key] = String(suffix)
+    nothing
+end
+
+# The JSON Schema types a mirrored parameter may declare (SEP-2243): scalar
+# values with an unambiguous single-header representation. `number` is
+# deliberately excluded by the spec, as are objects and arrays.
+const _HEADER_ANNOTATABLE_TYPES = ("string", "integer", "boolean")
+
+# Keyword classification is DIALECT-SPECIFIC: MCP schemas follow their declared
+# `\$schema` dialect (2020-12 by default). A keyword only carries subschemas in
+# the dialects that define it — in any other dialect it is an unrecognized
+# keyword, i.e. DATA per the JSON Schema core rules (2020-12 removed
+# `additionalItems` and `definitions`/`dependencies`; draft-07 predates
+# `prefixItems`, `unevaluated*`, `contentSchema`, `\$defs`, and
+# `dependentSchemas`).
+const _SUBSCHEMA_KEYWORDS_2020 = ("items", "prefixItems", "contains",
+    "additionalProperties", "unevaluatedProperties", "unevaluatedItems",
+    "propertyNames", "if", "then", "else", "not", "allOf", "anyOf", "oneOf",
+    "contentSchema")
+const _NAME_MAP_KEYWORDS_2020 = ("patternProperties", "\$defs", "dependentSchemas")
+const _SUBSCHEMA_KEYWORDS_D7 = ("items", "additionalItems", "contains",
+    "additionalProperties", "propertyNames", "if", "then", "else", "not",
+    "allOf", "anyOf", "oneOf")
+const _NAME_MAP_KEYWORDS_D7 = ("patternProperties", "definitions", "dependencies")
+
+# Context-aware walk of a NORMALIZED (JSON round-tripped, hence Symbol-keyed,
+# tree-shaped) schema, collecting the mirror table as it validates. `path` is
+# the property path when this node was reached through a pure `properties`
+# chain (the spec's reachability definition), else `nothing`. A node's own
+# annotation is checked at visit time; `properties` descends as a name-map
+# extending the path; name-map keywords descend their dict values unreachable;
+# the known subschema keywords descend unreachable; EVERYTHING ELSE — instance
+# keywords (default/const/examples/...) and unrecognized keywords, which JSON
+# Schema 2020-12 defines as annotations whose value is DATA — is skipped, so
+# plain data containing an "x-mcp-header" key can never false-trip validation.
+function _walk_schema_annotations(tool_name::String, node,
+                                  path::Union{Nothing,Vector{String}},
+                                  reachable::Bool, seen::Dict{String,String},
+                                  out::Vector{Tuple{Vector{String},String}},
+                                  subkw::Tuple, mapkw::Tuple)
+    if node isa AbstractVector
+        for v in node
+            _walk_schema_annotations(tool_name, v, nothing, false, seen, out, subkw, mapkw)
+        end
+        return nothing
+    end
+    node isa AbstractDict || return nothing
+    if haskey(node, Symbol("x-mcp-header"))
+        h = node[Symbol("x-mcp-header")]
+        (reachable && path !== nothing) || throw(ArgumentError(
+            "tool '$(tool_name)': an x-mcp-header annotation is not statically " *
+            "reachable — only properties reached through a pure `properties` " *
+            "chain may be mirrored (never array items, composition branches, " *
+            "conditionals, or definitions)"))
+        pname = join(path, ".")
+        _check_header_suffix(tool_name, "property '$(pname)'", h, seen)
+        t = get(node, :type, nothing)
+        t in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
+            "tool '$(tool_name)': x-mcp-header on property '$(pname)' requires " *
+            "declared type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(t))"))
+        push!(out, (path, String(h)))
+    end
+    prefix = path === nothing ? String[] : path
+    for (k, v) in pairs(node)
+        key = String(k)
+        if key == "properties" && v isa AbstractDict
+            for (pk, pv) in pairs(v)
+                _walk_schema_annotations(tool_name, pv, vcat(prefix, String(pk)),
+                                         reachable, seen, out, subkw, mapkw)
+            end
+        elseif key in mapkw && v isa AbstractDict
+            for (_, pv) in pairs(v)
+                pv isa AbstractDict &&
+                    _walk_schema_annotations(tool_name, pv, nothing, false, seen, out, subkw, mapkw)
+            end
+        elseif key in subkw
+            _walk_schema_annotations(tool_name, v, nothing, false, seen, out, subkw, mapkw)
+        end
+        # everything else: instance data or an unrecognized keyword — data by
+        # the JSON Schema core rules, never walked
+    end
+    nothing
+end
+
+"""
+    validate_tool_headers(tool::MCPTool) -> Vector{Tuple{Vector{String},String}}
+
+Reject invalid SEP-2243 `x-mcp-header` annotations at registration and return
+the tool's MIRROR TABLE — the (property path, header suffix) pairs runtime
+enforcement uses. Rules: every annotation value must be a string, every suffix
+a nonempty HTTP token (it becomes part of the `Mcp-Param-*` header NAME),
+suffixes case-insensitively unique within the tool (header names are
+case-insensitive, so `"Route"` and `"route"` would collapse onto one mirrored
+header), the annotated property must declare an annotatable type (`string`,
+`integer`, or `boolean` — the spec excludes `number`, objects, and arrays),
+and annotations are only valid on statically reachable properties (never under
+array `items`, composition branches, or definitions). Advertising an invalid
+annotation would force conforming clients to discard the tool — better to
+refuse it server-side with a clear error. Throws `ArgumentError` on violation.
+
+The table is derived from the NORMALIZED schema — the same JSON tree
+`tools/list` advertises — so validation, advertisement, and enforcement can
+never diverge (a NamedTuple-shaped raw schema serializes to ordinary JSON
+objects and is honored exactly as advertised).
+"""
+function validate_tool_headers(tool::MCPTool)::Vector{Tuple{Vector{String},String}}
+    seen = Dict{String,String}()
+    out = Tuple{Vector{String},String}[]
+    if !isnothing(tool.input_schema)
+        # Validate and collect from the schema AS IT WILL BE ADVERTISED: a JSON
+        # round-trip normalizes every serialization-equivalent container
+        # (Tuples, Sets, NamedTuples, Chars) and duplicates any aliased
+        # subschema into a proper tree, so the context-aware walk sees exactly
+        # what tools/list will emit.
+        normalized = try
+            JSON3.read(JSON3.write(tool.input_schema))
+        catch
+            throw(ArgumentError(
+                "tool '$(tool.name)': input_schema is not JSON-serializable"))
+        end
+        # Keyword classification follows the schema's DECLARED dialect
+        # (2020-12 is MCP's default when \$schema is absent)
+        dialect = get(normalized, Symbol("\$schema"), nothing)
+        is_d7 = dialect isa AbstractString && occursin("draft-07", dialect)
+        subkw = is_d7 ? _SUBSCHEMA_KEYWORDS_D7 : _SUBSCHEMA_KEYWORDS_2020
+        mapkw = is_d7 ? _NAME_MAP_KEYWORDS_D7 : _NAME_MAP_KEYWORDS_2020
+        _walk_schema_annotations(tool.name, normalized, nothing, true, seen, out,
+                                 subkw, mapkw)
+    else
+        # Duplicate parameter names collapse in schema generation (last wins);
+        # with any header annotation present that would desynchronize the
+        # advertised schema from the mirror table — refuse the ambiguity
+        if any(tp -> tp.header !== nothing, tool.parameters)
+            names = Set{String}()
+            for tp in tool.parameters
+                tp.name in names && throw(ArgumentError(
+                    "tool '$(tool.name)': duplicate parameter name '$(tp.name)' " *
+                    "with header mirroring in use — schema generation collapses " *
+                    "duplicates, splitting advertisement from enforcement"))
+                push!(names, tp.name)
+            end
+        end
+        for tp in tool.parameters
+            tp.header === nothing && continue
+            _check_header_suffix(tool.name, "parameter '$(tp.name)'", tp.header, seen)
+            tp.type in _HEADER_ANNOTATABLE_TYPES || throw(ArgumentError(
+                "tool '$(tool.name)': header-mirrored parameter '$(tp.name)' requires " *
+                "type $(join(_HEADER_ANNOTATABLE_TYPES, ", ")); got $(repr(tp.type))"))
+            push!(out, ([tp.name], String(tp.header)))
+        end
+    end
+    out
+end
+
+"""
+    _json_integer_value(s::AbstractString) -> Union{BigInt,Nothing}
+
+Evaluate a JSON-number token EXACTLY, returning its value when it denotes an
+integer: `"42"`, `"42.0"`, `"4.2e1"`, and `"-0.0"` all evaluate (to 42, 42, 42,
+and 0), while non-numbers, non-integral values, and tokens with unreasonably
+large exponents (a `"1e999999"` mirror must not allocate a gigadigit BigInt)
+return `nothing`. Never goes through Float64, so distinct integers beyond 2^53
+stay distinct.
+"""
+function _json_integer_value(s::AbstractString)::Union{BigInt,Nothing}
+    m = match(r"\A(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?\z", s)
+    m === nothing && return nothing
+    frac = something(m.captures[3], "")
+    # tryparse, never parse: an exponent lexeme beyond Int64 must reject as a
+    # mismatch, not throw (and the range check uses explicit bounds — abs of
+    # typemin(Int) itself throws)
+    ex = m.captures[4] === nothing ? 0 :
+         something(tryparse(Int, m.captures[4]), typemax(Int))
+    (-64 <= ex <= 64) || return nothing
+    scale = ex - length(frac)
+    n = parse(BigInt, m.captures[2] * frac)
+    if scale >= 0
+        v = n * BigInt(10)^scale
+    else
+        d = BigInt(10)^(-scale)
+        n % d == 0 || return nothing
+        v = n ÷ d
+    end
+    m.captures[1] == "-" ? -v : v
+end
+
+# Resolve a property path in the request arguments; (found, value)
+function _resolve_argument_path(arguments, path::Vector{String})
+    v = arguments
+    for k in path
+        v isa AbstractDict || return (false, nothing)
+        if haskey(v, k)
+            v = v[k]
+        elseif haskey(v, Symbol(k))
+            v = v[Symbol(k)]
+        else
+            return (false, nothing)
+        end
+    end
+    (true, v)
+end
+
+"""
+    param_header_violation(annotated::Vector{Tuple{Vector{String},String}},
+                           arguments, headers::Dict{String,Any})
+        -> Union{String,Nothing}
+
+Validate a modern-era HTTP `tools/call`'s `Mcp-Param-*` headers against its body
+(SEP-2243 custom-header mirroring), driven by the tool's MIRROR TABLE — the
+(property path, suffix) pairs `validate_tool_headers` derived from the
+NORMALIZED schema at registration, so enforcement matches advertisement
+exactly. For every annotated path PRESENT in the request's arguments with a
+non-null value, the mirrored header must exist, must not be duplicated or
+unsafe, must decode (a `=?base64?...?=` sentinel is validated STRICTLY;
+anything else is a literal), and must match the body value — strings compare
+exactly, booleans through `true`/`false`, integers exactly through the full
+JSON number grammar, and non-integral numbers numerically.
+
+Skipped per spec: absent paths (nothing to mirror), explicit JSON `null` values
+(clients omit the header for null, servers must not expect it), headers whose
+path is not in the body, and `Mcp-Param-*` headers matching no annotation
+(forward compatibility). Returns the violation description, or `nothing`.
+"""
+function param_header_violation(annotated::Vector{Tuple{Vector{String},String}},
+                                arguments,
+                                headers::Dict{String,Any})::Union{String,Nothing}
+    isempty(annotated) && return nothing
+    arguments isa AbstractDict || return nothing
+    for (path, suffix) in annotated
+        found, value = _resolve_argument_path(arguments, path)
+        found || continue          # path not sent: nothing to mirror
+        value === nothing && continue  # explicit JSON null: clients omit the header
+        pname = _bounded_name(join(path, "."))
+        sfx = _bounded_name(suffix)
+        raw = get(headers, lowercase(suffix), nothing)
+        raw === nothing &&
+            return "required header Mcp-Param-$(sfx) is missing for argument '$(pname)'"
+        raw isa AbstractString ||
+            return "Mcp-Param-$(sfx) header is duplicated or contains unsafe characters"
+        decoded = decode_mcp_header_value(raw)
+        decoded === nothing &&
+            return "Mcp-Param-$(sfx) header carries a malformed Base64 sentinel value"
+        # SEP-2243 limits mirrored integers to the JavaScript-safe range — a
+        # value JS clients cannot even represent has no faithful mirror. The
+        # check covers integral FLOATS too: JSON3 parses integer tokens beyond
+        # Int64 as Float64, which would otherwise slide into the approximate
+        # float comparison (where 9223372036854775808 and ...809 collapse)
+        is_integral = (value isa Integer && !(value isa Bool)) ||
+                      (value isa AbstractFloat && isinteger(value))
+        if is_integral && !(-9007199254740991 <= value <= 9007199254740991)
+            return "argument '$(pname)' is outside the JavaScript-safe integer range and cannot be mirrored"
+        end
+        matched = if value isa AbstractString
+            decoded == String(value)
+        elseif value isa Bool
+            decoded == string(value)
+        elseif value isa Integer
+            # EXACT integer comparison through the full JSON number grammar:
+            # JSON3 normalizes integral tokens like 42.0 and 1e3 to Int64, so
+            # the mirror may legitimately arrive in decimal or exponent form —
+            # but the comparison must stay exact (a Float64 round-trip would
+            # collapse distinct values, and tryparse(Float64, "0x10") accepts
+            # hex). _json_integer_value evaluates the token exactly.
+            parsed = _json_integer_value(decoded)
+            parsed !== nothing && parsed == BigInt(value)
+        elseif value isa AbstractFloat
+            # Non-integral floats compare numerically, but only through the
+            # JSON number grammar — no hex, Inf, NaN, or other exotica
+            occursin(r"\A-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?\z", decoded) &&
+                (parsed = tryparse(Float64, decoded); parsed !== nothing && Float64(value) == parsed)
+        else
+            decoded == string(value)
+        end
+        matched ||
+            return "Mcp-Param-$(sfx) header does not match body argument '$(pname)'"
+    end
+    nothing
+end
+
 """
     handle_call_tool(ctx::RequestContext, params::CallToolParams) -> HandlerResult
 
@@ -1560,6 +1864,10 @@ function handle_list_tools(ctx::RequestContext, params::ListToolsParams)::Handle
                             if !isnothing(param.default)
                                 param_schema["default"] = param.default
                             end
+                            # SEP-2243 header mirroring annotation
+                            if !isnothing(param.header)
+                                param_schema["x-mcp-header"] = param.header
+                            end
                             param_schema
                         end for param in tool.parameters
                     ),
@@ -1668,7 +1976,8 @@ Any exceptions thrown during processing are caught and converted to INTERNAL_ERR
 - `Response`: Either a successful response or an error response depending on the handler result
 """
 function handle_request(server::Server, state::ServerState, request::Request;
-                        authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
+                        authenticated_user::Union{AuthenticatedUser,Nothing}=nothing,
+                        param_headers::Union{Nothing,Dict{String,Any}}=nothing)::Union{Response,Nothing}
     # Era dispatch: a request carrying io.modelcontextprotocol/protocolVersion in its
     # params _meta is modern-era (2026-07-28+) and served statelessly; everything
     # below this branch is the legacy (initialize-handshake) era. server/discover is
@@ -1676,7 +1985,8 @@ function handle_request(server::Server, state::ServerState, request::Request;
     # fields must get the modern validation error (-32602), not fall through to the
     # legacy era's "unknown method".
     if request.meta.protocol_version !== nothing || request.method == "server/discover"
-        return handle_modern_request(server, state, request; authenticated_user=authenticated_user)
+        return handle_modern_request(server, state, request; authenticated_user=authenticated_user,
+                                     param_headers=param_headers)
     end
 
     ctx = RequestContext(

@@ -7,18 +7,21 @@ using Sockets: IPv4, IPv6
 using Base64: base64decode
 
 """
-    QueuedHttpRequest(id, body, user)
+    QueuedHttpRequest(id, body, user, param_headers=nothing)
 
 Envelope for a request on the HTTP work queue. Carries the per-request
-authenticated `user` (or `nothing`) from the concurrent connection handler to the
-single server loop, so auth identity travels with the request rather than via
-shared transport state.
+authenticated `user` (or `nothing`) and the request's `Mcp-Param-*` custom
+headers (SEP-2243 parameter mirroring; `nothing` for messages that carry none)
+from the concurrent connection handler to the single server loop, so per-request
+context travels with the request rather than via shared transport state.
 """
 struct QueuedHttpRequest
     id::String
     body::String
     user::Union{AuthenticatedUser,Nothing}
+    param_headers::Union{Nothing,Dict{String,Any}}
 end
+QueuedHttpRequest(id, body, user) = QueuedHttpRequest(id, body, user, nothing)
 
 """
     HttpTransport(; host::String="127.0.0.1", port::Int=8080, endpoint::String="/",
@@ -62,6 +65,7 @@ mutable struct HttpTransport <: Transport
     notification_queue::Channel{String}  # For SSE notifications
     current_request_id::Union{String,Nothing}
     current_request_auth::Union{AuthenticatedUser,Nothing}  # Auth user of the message just read; set in the single server loop, never across connections
+    current_request_param_headers::Union{Nothing,Dict{String,Any}}  # Mcp-Param-* headers of the message just read (SEP-2243); same single-loop discipline
     session_id::Union{String,Nothing}  # Session management
     session_required::Bool  # Whether session is required after init
     protocol_version::String  # MCP protocol version
@@ -109,6 +113,7 @@ mutable struct HttpTransport <: Transport
             Channel{String}(Inf),
             nothing,  # current_request_id
             nothing,  # current_request_auth
+            nothing,  # current_request_param_headers
             nothing,  # No session initially
             session_required,
             protocol_version,
@@ -533,6 +538,36 @@ function mcp_standard_header(request, name::String)
 end
 
 """
+    collect_param_headers(request) -> Dict{String,Any}
+
+Collect the request's `Mcp-Param-*` custom headers (SEP-2243 parameter
+mirroring) into a Dict keyed by LOWERCASED header suffix. Values are
+OWS-stripped `String`s, or `:invalid` when the header is duplicated or carries
+unsafe bytes (the same rules `mcp_standard_header` applies) — the preflight in
+`handle_modern_request` rejects `:invalid` entries with -32020. Always returns a Dict
+(possibly empty) for HTTP requests: an EMPTY Dict still arms the
+missing-header-with-body-value check, which `nothing` (a transport with no
+headers at all, e.g. stdio) disables.
+"""
+function collect_param_headers(request)::Dict{String,Any}
+    out = Dict{String,Any}()
+    for (k, v) in HTTP.headers(request)
+        lk = lowercase(String(k))
+        startswith(lk, "mcp-param-") || continue
+        suffix = lk[length("mcp-param-")+1:end]
+        isempty(suffix) && continue
+        s = String(v)
+        if haskey(out, suffix) ||
+           !all(b -> 0x20 <= b <= 0x7e || b == UInt8('\t'), codeunits(s))
+            out[suffix] = :invalid
+        else
+            out[suffix] = String(strip(s))
+        end
+    end
+    out
+end
+
+"""
     decode_mcp_header_value(value::AbstractString) -> Union{String,Nothing}
 
 Decode a standard-header value per SEP-2243: a `=?base64?...?=` sentinel wraps a
@@ -648,17 +683,37 @@ errors) → 200.
 - `Int`: The HTTP status code to use
 """
 function modern_error_http_status(payload::String)::Int
-    # Every mappable error response is a small validation/dispatch error body; skip
-    # the sniff-and-parse entirely for large payloads (big tool results would
-    # otherwise pay a second full parse whenever they contain the string "error")
-    ncodeunits(payload) > 4096 && return 200
-    contains(payload, "\"error\"") || return 200
-    code = try
-        msg = JSON3.read(payload)
-        haskey(msg, "error") ? Int(msg.error.code) : nothing
-    catch
-        nothing
+    # Small payloads (every ordinary validation/dispatch error) get the exact
+    # parse. Larger ones are NOT unconditionally 200: an error envelope whose
+    # echoed request id is huge must still map (400 is a spec MUST for header
+    # violations), so a structural sniff runs instead of a full parse. The
+    # needles are un-spoofable from inside JSON STRING content — a quote in a
+    # string value serializes escaped (\"), so the unescaped sequences below
+    # can only occur as real JSON structure — and a success payload whose
+    # nested data legitimately contains error-shaped keys is excluded by the
+    # top-level "result" key preceding any such nesting.
+    if ncodeunits(payload) <= 4096
+        contains(payload, "\"error\"") || return 200
+        code = try
+            msg = JSON3.read(payload)
+            haskey(msg, "error") ? Int(msg.error.code) : nothing
+        catch
+            nothing
+        end
+        code == -32601 && return 404
+        code in (-32020, -32021, -32022) && return 400
+        return 200
     end
+    err = findfirst("\"error\":{\"code\":", payload)
+    err === nothing && return 200
+    res = findfirst("\"result\":", payload)
+    res !== nothing && first(res) < first(err) && return 200
+    # ASCII needle: byte indexing after it is safe
+    window_start = last(err) + 1
+    window_end = min(window_start + 8, ncodeunits(payload))
+    m = match(r"\A-?\d+", SubString(payload, window_start, window_end))
+    m === nothing && return 200
+    code = tryparse(Int, m.match)
     code == -32601 && return 404
     code in (-32020, -32021, -32022) && return 400
     return 200
@@ -1153,8 +1208,10 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             return nothing
         end
 
-        # Queue the request for processing
-        put!(transport.request_queue, QueuedHttpRequest(request_id, body, authenticated_user))
+        # Queue the request for processing (with its SEP-2243 Mcp-Param-* headers,
+        # validated against the tool schema at dispatch)
+        put!(transport.request_queue, QueuedHttpRequest(request_id, body, authenticated_user,
+                                                        collect_param_headers(request)))
 
         # Deliver the response. Per Streamable HTTP, a request's response is either a
         # single JSON object or an SSE stream scoped to this request carrying
@@ -1444,6 +1501,7 @@ function read_message(transport::HttpTransport)::Union{String,Nothing}
             # pending_auth_context before the next read — never shared across connections).
             transport.current_request_id = env.id
             transport.current_request_auth = env.user
+            transport.current_request_param_headers = env.param_headers
 
             return env.body
         end
@@ -1771,6 +1829,18 @@ it from the request context, not from the transport.
 """
 function pending_auth_context(transport::HttpTransport)::Union{AuthenticatedUser,Nothing}
     return transport.current_request_auth
+end
+
+"""
+    pending_param_headers(transport::HttpTransport) -> Union{Nothing,Dict{String,Any}}
+
+Return the `Mcp-Param-*` headers of the message most recently read from the queue
+(set in `read_message`, consumed immediately by the single server loop) — the
+SEP-2243 parameter-mirroring context validated by the `handle_modern_request`
+preflight.
+"""
+function pending_param_headers(transport::HttpTransport)::Union{Nothing,Dict{String,Any}}
+    return transport.current_request_param_headers
 end
 
 """

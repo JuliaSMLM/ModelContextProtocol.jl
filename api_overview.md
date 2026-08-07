@@ -413,7 +413,11 @@ ToolParameter(;
     type::String,                    # JSON Schema type (e.g., "string", "number", "boolean")
     description::String,             # Description (required)
     required::Bool = false,          # Whether required
-    default::Any = nothing          # Default value if not provided
+    default::Any = nothing,          # Default value if not provided
+    header::Union{String,Nothing} = nothing  # SEP-2243 mirroring suffix: emitted as
+                                     # x-mcp-header; modern HTTP clients mirror the
+                                     # argument as Mcp-Param-<header>, validated
+                                     # against the body by the server
 )
 ```
 

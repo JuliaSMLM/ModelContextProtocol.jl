@@ -379,7 +379,8 @@ opt-in: its response stream IS the subscription stream, and the spec forbids
 - `Union{Response,Nothing}`: The response to send
 """
 function handle_modern_request(server::Server, state::ServerState, request::Request;
-                               authenticated_user::Union{AuthenticatedUser,Nothing}=nothing)::Union{Response,Nothing}
+                               authenticated_user::Union{AuthenticatedUser,Nothing}=nothing,
+                               param_headers::Union{Nothing,Dict{String,Any}}=nothing)::Union{Response,Nothing}
     # Suppress notifications/message from here through the END of this loop
     # iteration (the loop re-arms the flag per message): parser/dispatch/post-
     # dispatch log records must not reach a modern client that set no logLevel,
@@ -473,6 +474,30 @@ function handle_modern_request(server::Server, state::ServerState, request::Requ
             )
         )
     end
+    # SEP-2243 parameter-mirroring preflight: validated with the OTHER
+    # transport-level checks, BEFORE the per-request log opt-in installs — a
+    # violation must reject with 400/-32020, and any notifications/message
+    # emitted first would commit the response as an SSE stream with status 200.
+    # Unknown tools and malformed params skip (dispatch owns those errors);
+    # stdio (param_headers === nothing) carries no headers to validate.
+    if param_headers !== nothing && request.method == "tools/call" &&
+       request.params isa CallToolParams
+        mirror_table = get(server.tool_header_paths, request.params.name, nothing)
+        if mirror_table !== nothing && !isempty(mirror_table)
+            violation = param_header_violation(mirror_table,
+                                               request.params.arguments, param_headers)
+            if violation !== nothing
+                return JSONRPCError(
+                    id = request.id,
+                    error = ErrorInfo(
+                        code = ErrorCodes.HEADER_MISMATCH,
+                        message = "Header mismatch: $violation"
+                    )
+                )
+            end
+        end
+    end
+
     mrtr_state = nothing
     if request.meta.request_state !== nothing
         ok, payload = verify_request_state(server, request.meta.request_state,

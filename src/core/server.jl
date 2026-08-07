@@ -16,6 +16,24 @@ Register a tool, resource, or prompt with the MCP server.
 function register! end
 
 function register!(server::Server, tool::Tool)
+    # SEP-2243: annotations are validated against the NORMALIZED schema (what
+    # tools/list will advertise) — invalid ones are rejected at registration
+    # instead of being advertised to clients that would have to discard the
+    # tool — and the resulting mirror table is persisted for the
+    # handle_modern_request preflight. For register!-managed tools the three
+    # artifacts (advertised schema, validation, enforcement) cannot diverge;
+    # direct mutation of server fields bypasses this like any raw mutation.
+    if tool isa MCPTool
+        server.tool_header_paths[tool.name] = validate_tool_headers(tool)
+        # Same-name re-registration REPLACES the tool: dispatch resolves by
+        # first match, so appending would leave the OLD handler active while
+        # the persisted mirror table already described the new tool
+        idx = findfirst(t -> t isa MCPTool && t.name == tool.name, server.tools)
+        if idx !== nothing
+            server.tools[idx] = tool
+            return server
+        end
+    end
     push!(server.tools, tool)
     server
 end
@@ -49,7 +67,8 @@ Process an incoming JSON-RPC message and generate an appropriate response.
 - `Union{String,Nothing}`: A serialized response string or nothing for notifications
 """
 function process_message(server::Server, state::ServerState, message::String;
-                         authenticated_user=nothing)::Union{String,Nothing}
+                         authenticated_user=nothing,
+                         param_headers=nothing)::Union{String,Nothing}
     # Parse the incoming message
     parsed = try
         @debug "Parsing message"
@@ -86,7 +105,8 @@ function process_message(server::Server, state::ServerState, message::String;
             # Handle request. A nothing response means the handler deferred it
             # (e.g. a blocking tasks/result) — a background task will deliver the
             # response via deliver_response when ready, so the loop sends nothing.
-            response = handle_request(server, state, parsed; authenticated_user=authenticated_user)
+            response = handle_request(server, state, parsed; authenticated_user=authenticated_user,
+                                      param_headers=param_headers)
             return isnothing(response) ? nothing : serialize_message(response)
         elseif parsed isa JSONRPCNotification
             handle_notification(RequestContext(server=server, state=state, authenticated_user=authenticated_user), parsed)
@@ -196,7 +216,8 @@ function run_server_loop(server::Server, state::ServerState)
             task_local_storage(:mcp_notification_route, notification_route(transport))
             try
                 @debug "Processing message" raw=message
-                response = process_message(server, state, message; authenticated_user=pending_auth_context(transport))
+                response = process_message(server, state, message; authenticated_user=pending_auth_context(transport),
+                                           param_headers=pending_param_headers(transport))
 
                 # Keep the transport's advertised version in sync with the negotiated one
                 # (set by handle_initialize) so e.g. HTTP response headers echo it
