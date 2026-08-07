@@ -4,20 +4,27 @@ Julia implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 
 ## Features
 
-- ✅ **MCP 2025-11-25 Protocol** - server-side implementation with version negotiation back to `2024-11-05`
+- ✅ **Dual-Era Protocol Support** - the full [2026-07-28 modern era](modern.md)
+  (stateless requests, `server/discover`, MRTR, the tasks extension, argument
+  completion, subscriptions, header parameter mirroring, per-request logging)
+  alongside classic sessions negotiated from `2025-11-25` back to `2024-11-05`
 - ✅ **Multiple Transports** - stdio (default) and Streamable HTTP with Server-Sent Events and session management
 - ✅ **All Content Types** - text, images, audio, embedded resources, and `resource_link` references
 - ✅ **Structured Tool Output** - `output_schema` declarations with `structuredContent` results
 - ✅ **Tool Annotations** - behavioral hints (`readOnlyHint`, `destructiveHint`, …) for client trust decisions
 - ✅ **Progress Notifications** - long-running tools report progress through context-aware handlers
-- ✅ **Tasks (experimental)** - background tool execution with status polling, blocking
-  result retrieval, and cancellation ([SEP-1686](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks))
+- ✅ **Background Tasks** - the modern-era [tasks extension](modern.md#The-tasks-extension-io.modelcontextprotocol/tasks)
+  (server-directed handoff, mid-task input, status notifications) plus legacy
+  [SEP-1686](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks) tasks for 2025-11-25 sessions
+- ✅ **Argument Completion** - `completion/complete` suggestions for prompt arguments and template variables
 - ✅ **OAuth Resource Server** - bearer-token validation for HTTP (GitHub tokens, JWT claims, RFC 7662 introspection) with RFC 9728 discovery
-- ✅ **Logging Control** - runtime `logging/setLevel` plus opt-in per-request lifecycle logs
+- ✅ **Logging Control** - runtime `logging/setLevel` (legacy) and per-request `logLevel` opt-in (modern)
 - ✅ **Auto-Registration** - automatic component discovery from directory structure
 - ✅ **Type-Safe** - leverages Julia's type system for robust implementations
 
-**Note:** This is a server-side implementation. Client features (roots, sampling), elicitation, and the OAuth *Authorization Server* (token issuance) are not yet implemented.
+**Note:** This is a server-side implementation. Legacy-era server-initiated
+elicitation/sampling (the modern era covers these via MRTR) and the OAuth
+*Authorization Server* (token issuance) are not implemented.
 
 ## Installation
 
