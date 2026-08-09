@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-08-07
+## [0.7.0] - 2026-08-09
 
 **Full server-side support for the MCP 2026-07-28 specification.** This
 release completes the modern stateless era begun in 0.6.x: the tasks
