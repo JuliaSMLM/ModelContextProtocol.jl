@@ -21,12 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
-      - uses: julia-actions/cache@v2
-      - uses: actions/setup-node@v4
+      - uses: julia-actions/cache@v3
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -57,8 +57,12 @@ jobs:
 
       - name: Run the conformance suites
         run: |
-          set -e
-          run() { node /tmp/conformance/dist/index.js server "$@" --url http://127.0.0.1:8791/ 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
+          set -eo pipefail
+          # The runner exits nonzero when scenarios fail (expected for the
+          # tolerated harness gap), so captures neutralize the exit status and
+          # every classification below REQUIRES the runner's final summary
+          # line — a crashed run that printed no summary can never go green.
+          run() { node /tmp/conformance/dist/index.js server "$@" --url http://127.0.0.1:8791/ 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true; }
           fail=0
 
           echo "::group::modern-dated (2026-07-28)"
@@ -92,10 +96,12 @@ jobs:
             out=$(run --scenario "$s"); echo "$out"
             if echo "$out" | grep -qE "Passed: [0-9]+/[0-9]+, 0 failed"; then
               :
-            elif [ "$(echo "$out" | grep -c FAILURE)" = "1" ] && echo "$out" | grep -q "wire-schema-valid.*FAILURE"; then
-              :  # the known harness gap, and nothing else
+            elif echo "$out" | grep -qE "Passed: [0-9]+/[0-9]+, 1 failed" \
+                 && [ "$(echo "$out" | grep -c FAILURE)" = "1" ] \
+                 && echo "$out" | grep -q "wire-schema-valid.*FAILURE"; then
+              :  # the known harness gap, alone, in a COMPLETED run
             else
-              echo "::error::$s has substantive failures"; fail=1
+              echo "::error::$s has substantive failures (or the run did not complete)"; fail=1
             fi
             echo "::endgroup::"
           done

@@ -13,7 +13,7 @@ Julia implementation of the [Model Context Protocol (MCP)](https://modelcontextp
 - ✅ **Structured Tool Output** - `output_schema` declarations with `structuredContent` results
 - ✅ **Tool Annotations** - behavioral hints (`readOnlyHint`, `destructiveHint`, …) for client trust decisions
 - ✅ **Progress Notifications** - long-running tools report progress through context-aware handlers
-- ✅ **Background Tasks** - the modern-era [tasks extension](modern.md#The-tasks-extension-io.modelcontextprotocol/tasks)
+- ✅ **Background Tasks** - the modern-era [tasks extension](modern.md)
   (server-directed handoff, mid-task input, status notifications) plus legacy
   [SEP-1686](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks) tasks for 2025-11-25 sessions
 - ✅ **Argument Completion** - `completion/complete` suggestions for prompt arguments and template variables
@@ -94,21 +94,25 @@ start!(server)
 - **[Resources](resources.md)** - Managing data sources and subscriptions
 - **[Prompts](prompts.md)** - Defining prompt templates for LLMs
 - **[Transports](transports.md)** - Transport options and configuration
+- **[The Modern Era](modern.md)** - The 2026-07-28 stateless protocol surface
 - **[Auto-Registration](auto-registration.md)** - Directory-based component organization
 - **[Claude Desktop Integration](claude.md)** - Integration with Claude Desktop
 - **[API Reference](api.md)** - Complete API documentation
 
 ## Protocol Compliance
 
-ModelContextProtocol.jl implements the MCP specification version `2025-11-25` and negotiates
-with clients speaking `2025-06-18`, `2025-03-26`, or `2024-11-05`. This includes:
+ModelContextProtocol.jl serves the full [MCP `2026-07-28` modern era](modern.md)
+statelessly, alongside classic sessions negotiated at `2025-11-25` down through
+`2025-06-18` and `2025-03-26` to `2024-11-05`. This includes:
 
 - JSON-RPC 2.0 message protocol (batching rejected per spec)
 - Tool discovery and invocation, structured output, annotations, `_meta`
 - Resource management with subscriptions and `resource_link` references
-- Prompt templates with arguments and media content
-- Progress notifications (`notifications/progress`) and logging (`logging/setLevel`)
+- Prompt templates with arguments and media content; argument completion
+- Progress notifications (`notifications/progress`) and logging (`logging/setLevel`
+  for sessions, per-request `logLevel` in the modern era)
 - Session management and OAuth Resource Server authentication for HTTP transport
+- Modern-era tasks, MRTR, `subscriptions/listen`, and SEP-2243 header validation
 
 ## Basic Concepts
 

@@ -560,10 +560,10 @@ complete: nothing on the 2026-07-28 spec's server side remains unimplemented.**
 
 ### Versioning policy
 
-Additive work ships as patch releases on the current minor; intentional breaking
-changes cluster into the next minor (0.6.0 carried the OAuth RS-hardening
-cluster; **0.7.0 is the additive full-2026-07-28 release**; HTTP.jl 2 remains
-parked for a future breaking cluster). See CHANGELOG.md for what shipped in each
+Additive work ships as patch releases on the current minor; a new minor marks
+either a breaking cluster (0.6.0: OAuth RS hardening) or a protocol-spec
+milestone even when additive (**0.7.0: the full 2026-07-28 release**;
+HTTP.jl 2 remains parked for a future breaking cluster). See CHANGELOG.md for what shipped in each
 release; this section states capabilities only.
 
 ### 🧪 Verification

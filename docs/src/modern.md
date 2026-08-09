@@ -121,7 +121,8 @@ confirm = MCPTool(
     description = "Delete with confirmation",
     parameters = [ToolParameter(name = "filename", description = "Target",
                                 type = "string", required = true)],
-    task_support = :optional,
+    task_support = :required,   # mid-task input needs the detached task, so
+                                # non-declaring clients are rejected up front
     handler = (args, ctx) -> begin
         task_detach(ctx)
         resp = task_await_input(ctx, elicit_request("Really delete $(args["filename"])?"))
