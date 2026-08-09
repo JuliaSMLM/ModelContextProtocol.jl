@@ -45,11 +45,15 @@ jobs:
         run: |
           julia --project dev/conformance/fixture_server.jl 8791 > fixture.log 2>&1 &
           echo $! > fixture.pid
-          for i in $(seq 1 120); do
-            grep -q "listening" fixture.log && break
+          # Case-insensitive: the reliably-flushed readiness line is HTTP.jl's
+          # stderr "Listening on:" (the script's stdout println can lag behind
+          # buffering). Cold-cache CI spends ~2min in JIT before binding, so
+          # the window is generous.
+          for i in $(seq 1 300); do
+            grep -qi "listening" fixture.log && break
             sleep 1
           done
-          grep -q "listening" fixture.log || { cat fixture.log; exit 1; }
+          grep -qi "listening" fixture.log || { cat fixture.log; exit 1; }
 
       - name: Run the conformance suites
         run: |
