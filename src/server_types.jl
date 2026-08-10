@@ -43,6 +43,7 @@ mutable struct Server
     active::Bool
     task_notification_queue::Union{Channel{Any},Nothing}  # notifications/tasks dispatch FIFO (see install_task_notifications!); closed by stop!
     tool_header_paths::Dict{String,Vector{Tuple{Vector{String},String}}}  # per-tool SEP-2243 mirror tables (validate_tool_headers, persisted by register!)
+    legacy_state::Union{ServerState,Nothing}  # the running loop's session state (set by start!) — how notify_* reach the legacy session's wire_subscriptions
 
     function Server(config::ServerConfig; transport::Union{Transport,Nothing}=nothing,
                     mrtr_state_key::Union{Vector{UInt8},Nothing}=nothing)
@@ -66,7 +67,8 @@ mutable struct Server
             something(mrtr_state_key, rand(RandomDevice(), UInt8, 32)),
             false,
             nothing,
-            Dict{String,Vector{Tuple{Vector{String},String}}}()
+            Dict{String,Vector{Tuple{Vector{String},String}}}(),
+            nothing
         )
     end
 end

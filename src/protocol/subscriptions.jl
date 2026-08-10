@@ -302,27 +302,104 @@ function broadcast_subscription_notification(server::Server, method::String;
 end
 
 """
+    legacy_session_notification(server::Server, method::String;
+                                params::AbstractDict = LittleDict{String,Any}()) -> Bool
+
+Deliver a plain JSON-RPC notification to the connected legacy session, if there
+is one. The legacy session is the single `initialize`-negotiated client served
+by the running loop (`server.legacy_state`, set by `start!`); delivery is
+transport-polymorphic via `send_notification` — stdout on stdio, the standalone
+GET SSE stream on Streamable HTTP (or the calling request's own response stream
+when invoked from inside a handler, exactly like `send_progress`).
+
+# Arguments
+- `server::Server`: The server whose legacy session to notify
+- `method::String`: The notification method
+- `params::AbstractDict`: The notification's params
+
+# Returns
+- `Bool`: `true` when the notification was handed to the transport; `false` when
+  there is no initialized legacy session, no transport, or the send failed
+"""
+function legacy_session_notification(server::Server, method::String;
+                                     params::AbstractDict = LittleDict{String,Any}())::Bool
+    state = server.legacy_state
+    state === nothing && return false
+    state.initialized || return false
+    transport = server.transport
+    transport === nothing && return false
+    payload = JSON3.write(Dict{String,Any}(
+        "jsonrpc" => "2.0",
+        "method" => method,
+        "params" => Dict{String,Any}(String(k) => v for (k, v) in params),
+    ))
+    try
+        send_notification(transport, payload)
+        return true
+    catch e
+        @debug "Failed to deliver legacy notification" method=method error=e
+        return false
+    end
+end
+
+# The capability type whose `list_changed` flag authorizes
+# notifications/<kind>/list_changed toward the legacy session
+const LIST_CHANGED_CAPABILITY = Dict{Symbol,DataType}(
+    :tools => ToolCapability,
+    :prompts => PromptCapability,
+    :resources => ResourceCapability,
+)
+
+"""
+    list_changed_declared(server::Server, kind::Symbol) -> Bool
+
+Report whether the server declares the `listChanged` capability for `kind` —
+the gate for sending `notifications/{kind}/list_changed` to the legacy session
+(modern `subscriptions/listen` streams are gated per-stream at ack time
+instead, via the honored filter subset).
+
+# Arguments
+- `server::Server`: The server whose declared capabilities to check
+- `kind::Symbol`: One of `:tools`, `:prompts`, `:resources`
+
+# Returns
+- `Bool`: Whether the matching capability declares `list_changed = true`
+"""
+function list_changed_declared(server::Server, kind::Symbol)::Bool
+    T = LIST_CHANGED_CAPABILITY[kind]
+    idx = findfirst(c -> c isa T, server.config.capabilities)
+    idx === nothing && return false
+    server.config.capabilities[idx].list_changed === true
+end
+
+"""
     notify_list_changed(server::Server, kind::Symbol) -> Int
 
 Announce that a list of server components changed, delivering
 `notifications/{kind}/list_changed` to every `subscriptions/listen` stream that
-subscribed to it. Call this after mutating `server.tools`, `server.prompts`, or
-`server.resources` at runtime.
+subscribed to it and to the connected legacy session (when the corresponding
+`listChanged` capability is declared). Call this after mutating `server.tools`,
+`server.prompts`, or `server.resources` at runtime.
 
-Only streams open at the time of the change are notified (there is no backlog), and
-only when the corresponding `listChanged` capability is declared.
+Only streams open at the time of the change are notified (there is no backlog).
 
 # Arguments
 - `server::Server`: The server whose lists changed
 - `kind::Symbol`: One of `:tools`, `:prompts`, `:resources`
 
 # Returns
-- `Int`: How many subscription streams were notified
+- `Int`: How many clients were notified (`subscriptions/listen` streams plus the
+  legacy session when it was reached)
 """
 function notify_list_changed(server::Server, kind::Symbol)::Int
     kind in (:tools, :prompts, :resources) ||
         throw(ArgumentError("notify_list_changed: kind must be :tools, :prompts, or :resources"))
-    broadcast_subscription_notification(server, "notifications/$(kind)/list_changed")
+    delivered = broadcast_subscription_notification(server, "notifications/$(kind)/list_changed")
+    if list_changed_declared(server, kind) &&
+       legacy_session_notification(server, "notifications/$(kind)/list_changed")
+        delivered += 1
+    end
+    delivered
 end
 
 """
@@ -330,20 +407,45 @@ end
 
 Announce that a resource's contents changed, delivering
 `notifications/resources/updated` to every `subscriptions/listen` stream that
-subscribed to that URI.
+subscribed to that URI and to the connected legacy session when it subscribed
+via `resources/subscribe`. In-process callbacks registered with
+[`subscribe!`](@ref) for the URI are also invoked (with the URI as their only
+argument); callback errors are logged and do not affect client delivery or the
+returned count.
 
 # Arguments
 - `server::Server`: The server holding the resource
 - `uri::AbstractString`: The resource URI that changed
 
 # Returns
-- `Int`: How many subscription streams were notified
+- `Int`: How many clients were notified (`subscriptions/listen` streams plus the
+  legacy session when it was reached)
 """
 function notify_resource_updated(server::Server, uri::AbstractString)::Int
     u = String(uri)
-    broadcast_subscription_notification(server, "notifications/resources/updated";
-                                        params = LittleDict{String,Any}("uri" => u),
-                                        uri = u)
+    delivered = broadcast_subscription_notification(server, "notifications/resources/updated";
+                                                    params = LittleDict{String,Any}("uri" => u),
+                                                    uri = u)
+    # Legacy era: the session that subscribed via resources/subscribe. The field
+    # read is a snapshot — the subscribe handlers replace the Set rather than
+    # mutating it, so an off-loop caller never observes a half-updated set
+    state = server.legacy_state
+    if state !== nothing && u in state.wire_subscriptions &&
+       legacy_session_notification(server, "notifications/resources/updated";
+                                   params = LittleDict{String,Any}("uri" => u))
+        delivered += 1
+    end
+    # In-process observers registered with subscribe!
+    if haskey(server.subscriptions, u)
+        for sub in server.subscriptions[u]
+            try
+                sub.callback(u)
+            catch e
+                @warn "subscribe! callback failed" uri=u error=e
+            end
+        end
+    end
+    delivered
 end
 
 """

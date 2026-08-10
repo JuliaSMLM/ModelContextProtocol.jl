@@ -295,6 +295,9 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
     # else: use server's existing transport
     
     state = ServerState()
+    # Expose the loop's session state on the server so the exported notify_*
+    # helpers (called with only `server`) can reach wire_subscriptions
+    server.legacy_state = state
 
     # Set up MCP-compliant logging. The logger delivers notifications/message to the
     # client over the transport once the session initializes (handle_initialize flips
@@ -384,10 +387,15 @@ end
 
 Subscribe to updates for a specific resource identified by URI.
 
+The callback is an in-process observer: [`notify_resource_updated`](@ref) invokes
+it as `callback(uri)` whenever that URI is announced as changed. It runs on the
+announcing task, its errors are logged and swallowed, and it sends nothing to
+clients on its own (client delivery is `notify_resource_updated`'s job).
+
 # Arguments
 - `server::Server`: The server instance
 - `uri::String`: The resource URI to subscribe to
-- `callback::Function`: The function to call when the resource is updated
+- `callback::Function`: Called as `callback(uri::String)` on each announced update
 
 # Returns
 - `Server`: The server instance for method chaining

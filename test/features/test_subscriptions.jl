@@ -356,3 +356,103 @@
         task_local_storage(:mcp_suppress_log_notifications, false)
     end
 end
+
+@testset "legacy subscription delivery" begin
+    # A server whose legacy session is initialized, with a capture transport —
+    # the shape start! produces, built by hand so handlers can be driven directly
+    function legacy_server(; kwargs...)
+        server = mcp_server(name = "legacy-subs", version = "1.0.0"; kwargs...)
+        out = IOBuffer()
+        server.transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = out)
+        state = ModelContextProtocol.ServerState()
+        state.initialized = true
+        state.protocol_version = "2025-11-25"
+        server.legacy_state = state
+        server, state, out
+    end
+
+    read_notifications(out) =
+        [JSON3.read(l) for l in split(String(take!(out)), '\n') if !isempty(strip(l))]
+
+    @testset "resources/updated reaches the wire-subscribed session" begin
+        server, state, out = legacy_server()
+        ctx = RequestContext(server = server, state = state, request_id = 1)
+        ModelContextProtocol.handle_subscribe_resource(ctx,
+            ModelContextProtocol.SubscribeParams(uri = "test://a"))
+        @test notify_resource_updated(server, "test://a") == 1
+        msgs = read_notifications(out)
+        upd = only(filter(m -> m["method"] == "notifications/resources/updated", msgs))
+        @test upd["params"]["uri"] == "test://a"
+        # Plain legacy notification: no subscriptions/listen _meta tag
+        @test !haskey(upd["params"], "_meta")
+    end
+
+    @testset "unsubscribed URIs are not delivered" begin
+        server, state, out = legacy_server()
+        @test notify_resource_updated(server, "test://b") == 0
+        @test isempty(String(take!(out)))
+    end
+
+    @testset "resources/unsubscribe stops delivery" begin
+        server, state, out = legacy_server()
+        ctx = RequestContext(server = server, state = state, request_id = 1)
+        ModelContextProtocol.handle_subscribe_resource(ctx,
+            ModelContextProtocol.SubscribeParams(uri = "test://c"))
+        ModelContextProtocol.handle_unsubscribe_resource(ctx,
+            ModelContextProtocol.UnsubscribeParams(uri = "test://c"))
+        @test notify_resource_updated(server, "test://c") == 0
+        @test isempty(String(take!(out)))
+    end
+
+    @testset "no initialized legacy session -> no delivery" begin
+        server, state, out = legacy_server()
+        state.initialized = false
+        state.wire_subscriptions = Set(["test://d"])
+        @test notify_resource_updated(server, "test://d") == 0
+        # And a server that was never started has no legacy state at all
+        fresh = mcp_server(name = "never-started", version = "1.0.0")
+        @test fresh.legacy_state === nothing
+        @test notify_resource_updated(fresh, "test://d") == 0
+    end
+
+    @testset "list_changed is gated on the declared capability" begin
+        server, _, out = legacy_server()  # default capabilities declare listChanged
+        @test notify_list_changed(server, :tools) == 1
+        msgs = read_notifications(out)
+        @test only(msgs)["method"] == "notifications/tools/list_changed"
+
+        gated, _, gated_out = legacy_server(capabilities =
+            ModelContextProtocol.Capability[ModelContextProtocol.ToolCapability(list_changed = false)])
+        @test notify_list_changed(gated, :tools) == 0
+        @test isempty(String(take!(gated_out)))
+    end
+
+    @testset "subscribe! callbacks fire; errors are contained" begin
+        server, state, out = legacy_server()
+        seen = String[]
+        subscribe!(server, "test://cb", uri -> push!(seen, uri))
+        subscribe!(server, "test://cb", uri -> error("boom"))
+        # No client subscribed -> count stays 0, but both callbacks ran
+        @test (@test_logs (:warn, r"subscribe! callback failed") notify_resource_updated(server, "test://cb")) == 0
+        @test seen == ["test://cb"]
+    end
+
+    @testset "modern listen stream and legacy session are both counted" begin
+        server, state, out = legacy_server()
+        ctx = RequestContext(server = server, request_id = "listen-1",
+                             protocol_version = "2026-07-28")
+        result = ModelContextProtocol.handle_subscriptions_listen(ctx,
+            ModelContextProtocol.SubscriptionsListenParams(
+                notifications = Dict{String,Any}("resourceSubscriptions" => ["test://both"])))
+        @test result.deferred
+        legacy_ctx = RequestContext(server = server, state = state, request_id = 2)
+        ModelContextProtocol.handle_subscribe_resource(legacy_ctx,
+            ModelContextProtocol.SubscribeParams(uri = "test://both"))
+        take!(out)  # drop the listen acknowledgment
+        @test notify_resource_updated(server, "test://both") == 2
+        msgs = filter(m -> m["method"] == "notifications/resources/updated", read_notifications(out))
+        @test length(msgs) == 2
+        # One tagged for the listen stream, one plain for the legacy session
+        @test count(m -> haskey(m["params"], "_meta"), msgs) == 1
+    end
+end

@@ -1759,13 +1759,17 @@ indexing_tool = MCPTool(
 
 ### Resource Subscriptions
 
-Modern-era clients subscribe by opening a `subscriptions/listen` stream, which replaces
-both the legacy GET stream and `resources/subscribe`. Your code announces changes with
-two exported helpers; each returns how many open streams were notified.
+Clients follow changes through the era-appropriate mechanism: modern-era clients open a
+`subscriptions/listen` stream (which replaces both the legacy GET stream and
+`resources/subscribe`), while legacy sessions use `resources/subscribe` /
+`resources/unsubscribe` (idempotent, empty-result acks recording the URI on the
+session). Your code announces changes with two exported helpers; each returns how many
+clients were notified — listen streams plus the legacy session when it was reached.
 
 ```julia
 notify_resource_updated(server::Server, uri::AbstractString) -> Int
-# Deliver notifications/resources/updated to every listen stream subscribed to that URI
+# Deliver notifications/resources/updated to every listen stream subscribed to that
+# URI and to the legacy session when it subscribed via resources/subscribe
 
 notify_list_changed(server::Server, kind::Symbol) -> Int
 # kind ∈ (:tools, :prompts, :resources) — deliver notifications/{kind}/list_changed.
@@ -1783,20 +1787,18 @@ register!(server, new_tool)
 notify_list_changed(server, :tools)
 ```
 
-Both helpers target `subscriptions/listen` streams. Only streams open at the moment of
-the change are notified — there is no backlog — and `notify_list_changed` delivers only
-when the corresponding `listChanged` capability is declared.
-
-Legacy sessions have `resources/subscribe` / `resources/unsubscribe`, which record the
-URI in the session's wire-subscription set and acknowledge with an empty result (both
-are idempotent).
+Only clients connected at the moment of the change are notified — there is no
+backlog — and `notify_list_changed` reaches the legacy session only when the
+corresponding `listChanged` capability is declared (listen streams are gated
+per-stream at ack time via the honored filter subset).
 
 `subscribe!` / `unsubscribe!` are a third, **in-process** path: they attach a Julia
-callback to a URI on the server, for server-side code that wants to react to changes.
-They do not by themselves put anything on the wire.
+callback to a URI on the server. `notify_resource_updated` invokes each matching
+callback as `callback(uri)`; callback errors are logged and swallowed, and callbacks
+never put anything on the wire themselves.
 
 ```julia
-subscribe!(server, "resource://data", callback)    # callback is any Function
+subscribe!(server, "resource://data", callback)    # called as callback(uri::String)
 unsubscribe!(server, "resource://data", callback)  # removed by identity (===)
 ```
 

@@ -224,13 +224,16 @@ in each era:
 
 - **Legacy era**: `resources/subscribe` / `resources/unsubscribe` record the client's
   interest per URI on its session (the `subscribe` resource capability is advertised by
-  default). Both are idempotent and answer with an empty result.
+  default). Both are idempotent and answer with an empty result; a subscribed session
+  then receives `notifications/resources/updated` for those URIs — on stdout for stdio,
+  on the standalone GET SSE stream for Streamable HTTP.
 - **Modern era**: `subscriptions/listen` replaces both the legacy GET stream and
   `resources/subscribe` — a single long-lived request whose response stream carries only
   the notification types the client opted into. See [The Modern Era](modern.md).
 
 Announce changes from server code with two exported functions, which deliver to the open
-`subscriptions/listen` streams that opted into them:
+`subscriptions/listen` streams that opted into them and to the subscribed legacy
+session:
 
 ```julia
 # A resource's contents changed
@@ -240,11 +243,13 @@ notify_resource_updated(server, "app://logs/recent")
 notify_list_changed(server, :resources)   # or :tools, :prompts
 ```
 
-Both return the number of streams notified. There is no backlog — only streams open at
-the time of the call are reached — and `notify_list_changed` delivers only when the
+Both return the number of clients notified (listen streams plus the legacy session
+when it was reached). There is no backlog — only clients connected at the time of the
+call are reached — and `notify_list_changed` reaches the legacy session only when the
 corresponding `listChanged` capability is declared.
 
 Separately, `subscribe!(server, uri, callback)` and `unsubscribe!(server, uri, callback)`
 maintain an in-process registry of callbacks keyed by URI, for server-side code that
-wants to react to its own updates. They are local bookkeeping only and send nothing to
-clients on their own.
+wants to react to its own updates. `notify_resource_updated` invokes each matching
+callback as `callback(uri)` (errors are logged and swallowed); the callbacks themselves
+send nothing to clients.
