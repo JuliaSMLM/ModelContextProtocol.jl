@@ -4,16 +4,29 @@
 
 - [Overview](#overview)
 - [Quick Reference](#quick-reference)
+- [Design Philosophy](#design-philosophy)
 - [Quick Start](#quick-start)
+- [Core Architecture](#core-architecture)
+- [Protocol Version Negotiation](#protocol-version-negotiation)
 - [Core Functions](#core-functions)
 - [Component Types](#component-types)
   - [Tools](#tools)
   - [Resources](#resources)
   - [Prompts](#prompts)
+  - [Icons](#icons)
 - [Content Types](#content-types)
+- [Control Types](#control-types)
+- [Tasks](#tasks)
+  - [Legacy era (SEP-1686, experimental)](#legacy-era-sep-1686-experimental)
+  - [Modern era (SEP-2663, tasks extension)](#modern-era-sep-2663-tasks-extension)
+- [MRTR: client input from handlers](#mrtr-client-input-from-handlers-modern-era)
 - [Transport Types](#transport-types)
+- [Authentication (OAuth Resource Server)](#authentication-oauth-resource-server)
 - [Auto-Registration](#auto-registration-system)
+- [Utility Functions](#utility-functions)
+- [Advanced Features](#advanced-features)
 - [Common Patterns](#common-patterns)
+- [Protocol Compliance and API Stability](#protocol-compliance-and-api-stability)
 - [Error Handling](#error-types-and-handling)
 - [Debugging](#debugging-techniques)
 - [Performance](#performance-considerations)
@@ -21,7 +34,11 @@
 
 ## Overview
 
-ModelContextProtocol.jl provides a Julia implementation of the Model Context Protocol (MCP) version 2025-11-25 (negotiating per client down to 2024-11-05), enabling standardized communication between AI applications and external tools, resources, and data sources. Notable capabilities: structured tool output (`output_schema`/`structuredContent`), tool annotations, audio content and `resource_link` content blocks, progress notifications from context-aware handlers (`handler = (args, ctx) -> ...` + `send_progress`), runtime `logging/setLevel`, and an OAuth Resource Server for the HTTP transport (`create_github_auth`, `JWKSValidator` for signature-verified JWTs from external authorization servers, `HttpTransport(; auth, resource_metadata)`).
+ModelContextProtocol.jl provides a Julia implementation of the Model Context Protocol (MCP), enabling standardized communication between AI applications and external tools, resources, and data sources.
+
+The server is **dual-era**: it serves both the modern stateless era (`2026-07-28`, selected per request through the `_meta` key `io.modelcontextprotocol/protocolVersion`, no handshake) and the legacy handshake era (`initialize` negotiates one of `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`). Both eras are live at the same time on the same server — see [Protocol Version Negotiation](#protocol-version-negotiation), and `docs/src/modern.md` for the modern era in depth.
+
+Notable capabilities: structured tool output (`output_schema`/`structuredContent`), tool annotations, audio content and `resource_link` content blocks, progress notifications from context-aware handlers (`handler = (args, ctx) -> ...` + `send_progress`), argument/variable completion (`completion/complete`), resource subscriptions with `notify_resource_updated`/`notify_list_changed`, background execution via Tasks in both eras, modern-era MRTR (handlers asking the client for elicitation/sampling/roots input), runtime `logging/setLevel`, and an OAuth Resource Server for the HTTP transport (`create_github_auth`, `JWKSValidator` for signature-verified JWTs from external authorization servers, `HttpTransport(; auth, resource_metadata)`).
 
 ### Version Information
 
@@ -29,7 +46,7 @@ ModelContextProtocol.jl provides a Julia implementation of the Model Context Pro
 
 | Version Type | Example | Who Sets It | Purpose |
 |-------------|---------|------------|----------|
-| **Protocol Version** | `"2025-11-25"` | MCP Specification | Negotiated per client at initialize (down to `2024-11-05`) |
+| **Protocol Version** | `"2026-07-28"` (modern) / `"2025-11-25"` (legacy) | MCP Specification | Modern: per request via `_meta`. Legacy: negotiated at `initialize` (down to `2024-11-05`) |
 | **Server Version** | `"1.0.0"` | You (developer) | Your server's version |
 
 ```julia
@@ -45,7 +62,7 @@ server = mcp_server(
 ### Breaking Changes and Migration
 
 **From Earlier Versions:**
-- Protocol version is negotiated per client: the server advertises `2025-11-25` and falls back through `2025-06-18` and `2025-03-26` to `2024-11-05`
+- Two eras run side by side: modern-era clients send `2026-07-28` in each request's `_meta` (no `initialize`); legacy clients negotiate at `initialize`, where the server advertises `2025-11-25` and falls back through `2025-06-18` and `2025-03-26` to `2024-11-05`
 - JSON-RPC batching is no longer supported
 - ResourceLink is a new content type (spec wire shape `{"type":"resource_link","uri":...,"name":...}`)
 - Session management added for HTTP transport
@@ -108,7 +125,7 @@ start!(server)  # Uses stdio by default
 
 ### Core Principles
 
-1. **Protocol-First Design**: Targets the MCP 2025-11-25 specification, with per-client version negotiation back through 2025-06-18 and 2025-03-26 to 2024-11-05.
+1. **Protocol-First Design**: Dual-era. Modern-era requests (`2026-07-28`, declared per request in `_meta`) are served statelessly; legacy clients negotiate at `initialize` across 2025-11-25, 2025-06-18, 2025-03-26, and 2024-11-05.
 
 2. **Layered Architecture**: 
    - **Transport Layer**: Abstract interface with stdio and HTTP implementations
@@ -117,10 +134,10 @@ start!(server)  # Uses stdio by default
    - **Core Layer**: Server state management and initialization
 
 3. **Type System Design**:
-   - Abstract types (`Content`, `Transport`, `Resource`) for extensibility and type annotations
+   - Exported abstract types (`Content`, `ResourceContents`, `Transport`) for extensibility and type annotations
    - Concrete types with `@kwdef` for ergonomic construction with defaults
    - Module isolation for safe dynamic component loading
-   - Small maps use `LittleDict` for performance (automatically imported from DataStructures.jl)
+   - Small maps use `LittleDict` for performance (from OrderedCollections.jl)
 
 4. **Handler Design**:
    - Tool handlers receive `Dict{String,Any}` parameters for JSON flexibility
@@ -208,6 +225,68 @@ abstract type ResourceContents end
 └── BlobResourceContents  # Binary resource data
 ```
 
+## Protocol Version Negotiation
+
+The server speaks two protocol eras concurrently, and which one a request gets is
+decided by the request itself:
+
+- **Modern era (stateless).** A request whose `params._meta` carries
+  `"io.modelcontextprotocol/protocolVersion" => "2026-07-28"` is served statelessly —
+  no `initialize`, no session. This is the surface described in `docs/src/modern.md`
+  (per-request client capabilities, `server/discover`, `subscriptions/listen`, MRTR,
+  the tasks extension, per-request `logLevel`).
+- **Legacy era (handshake).** A client that calls `initialize` negotiates one version
+  from the supported list and keeps it for the session.
+
+```julia
+LATEST_PROTOCOL_VERSION      # "2025-11-25" — latest LEGACY (handshake) version
+SUPPORTED_PROTOCOL_VERSIONS  # ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+FEATURE_VERSIONS             # Dict{Symbol,String}: feature => minimum legacy version
+```
+
+The modern-era version (`"2026-07-28"`) is not part of `SUPPORTED_PROTOCOL_VERSIONS`:
+that constant is the `initialize` handshake list, and the two eras are deliberately
+separate.
+
+### `negotiate_version(client_version) -> String`
+
+Apply the spec's negotiation rule to an `initialize` request's `protocolVersion`.
+
+```julia
+negotiate_version("2025-06-18")  # "2025-06-18" — supported, echoed back
+negotiate_version("2099-01-01")  # "2025-11-25" — unsupported, our latest is offered
+negotiate_version(nothing)       # "2025-11-25"
+```
+
+This runs internally at `initialize`; call it directly only when building your own
+handshake logic or tests.
+
+### `is_supported_version(version) -> Bool`
+
+```julia
+is_supported_version("2025-03-26")  # true
+is_supported_version("2026-07-28")  # false — modern era, not an initialize version
+```
+
+### `supports(version, feature) -> Bool`
+
+Gate optional behavior on the negotiated legacy version. Handlers reach the
+negotiated version through the per-request context as `ctx.state.protocol_version`.
+
+```julia
+handler = (args, ctx) -> begin
+    if supports(ctx.state.protocol_version, :resource_links)
+        return ResourceLink(uri = "app://report/42", name = "Report 42")
+    end
+    TextContent(text = "app://report/42")
+end
+```
+
+Feature keys (`FEATURE_VERSIONS`): `:tasks`, `:sse_priming_events`, `:icon_metadata`,
+`:tool_calling_in_sampling`, `:oauth_openid_connect`, `:oauth_incremental_scope`,
+`:url_elicitation` (all `2025-11-25`); `:resource_links` (`2025-06-18`);
+`:streamable_http` (`2025-03-26`). An unknown feature symbol returns `false`.
+
 ## Core Functions
 
 ### `mcp_server`
@@ -218,16 +297,31 @@ Create an MCP server instance with tools, resources, and prompts.
 mcp_server(;
     name::String,                        # Required: Server name
     version::String = "1.0.0",           # Your server version (defaults to "1.0.0", NOT the protocol version)
-    description::String = "",            # Server description
-    tools = nothing,                     # Single tool or Vector{MCPTool}
-    resources = nothing,                 # Single resource or Vector{MCPResource}
-    prompts = nothing,                   # Single prompt or Vector{MCPPrompt}
-    capabilities = default_capabilities(), # Protocol capabilities (usually use default)
-    auto_register_dir = nothing         # Directory for auto-registration
+    tools = nothing,                     # Single MCPTool or Vector{MCPTool}
+    resources = nothing,                 # Single MCPResource or Vector{MCPResource}
+    resource_templates = nothing,        # Single ResourceTemplate or Vector{ResourceTemplate}
+    prompts = nothing,                   # Single MCPPrompt or Vector{MCPPrompt}
+    description::String = "",            # Server description (serverInfo.description)
+    instructions::String = "",           # Usage instructions returned to the client at initialize
+    capabilities::Vector{Capability} = default_capabilities(),  # Protocol capabilities (usually use default)
+    auto_register_dir = nothing,         # Directory for auto-registration
+    title = nothing,                     # Optional human-friendly display name (serverInfo.title)
+    icons = nothing,                     # Union{Vector{MCPIcon},Nothing} for serverInfo.icons
+    mrtr_state_key = nothing             # Union{Vector{UInt8},Nothing}: HMAC key for MRTR requestState
+                                         # (a random ephemeral key is generated when omitted)
 ) -> Server
 ```
 
-**Protocol Version:** The server advertises `2025-11-25` and negotiates per client down through `2025-06-18` and `2025-03-26` to `2024-11-05`.
+**Protocol Version:** Set by the client, not here. Modern-era clients declare
+`2026-07-28` per request in `_meta`; legacy clients negotiate `2025-11-25` down to
+`2024-11-05` at `initialize`. See [Protocol Version Negotiation](#protocol-version-negotiation).
+
+**Capabilities:** `capabilities` is a `Vector{Capability}`. `Capability`,
+`default_capabilities`, and the concrete capability types are internal (not exported) —
+the default set covers resources (list-changed + subscribe), tools, prompts, logging,
+completion, and tasks, and is what you want unless you are deliberately withholding a
+feature. To customize, import them explicitly:
+`using ModelContextProtocol: default_capabilities, ToolCapability`.
 
 **Examples:**
 
@@ -373,7 +467,12 @@ MCPTool(;
     annotations::Union{Nothing,Dict{String,Any}} = nothing,  # Behavioral hints (readOnlyHint, ...)
     output_schema::Union{Nothing,AbstractDict} = nothing,  # JSON Schema for structured output
     _meta::Union{Nothing,Dict{String,Any}} = nothing,  # Protocol-extension metadata
-    task_support::Symbol = :forbidden      # MCP Tasks: :forbidden | :optional | :required
+    task_support::Symbol = :forbidden,     # MCP Tasks: :forbidden | :optional | :required
+    required_scopes::Vector{String} = String[]  # OAuth scopes the caller must hold to invoke
+                                           # this tool. Enforced at tools/call only when the
+                                           # request carries an authenticated principal (HTTP
+                                           # auth active); skipped when auth is not configured.
+                                           # Server-side policy — not emitted in tools/list.
 )
 ```
 
@@ -557,11 +656,14 @@ Define a resource that provides data.
 ```julia
 MCPResource(;
     uri::Union{String, URI},              # Resource identifier
-    name::String,                         # Human-readable name
+    name::String = "",                    # Human-readable name
     description::String = "",             # Description
     mime_type::String = "application/json", # MIME type
     data_provider::Function,              # () -> data function (see note below)
-    annotations::AbstractDict = LittleDict{String,Any}()  # Metadata (uses LittleDict for performance)
+    annotations::AbstractDict{String,Any} = LittleDict{String,Any}(),  # Metadata (LittleDict for performance)
+    title::Union{String,Nothing} = nothing,           # Optional display name
+    icons::Union{Vector{MCPIcon},Nothing} = nothing,  # Optional icons (resources/list)
+    _meta::Union{Nothing,Dict{String,Any}} = nothing  # Protocol-extension metadata (resources/list)
 )
 ```
 
@@ -608,9 +710,14 @@ Templates for dynamic resources.
 ```julia
 ResourceTemplate(;
     name::String,                       # Template name
-    uri_template::String,               # URI pattern with placeholders
-    mime_type::Union{String,Nothing} = nothing,
+    uri_template::String,               # RFC 6570 level-1 pattern, e.g. "user://{user_id}/profile"
+    mime_type::Union{String,Nothing} = nothing,  # MIME type shared by all matching resources
     description::String = "",
+    title::Union{String,Nothing} = nothing,           # Optional display name
+    icons::Union{Vector{MCPIcon},Nothing} = nothing,  # Optional icons
+    data_provider::Union{Function,Nothing} = nothing, # provider(uri) or provider(uri, vars);
+                                        # templates without one are advertised but not readable
+    _meta::Union{Nothing,Dict{String,Any}} = nothing, # Protocol-extension metadata
     completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per {var}
 )
 ```
@@ -651,8 +758,11 @@ Define prompt templates.
 MCPPrompt(;
     name::String,                              # Identifier
     description::String = "",                  # Description
-    arguments::Vector{PromptArgument} = [],   # Arguments
-    messages::Vector{PromptMessage} = [],     # Messages
+    arguments::Vector{PromptArgument} = [],    # Arguments
+    messages::Vector{PromptMessage} = [],      # Messages
+    title::Union{String,Nothing} = nothing,           # Optional display name
+    icons::Union{Vector{MCPIcon},Nothing} = nothing,  # Optional icons (prompts/list)
+    _meta::Union{Nothing,Dict{String,Any}} = nothing, # Protocol-extension metadata (prompts/list)
     completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per argument
 )
 ```
@@ -680,9 +790,10 @@ Prompt input arguments.
 
 ```julia
 PromptArgument(;
-    name::String,                    # Argument name  
+    name::String,                    # Argument name
     description::String = "",        # Description
-    required::Bool = false           # Whether required
+    required::Bool = false,          # Whether required
+    title::Union{String,Nothing} = nothing  # Optional human-friendly display name
 )
 ```
 
@@ -735,10 +846,14 @@ Messages in prompts.
 
 ```julia
 PromptMessage(;
-    content::Union{TextContent, ImageContent},  # Message content (text or image only)
+    # Any of the spec's prompt-message content blocks:
+    content::Union{TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource},
     role::Role = user                           # Role (user or assistant)
 )
 ```
+
+A single-argument positional form is also available: `PromptMessage(content)` (role
+defaults to `user`).
 
 **Note:** The `Role` enum has values `user` and `assistant`. When creating a `PromptMessage`, the role defaults to `user` if not specified.
 
@@ -777,6 +892,39 @@ analysis_prompt = MCPPrompt(
     ]
 )
 ```
+
+### Icons
+
+#### `MCPIcon`
+
+Icon metadata for the `icons` field of tools, resources, resource templates, prompts,
+and the server itself. Field names are the wire names (they serialize verbatim,
+omitting `nothing` fields).
+
+```julia
+MCPIcon(;
+    src::String,                                  # http/https URL or data: URI
+    mimeType::Union{String,Nothing} = nothing,    # e.g. "image/png", "image/svg+xml"
+    sizes::Union{Vector{String},Nothing} = nothing,  # size hints, e.g. ["48x48", "any"]
+    theme::Union{String,Nothing} = nothing        # background the icon is designed for: "light" | "dark"
+)
+```
+
+```julia
+tool = MCPTool(
+    name = "chart",
+    description = "Render a chart",
+    parameters = [],
+    handler = (p) -> TextContent(text = "ok"),
+    icons = [MCPIcon(src = "https://example.com/chart.png",
+                     mimeType = "image/png", sizes = ["48x48"], theme = "light")]
+)
+```
+
+The `icons` field is emitted whenever it is set — on `tools/list`, `resources/list`,
+`resources/templates/list`, `prompts/list`, and `serverInfo` — and omitted when
+`nothing`. Icon metadata entered the spec in `2025-11-25`; older clients ignore the
+field. To branch on it yourself, gate with `supports(version, :icon_metadata)`.
 
 ## Content Types
 
@@ -925,7 +1073,13 @@ file_tool = MCPTool(
 )
 ```
 
-## Tasks (Experimental)
+## Tasks
+
+Tasks run a tool call in the background so a long handler does not hold the serial
+server loop. Both eras support them, with different wire shapes and different opt-in
+rules — a tool opts in once via `MCPTool(task_support = ...)` and works with either.
+
+### Legacy era (SEP-1686, experimental)
 
 MCP Tasks (SEP-1686, protocol 2025-11-25) run tool calls in the background: a
 task-augmented `tools/call` (params carry `"task": {"ttl": …}`) immediately returns a
@@ -972,7 +1126,7 @@ long_tool = MCPTool(
 - Optional `notifications/tasks/status` are emitted on terminal transitions (stdout
   for stdio, SSE stream for HTTP)
 
-### Tasks extension (modern era, SEP-2663)
+### Modern era (SEP-2663, tasks extension)
 
 On modern-era (2026-07-28) requests the experimental surface above is replaced by
 the `io.modelcontextprotocol/tasks` extension. Creation is server-directed: the
@@ -1008,7 +1162,8 @@ outstanding `inputRequests`, and the client answers via `tasks/update`
 confirming_tool = MCPTool(
     name = "confirm_delete",
     description = "Delete with confirmation",
-    parameters = [ToolParameter(name = "filename", type = "string", required = true)],
+    parameters = [ToolParameter(name = "filename", type = "string",
+                                description = "File to delete", required = true)],
     handler = (args, ctx) -> begin
         task_detach(ctx)
         resp = task_await_input(ctx, elicit_request("Really delete $(args["filename"])?"))
@@ -1045,6 +1200,108 @@ confirming_tool = MCPTool(
 - Extension tasks and legacy (SEP-1686) tasks live in era-isolated stores; on HTTP,
   `Mcp-Name` must mirror `params.taskId` for `tasks/*` requests
 
+**Handler-side API:**
+
+```julia
+task_detach(ctx; ttl_ms = nothing, status_message = nothing) -> Bool
+# true once the call is task-detached; false (run synchronously) for a legacy-era
+# request, a client that did not declare the extension, or a tool that is not
+# task-capable. Idempotent — a second call returns true without creating a task.
+
+task_await_input(ctx, request::InputRequest) -> Any
+task_await_input(ctx, requests::Vector{InputRequest}) -> Vector{Any}
+# Park a detached task on client input; returns the client's response value(s), in
+# request order for the vector form. Throws TaskCancelledException if the task
+# reaches a terminal state while waiting (client `tasks/cancel`, or ttl expiry —
+# `task_cancelled(ctx)` is true only for the former).
+
+task_cancelled(ctx) -> Bool   # cooperative cancellation check, both eras
+```
+
+## MRTR (client input from handlers, modern era)
+
+Multi-Round-Trip Requests (SEP-2322) are how a modern-era (`2026-07-28`) tool handler
+asks the client for elicitation, sampling, or filesystem roots. There is no
+server-initiated request: the handler *returns* an `InputRequired`, the server answers
+the call with an `input_required` result, and the client **retries the same call** with
+its responses attached. The handler then runs again from the top and reads the answers.
+This works on the serial server loop and over stateless HTTP, which is why it replaces
+the legacy server-initiated surface.
+
+```julia
+InputRequired(requests::AbstractDict; state = nothing)
+# requests: your keys (strings) => InputRequest values; the client answers under the
+#           same keys. At least one request, or a state, is required.
+# state:    JSON-serializable handler state carried to the retry inside the
+#           integrity-protected `requestState`. Signed, NOT encrypted — no secrets.
+
+elicit_request(message::String; requested_schema = nothing) -> InputRequest
+# `elicitation/create`. requested_schema must be an object schema; when omitted a
+# minimal {"type":"object","properties":{}} is synthesized (the wire field is required).
+
+sampling_request(params::AbstractDict) -> InputRequest
+# `sampling/createMessage`; params is the CreateMessageRequest params (messages, maxTokens, ...)
+
+roots_request() -> InputRequest
+# `roots/list`
+
+input_responses(ctx) -> Dict{String,Any}  # the retry's responses, keyed as you asked; empty on a first call
+input_state(ctx) -> Any                   # whatever you passed as `state`; nothing on a first call
+```
+
+`state` round-trips through JSON inside `requestState`, so it comes back **parsed**, not
+as the original Julia object: a `Dict` returns as a `JSON3.Object` (index it with
+`st["key"]` or `st.key`), a vector as a `JSON3.Array`. Keep it to plain JSON data.
+
+```julia
+confirm_tool = MCPTool(
+    name = "publish",
+    description = "Publish a draft after confirming with the user",
+    parameters = [ToolParameter(name = "draft_id", type = "string",
+                                description = "Draft to publish", required = true)],
+    handler = (args, ctx) -> begin
+        answers = input_responses(ctx)
+        if !haskey(answers, "confirm")
+            # First call: ask, and carry any state the retry will need.
+            return InputRequired(
+                Dict("confirm" => elicit_request(
+                    "Publish draft $(args["draft_id"])?";
+                    requested_schema = Dict(
+                        "type" => "object",
+                        "properties" => Dict("ok" => Dict("type" => "boolean")),
+                        "required" => ["ok"]))),
+                state = Dict("draft" => args["draft_id"]))
+        end
+        # Retry: the handler re-runs from the top with the answer available.
+        draft = input_state(ctx)["draft"]   # JSON3.Object — see note above
+        TextContent(text = "published $draft: $(answers["confirm"])")
+    end
+)
+```
+
+**Semantics:**
+- Returned from **tool handlers**, on modern-era requests. A legacy session has no wire
+  shape for `InputRequired`, so returning one there is an error. (The retry fields
+  `inputResponses`/`requestState` are parsed on all three MRTR methods — `tools/call`,
+  `resources/read`, `prompts/get` — but only tool handlers produce `InputRequired`.)
+- Inside a **legacy** task-augmented execution `InputRequired` is not representable and
+  fails the task; the modern equivalent after detaching is `task_await_input`
+- Each request type needs the matching client capability declared in the request's
+  `_meta` (`elicitation`, `sampling`, `roots`); undeclared → `-32021` with
+  `data.requiredCapabilities`
+- `requestState` is attacker-controlled input, so it is HMAC-signed over the issue
+  time, a TTL (10 minutes), the authenticated principal, and a canonical digest of the
+  original params; every retry verifies all of them before the handler runs. The key
+  is per-`Server` and ephemeral unless you pass `mcp_server(mrtr_state_key = ...)`
+- A valid `requestState` can be **replayed** within its TTL (one-time semantics would
+  need shared server state, which the stateless design avoids) — keep handlers
+  idempotent across retries
+- If a needed response is still missing on the retry, return another `InputRequired`;
+  the spec says re-issue, not error
+- Returning `InputRequired` *before* `task_detach(ctx)` composes the two: gather input
+  synchronously, then escalate to a task. After detaching, use
+  [`task_await_input`](#modern-era-sep-2663-tasks-extension) instead
+
 ## Transport Types
 
 ### `StdioTransport`
@@ -1072,7 +1329,10 @@ HttpTransport(;
     protocol_version::String = LATEST_PROTOCOL_VERSION,  # "2025-11-25"; response headers echo the per-session negotiated version
     session_required::Bool = false,      # Require session validation
     auth::Union{AuthMiddleware,Nothing} = nothing,  # OAuth Resource Server token validation (nothing = disabled)
-    resource_metadata::Union{ProtectedResourceMetadata,Nothing} = nothing  # RFC 9728 Protected Resource Metadata
+    resource_metadata::Union{ProtectedResourceMetadata,Nothing} = nothing,  # RFC 9728 Protected Resource Metadata
+    sse_keepalive_secs::Real = 15.0      # Idle interval between SSE keepalive comments. A write is
+                                         # the only way to notice a silently-dead peer, so the value
+                                         # must be finite and positive (ArgumentError otherwise)
 )
 ```
 
@@ -1107,9 +1367,217 @@ server = mcp_server(
 # Connect first (binds port)
 connect(transport)
 
-# Start server with transport (blocks here)
-start!(server, transport)  # Server runs until Ctrl+C
+# Start server with transport (blocks here). `transport` is keyword-only.
+start!(server, transport = transport)  # Server runs until Ctrl+C
 ```
+
+## Authentication (OAuth Resource Server)
+
+**Scope of this implementation.** The package is an OAuth 2.1 **Resource Server**: it
+validates bearer tokens on incoming HTTP requests, advertises where those tokens come
+from (RFC 9728), and hands the authenticated principal to your handlers. It is **not an
+Authorization Server** — it does not issue tokens, run login or consent screens,
+implement Dynamic Client Registration, or handle PKCE redirects. Those belong to an
+external AS (Keycloak, Auth0, Okta, GitHub, an in-house IdP). The stdio transport is
+unauthenticated by design: its trust boundary is the OS process pipe, not a token.
+`docs/src/oauth.md` covers deployment in depth.
+
+### Wiring it up
+
+```julia
+using ModelContextProtocol
+
+auth = create_auth_middleware(
+    OAuthConfig(
+        issuer = "https://auth.example.org/realms/main",   # expected `iss`
+        audience = "https://mcp.example.org/mcp",          # expected `aud`
+        required_scopes = ["mcp:read"],                    # required on every request
+    ),
+    validator = JWKSValidator("https://auth.example.org/realms/main/protocol/openid-connect/certs"),
+    allowlist = Set(["alice", "bob"]),                     # optional
+)
+
+meta = create_protected_resource_metadata(
+    "https://mcp.example.org/mcp",
+    ["https://auth.example.org/realms/main"],
+    scopes = ["mcp:read", "mcp:write"],
+)
+
+transport = HttpTransport(port = 8765, auth = auth, resource_metadata = meta)
+connect(transport)
+start!(server, transport = transport)
+```
+
+Each request is authenticated before dispatch: a missing or malformed `Authorization`
+header is `401`, an invalid/expired/forged token is `401`, and a valid token that lacks
+a required scope or is not allowlisted is `403`. Failures never reveal *why* a token was
+rejected (the endpoint must not work as a token oracle). On success the principal is
+available to context-aware handlers as `ctx.authenticated_user`.
+
+### Configuration and result types
+
+```julia
+OAuthConfig(;
+    issuer::String,                            # expected `iss` claim
+    audience::String,                          # expected `aud` claim — typically your server URL
+    required_scopes::Vector{String} = String[],           # scopes required on every request
+    jwks_uri::Union{String,Nothing} = nothing,            # JWKS URL for JWT validation
+    introspection_endpoint::Union{String,Nothing} = nothing  # RFC 7662 endpoint
+)
+
+AuthenticatedUser(;
+    subject::String,                           # `sub` — the stable principal id
+    provider::String,                          # e.g. "github", "keycloak"
+    username::Union{String,Nothing} = nothing, # human-readable name when available
+    scopes::Vector{String} = String[],         # granted OAuth scopes
+    claims::Dict{String,Any} = Dict{String,Any}()  # raw token claims
+)
+
+AuthMiddleware(;
+    config::OAuthConfig,
+    validator::TokenValidator,
+    allowlist::Union{Set{String},Nothing} = nothing,  # allowed usernames or subjects
+    case_insensitive_allowlist::Bool = true,          # username matching only; `subject` is
+                                                      # ALWAYS matched exactly
+    enabled::Bool = true
+)
+
+ProtectedResourceMetadata(;
+    resource::String,                                    # your server URL
+    authorization_servers::Vector{String},               # AS issuer URLs
+    scopes_supported::Vector{String} = String[],
+    bearer_methods_supported::Vector{String} = ["header"]
+)
+```
+
+`AuthResult` is the outcome of an authentication attempt: fields `success::Bool`,
+`user::Union{AuthenticatedUser,Nothing}`, `error::Union{String,Nothing}`, and
+`error_code::Union{Symbol,Nothing}` (`:invalid_token`, `:missing_token`,
+`:invalid_format`, `:insufficient_scope`, …). Construct with `AuthResult(user)` for
+success or `AuthResult(message, code)` for failure.
+
+`AuthProvider` and `TokenValidator` are the exported abstract types: subtype
+`TokenValidator` and add a `validate_token(::YourValidator, ::AbstractString, ::OAuthConfig)`
+method to plug in your own strategy.
+
+### The validator ladder
+
+```julia
+JWKSValidator(jwks_uri::String;
+    allowed_algs::Vector{String} = ["RS256", "RS384", "RS512"],
+    clock_skew_seconds::Int = 60,
+    refresh_interval_seconds::Real = 300,
+    allow_insecure_http::Bool = false)
+JWKSValidator(keyset::JWTs.JWKSet; kwargs...)   # pre-built/static key set
+```
+
+**Preferred.** Verifies the JWT signature against a JSON Web Key Set (RFC 7517) *and*
+validates claims. Keys are fetched lazily, so construction never touches the network; an
+unknown `kid` triggers a re-fetch at most once per `refresh_interval_seconds` (rate
+limited so an attacker-supplied `kid` cannot hammer the JWKS endpoint). Tokens whose
+header `alg` is outside `allowed_algs` are rejected before any cryptography runs (this
+rejects `alg=none`). `file://` URIs work for local key sets; an `http://` URL throws at
+construction unless `allow_insecure_http = true`.
+
+```julia
+JWTValidator(; insecure_skip_signature_verification::Bool = false,
+               clock_skew_seconds::Int = 60)
+```
+
+Claims only (`iss`, `aud`, `exp`, `nbf`, scopes) — **no signature verification**, so any
+caller could forge the issuer, audience, and scopes. The constructor **throws** unless
+you pass `insecure_skip_signature_verification = true`, an explicit acknowledgement.
+Choose it only when this server sits behind a gateway that has already verified the
+signature.
+
+```julia
+IntrospectionValidator(; client_id = nothing, client_secret = nothing)
+```
+
+RFC 7662 remote introspection — for opaque tokens that cannot be validated locally.
+Requires `OAuthConfig(introspection_endpoint = ...)`.
+
+```julia
+GitHubOAuthValidator(; cache_ttl_seconds::Int = 300)
+SimpleTokenValidator()   # also SimpleTokenValidator(::Dict{String,AuthenticatedUser})
+```
+
+`GitHubOAuthValidator` validates GitHub tokens against the GitHub API (with a TTL
+cache). `SimpleTokenValidator` is a static in-memory token map — plaintext storage and
+non-constant-time lookups, so it is for development and trusted static API keys only.
+
+### Middleware factories
+
+```julia
+create_auth_middleware(config::OAuthConfig;
+    validator::TokenValidator,                         # required — no implicit default
+    allowlist::Union{Set{String},Nothing} = nothing,
+    case_insensitive_allowlist::Bool = true,
+    enabled::Bool = true) -> AuthMiddleware
+
+create_simple_auth(tokens::Dict{String,String};        # API key => username
+    allowlist::Union{Set{String},Nothing} = nothing,
+    case_insensitive_allowlist::Bool = true) -> AuthMiddleware
+
+create_github_auth(;
+    allowed_users::Union{Vector{String},Set{String}} = String[],  # empty = any authenticated user
+    required_org::Union{String,Nothing} = nothing,     # require org membership
+    cache_ttl_seconds::Int = 300,
+    case_insensitive_allowlist::Bool = true) -> AuthMiddleware
+
+disable_auth() -> AuthMiddleware                       # dev/testing: everything passes as anonymous
+```
+
+### Metadata helpers (RFC 9728)
+
+```julia
+create_protected_resource_metadata(resource_url::String,
+                                   authorization_servers::Vector{String};
+                                   scopes::Vector{String} = String[]) -> ProtectedResourceMetadata
+
+create_github_resource_metadata(resource_url::String;
+                                scopes::Vector{String} = ["read:user"]) -> ProtectedResourceMetadata
+```
+
+Passing the result as `HttpTransport(resource_metadata = ...)` serves it at
+`/.well-known/oauth-protected-resource` and points `WWW-Authenticate` at it, which is
+how a compliant client discovers your Authorization Server.
+
+### Request-level helpers
+
+```julia
+authenticate_request(middleware::AuthMiddleware,
+                     authorization_header::Union{String,Nothing}) -> AuthResult
+validate_token(validator::TokenValidator, token::AbstractString,
+               config::OAuthConfig) -> AuthResult
+extract_bearer_token(authorization_header::String) -> Union{String,Nothing}
+clear_cache!(validator)          # drop a GitHub validator's cached user lookups
+is_auth_enabled(transport::HttpTransport) -> Bool
+```
+
+The transport calls these for you; reach for them directly in tests, in custom
+validators, or when you need to check whether a transport is protected (a loopback
+transport *without* auth also enables the DNS-rebinding guard).
+
+### Per-tool authorization
+
+Beyond the server-wide `OAuthConfig(required_scopes = ...)`, a single tool can demand
+its own scopes:
+
+```julia
+delete_tool = MCPTool(
+    name = "delete_record",
+    description = "Delete a record",
+    parameters = [ToolParameter(name = "id", type = "string",
+                                description = "Record id", required = true)],
+    handler = (args, ctx) -> TextContent(text = "deleted $(args["id"])"),
+    required_scopes = ["records:write"]
+)
+```
+
+Every listed scope must be present on `ctx.authenticated_user.scopes` or the call is
+refused. The check runs only when the request carries an authenticated principal: with
+no auth configured there is no principal, and the server performs no authorization.
 
 ## Auto-Registration System
 
@@ -1141,8 +1609,8 @@ add = MCPTool(
     name = "add",
     description = "Add two numbers",
     parameters = [
-        ToolParameter(name = "a", type = "number", required = true),
-        ToolParameter(name = "b", type = "number", required = true)
+        ToolParameter(name = "a", type = "number", description = "First addend", required = true),
+        ToolParameter(name = "b", type = "number", description = "Second addend", required = true)
     ],
     handler = (p) -> TextContent(text = string(p["a"] + p["b"]))
 )
@@ -1151,8 +1619,8 @@ multiply = MCPTool(
     name = "multiply",
     description = "Multiply two numbers",
     parameters = [
-        ToolParameter(name = "x", type = "number", required = true),
-        ToolParameter(name = "y", type = "number", required = true)
+        ToolParameter(name = "x", type = "number", description = "First factor", required = true),
+        ToolParameter(name = "y", type = "number", description = "Second factor", required = true)
     ],
     handler = (p) -> TextContent(text = string(p["x"] * p["y"]))
 )
@@ -1212,10 +1680,11 @@ image = ImageContent(data = [0x89, 0x50], mime_type = "image/png")
 dict = content2dict(image)
 # Returns: Dict("type" => "image", "data" => "iVA=", "mimeType" => "image/png")
 
-# Resource link
-link = ResourceLink(href = "resource://data", title = "Data Resource")
+# Resource link (uri and name are both required)
+link = ResourceLink(uri = "resource://data", name = "data", title = "Data Resource")
 dict = content2dict(link)
-# Returns: Dict("type" => "link", "href" => "resource://data", "title" => "Data Resource")
+# Returns: Dict("type" => "resource_link", "uri" => "resource://data",
+#               "name" => "data", "title" => "Data Resource")
 
 # Embedded resource
 embedded = EmbeddedResource(
@@ -1237,41 +1706,81 @@ dict = content2dict(embedded)
 
 ## Advanced Features
 
-### Progress Monitoring (Limited Support)
+### Progress Notifications
 
-**Current Status:** Infrastructure exists but has significant limitations.
+A context-aware handler reports progress on a long operation with `send_progress`,
+which emits `notifications/progress` on the correct channel for the transport (stdout
+for stdio, the request's SSE stream for HTTP).
 
 ```julia
-# Progress type definition
-Progress(;
-    token::Union{String,Int},      # Operation identifier
-    current::Float64,              # Current progress value
-    total::Union{Float64,Nothing}, # Total expected value (optional)
-    message::Union{String,Nothing} = nothing  # Optional status message
+send_progress(ctx, progress::Real; total = nothing, message = nothing) -> Bool
+```
+
+- `ctx` is the second argument of a two-arg tool handler, `(args, ctx) -> ...`
+- Send an increasing `progress`; add `total` for a determinate bar and `message` for a
+  status line
+- Returns `false` and does nothing when the client sent no `progressToken`, when no
+  transport is connected, or on a detachable modern-era task call (tasks do not carry
+  progress notifications) — so it is always safe to call unconditionally
+
+```julia
+indexing_tool = MCPTool(
+    name = "reindex",
+    description = "Rebuild the search index",
+    parameters = [],
+    handler = (args, ctx) -> begin
+        files = collect_files()
+        for (i, f) in enumerate(files)
+            send_progress(ctx, i; total = length(files), message = "indexing $f")
+            index!(f)
+        end
+        TextContent(text = "indexed $(length(files)) files")
+    end
 )
 ```
 
-**⚠️ Important Limitations:**
-- No outbound notification mechanism from tool handlers
-- Progress trackers maintained but not utilized
-- Cannot emit progress updates during operations
-- Consider polling-based alternatives for now
+### Resource Subscriptions
 
-### Resource Subscriptions (Limited Implementation)
+Modern-era clients subscribe by opening a `subscriptions/listen` stream, which replaces
+both the legacy GET stream and `resources/subscribe`. Your code announces changes with
+two exported helpers; each returns how many open streams were notified.
 
-**Note:** Subscription methods exist but have limited functionality:
 ```julia
-# Subscribe to resource updates (stores subscription but no notification mechanism yet)
-subscribe!(server, "resource://data", callback_function)
+notify_resource_updated(server::Server, uri::AbstractString) -> Int
+# Deliver notifications/resources/updated to every listen stream subscribed to that URI
 
-# Unsubscribe from resource updates
-unsubscribe!(server, "resource://data", callback_function)
+notify_list_changed(server::Server, kind::Symbol) -> Int
+# kind ∈ (:tools, :prompts, :resources) — deliver notifications/{kind}/list_changed.
+# Call after mutating server.tools / server.prompts / server.resources at runtime.
+# Any other symbol throws ArgumentError.
 ```
 
-**Current Limitations:**
-- Subscriptions are stored but not triggered on resource changes
-- No notification mechanism to inform clients of updates
-- Consider polling resources directly for now
+```julia
+# After the underlying data changes:
+update_metrics!()
+notify_resource_updated(server, "data://metrics")
+
+# After registering a tool at runtime:
+register!(server, new_tool)
+notify_list_changed(server, :tools)
+```
+
+Both helpers target `subscriptions/listen` streams. Only streams open at the moment of
+the change are notified — there is no backlog — and `notify_list_changed` delivers only
+when the corresponding `listChanged` capability is declared.
+
+Legacy sessions have `resources/subscribe` / `resources/unsubscribe`, which record the
+URI in the session's wire-subscription set and acknowledge with an empty result (both
+are idempotent).
+
+`subscribe!` / `unsubscribe!` are a third, **in-process** path: they attach a Julia
+callback to a URI on the server, for server-side code that wants to react to changes.
+They do not by themselves put anything on the wire.
+
+```julia
+subscribe!(server, "resource://data", callback)    # callback is any Function
+unsubscribe!(server, "resource://data", callback)  # removed by identity (===)
+```
 
 ### Session Management (HTTP)
 
@@ -1297,7 +1806,7 @@ echo_tool = MCPTool(
     name = "echo",
     description = "Echo message",
     parameters = [
-        ToolParameter(name = "msg", type = "string", required = true)
+        ToolParameter(name = "msg", type = "string", description = "Message to echo back", required = true)
     ],
     handler = (p) -> TextContent(text = p["msg"])
 )
@@ -1361,7 +1870,7 @@ safe_tool = MCPTool(
     name = "safe_op",
     description = "Perform operation with error handling",
     parameters = [
-        ToolParameter(name = "input", type = "string", required = true)
+        ToolParameter(name = "input", type = "string", description = "Value to operate on", required = true)
     ],
     handler = function(params)
         try
@@ -1390,11 +1899,13 @@ config_tool = MCPTool(
         ToolParameter(
             name = "timeout",
             type = "number",
+            description = "Seconds before giving up",
             default = 30.0  # Applied when not provided
         ),
         ToolParameter(
             name = "retries",
             type = "integer",
+            description = "Number of retry attempts",
             default = 3
         )
     ],
@@ -1449,7 +1960,7 @@ file_resource = MCPResource(
 
 # Resource with annotations
 # Resource with annotations (using LittleDict for performance)
-using DataStructures: LittleDict
+using OrderedCollections: LittleDict
 annotated_resource = MCPResource(
     uri = "resource://data",
     name = "Annotated Data",
@@ -1505,12 +2016,18 @@ Edit Claude Desktop config:
 
 ### Protocol Version Support
 
-ModelContextProtocol.jl advertises **MCP protocol version 2025-11-25** and negotiates per client.
+ModelContextProtocol.jl is a dual-era server (details in
+[Protocol Version Negotiation](#protocol-version-negotiation)):
 
-- **Supported Versions**: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`
-- **Negotiation**: If the client requests a supported version, the server echoes it; otherwise it responds with the latest version (per spec)
-- **Automatic Handling**: Negotiation happens internally at `initialize`; handlers can gate features with `supports(ctx.state.protocol_version, :feature)`
-- **HTTP Header**: Streamable HTTP responses echo the negotiated version in `MCP-Protocol-Version`
+- **Modern era**: `2026-07-28`, selected per request via the `_meta` key
+  `io.modelcontextprotocol/protocolVersion`. Stateless — no `initialize`, no session.
+- **Legacy era**: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`, negotiated at
+  `initialize`. If the client requests a supported version the server echoes it;
+  otherwise it responds with `LATEST_PROTOCOL_VERSION` and the client decides (per spec).
+- **Feature gating**: handlers gate on the negotiated legacy version with
+  `supports(ctx.state.protocol_version, :feature)`
+- **HTTP Header**: Streamable HTTP responses echo the session's negotiated version in
+  `MCP-Protocol-Version`
 
 ### API Stability Guarantees
 
@@ -1522,8 +2039,11 @@ ModelContextProtocol.jl advertises **MCP protocol version 2025-11-25** and negot
 | Transport APIs | Stable | `StdioTransport`, `HttpTransport` |
 | Handler Signatures | Stable | `Dict{String,Any} -> Content` pattern; opt-in two-arg `(args, ctx)` form |
 | Auto-registration | Stable | Directory-based component loading |
-| Progress Monitoring | Experimental | Limited implementation |
-| Resource Subscriptions | Not Implemented | Placeholder only |
+| Progress Monitoring | Stable | Context-aware handlers + `send_progress` |
+| Resource Subscriptions | Implemented | `subscriptions/listen` + `notify_resource_updated` / `notify_list_changed` |
+| Authentication | Stable | OAuth Resource Server; no Authorization Server |
+| Tasks | Stable (modern) / Experimental (legacy) | SEP-2663 extension; SEP-1686 is experimental |
+| MRTR | Stable (modern era only) | `InputRequired` + `input_responses` / `input_state` |
 
 ### Semantic Versioning
 
@@ -1871,7 +2391,8 @@ Julia uses Just-In-Time compilation, which means:
    test_tool = MCPTool(
        name = "test",
        description = "Test tool",
-       parameters = [ToolParameter(name = "value", type = "string", required = true)],
+       parameters = [ToolParameter(name = "value", type = "string",
+                                   description = "Value to echo", required = true)],
        handler = (p) -> TextContent(text = "Result: $(p["value"])")
    )
    
@@ -1894,10 +2415,14 @@ Julia uses Just-In-Time compilation, which means:
 
 ## Threading and Concurrency
 
-### Current Limitations
-- **Single-threaded by default**: Server processes requests sequentially
-- **Blocking I/O**: Long-running handlers block other requests
-- **No built-in async**: Handlers must complete before returning
+### Execution model
+- **Serial loop for synchronous requests**: one server loop processes plain requests in
+  order, so a slow handler delays the next request
+- **Tasks move work off the loop**: `task_detach(ctx)` (modern era) or a task-augmented
+  `tools/call` (legacy era) returns immediately and runs the handler in a background
+  Julia task, leaving the loop free for polls, cancels, and other clients
+- **Notifications are out-of-band**: `send_progress` and subscription notifications
+  reach the client while a request is still in flight
 
 ### Thread Safety Considerations
 
@@ -1912,8 +2437,8 @@ thread_safe_tool = MCPTool(
     name = "safe_update",
     description = "Thread-safe state updates",
     parameters = [
-        ToolParameter(name = "key", type = "string", required = true),
-        ToolParameter(name = "value", type = "string", required = true)
+        ToolParameter(name = "key", type = "string", description = "State key to write", required = true),
+        ToolParameter(name = "value", type = "string", description = "Value to store", required = true)
     ],
     handler = function(params)
         lock(state_lock) do
@@ -1945,11 +2470,13 @@ counting_tool = MCPTool(
 4. **Use locks sparingly**: Minimize critical sections
 5. **Prefer immutable data**: Reduces synchronization needs
 
-### Future Considerations
-The protocol supports progress notifications, but current implementation has limitations:
-- No outbound notification mechanism from handlers
-- Progress tracking infrastructure exists but isn't fully connected
-- Consider polling-based progress checking as workaround
+### Long-running work
+- Report progress from a two-arg handler with `send_progress(ctx, i; total = n)` — see
+  [Progress Notifications](#progress-notifications)
+- Move the work off the serial loop entirely with Tasks: `task_detach(ctx)` in the
+  modern era, or a task-augmented `tools/call` in the legacy era. The handler runs in a
+  background Julia task while the loop stays free for polls and cancels; poll
+  `task_cancelled(ctx)` to stop early
 
 ## Important Implementation Notes
 
@@ -1994,7 +2521,7 @@ stateful_tool = MCPTool(
     name = "track_usage",
     description = "Tool that tracks its usage",
     parameters = [
-        ToolParameter(name = "action", type = "string", required = true)
+        ToolParameter(name = "action", type = "string", description = "Action being tracked", required = true)
     ],
     handler = function(params)
         # Access and modify shared state
@@ -2204,13 +2731,13 @@ curl -v -X POST http://127.0.0.1:3000/ \
 - Always use `julia --project` to ensure dependencies are loaded
 
 ### Type System Notes
-- Abstract types (`Content`, `Transport`, `Resource`) for extensibility
+- Exported abstract types (`Content`, `ResourceContents`, `Transport`) for extensibility
 - Concrete types use `@kwdef` for keyword constructors
-- Small dictionaries use `LittleDict` from OrderedCollections.jl (auto-imported)
+- Small dictionaries use `LittleDict` from OrderedCollections.jl
 - URI fields accept strings but store as `URI` objects internally
 
 ### Protocol Compliance
-- Advertises protocol version 2025-11-25, negotiating per client down to 2024-11-05
+- Dual-era: modern `2026-07-28` per request via `_meta`, legacy `2025-11-25` down to `2024-11-05` via `initialize`
 - JSON-RPC batching not supported (returns error)
 - Session management available for HTTP transport (opt-in via `session_required=true`)
 - ResourceLink is new in protocol version 2025-06-18

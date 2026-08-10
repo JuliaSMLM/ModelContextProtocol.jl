@@ -19,6 +19,18 @@ suite passes every substantive check (modern-dated 40/40, `server-stateless`
 scenarios) and now runs in CI on every PR. All changes are additive, and legacy
 sessions (`2024-11-05`…`2025-11-25`) remain fully compatible.
 
+### Documentation
+
+- Full consistency pass across README, `api_overview.md`, and every Documenter
+  page: the dual-era (2026-07-28 + legacy) surface is now stated everywhere,
+  stale "not implemented"/"not exported" claims removed (progress
+  notifications, subscriptions, mid-task input, transport types), non-running
+  examples fixed (`ToolParameter` without its required `description`,
+  `ResourceLink` field names, positional `start!`), the auto-registration
+  contract corrected to one-component-per-file, and `docs/src/api.md` now
+  curates every export (OAuth, versioning, transports included) without
+  duplicate `@autodocs` splicing.
+
 
 ### Added
 

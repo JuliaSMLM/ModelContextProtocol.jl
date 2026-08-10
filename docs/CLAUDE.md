@@ -15,8 +15,11 @@ docs/
 │   ├── resources.md         # User guide: resources
 │   ├── prompts.md           # User guide: prompts
 │   ├── transports.md        # User guide: transports
+│   ├── modern.md            # User guide: the 2026-07-28 modern era
 │   ├── auto-registration.md # User guide: auto-registration
 │   ├── claude.md            # Integration: Claude Desktop
+│   ├── oauth.md             # Security: authentication (OAuth RS)
+│   ├── deployment.md        # Security: deployment
 │   └── api.md               # API reference
 └── build/                   # Generated documentation (gitignored)
 ```
@@ -333,7 +336,8 @@ julia> length(server.tools)
    - Link to sections: `[User Guide](@ref)`
 
 3. **Protocol Details**:
-   - State the latest protocol version (`2025-11-25`) and that it is negotiated per client
+   - State the dual-era model: the modern era (`2026-07-28`, per-request `_meta`) plus
+     legacy sessions negotiated per client from `2025-11-25` down to `2024-11-05`
    - Show JSON examples for protocol messages
    - Include curl commands for testing
 
@@ -392,7 +396,8 @@ Documentation builds and deploys via GitHub Actions:
 ## Documentation Standards
 
 ### For MCP-Specific Docs
-- Specify the latest protocol version (`2025-11-25`) and the negotiation floor (`2024-11-05`)
+- Specify both eras: the modern era (`2026-07-28`, stateless per-request `_meta`) and the
+  legacy negotiation range (`2025-11-25` down to `2024-11-05`)
 - Include both stdio and HTTP examples
 - Show Inspector CLI and curl testing methods
 - Document session management for HTTP

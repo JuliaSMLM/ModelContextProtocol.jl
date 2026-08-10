@@ -12,6 +12,9 @@ Every tool in ModelContextProtocol.jl is represented by the `MCPTool` struct, wh
 - `input_schema`: Custom JSON Schema for complex parameter types (takes precedence over `parameters`)
 - `handler`: Function that executes when the tool is called
 - `return_type`: The expected return type of the handler (defaults to `Vector{Content}`)
+- `required_scopes`: OAuth scopes the caller must hold to invoke this tool, enforced at
+  `tools/call` when HTTP authentication is active (see [Authentication](oauth.md));
+  empty by default, meaning no per-tool requirement
 
 ## Creating Tools
 
@@ -46,6 +49,10 @@ Tool parameters are defined using the `ToolParameter` struct:
 - `type`: JSON schema type (e.g., "string", "number", "boolean")
 - `required`: Whether the parameter must be provided (default: false)
 - `default`: Default value for the parameter (default: nothing)
+- `header`: Optional header-mirroring suffix, emitted as `x-mcp-header` in the generated
+  schema (default: nothing). Modern HTTP clients mirror the argument as an
+  `Mcp-Param-<suffix>` request header, which the server validates against the body — see
+  [The Modern Era](modern.md)
 
 ## Complex Input Schemas
 
@@ -184,7 +191,9 @@ my_server/
     └── time_tool.jl
 ```
 
-Each file should export one or more `MCPTool` instances:
+Each file must define exactly one `MCPTool` as the file's final expression — the loader
+registers the value of the last expression and ignores everything else defined in the
+file:
 
 ```julia
 # calculator.jl
@@ -195,7 +204,12 @@ calculator_tool = MCPTool(
     name = "calculate",
     description = "Basic calculator",
     parameters = [
-        ToolParameter(name = "expression", type = "string", required = true)
+        ToolParameter(
+            name = "expression",
+            type = "string",
+            description = "Math expression to evaluate",
+            required = true
+        )
     ],
     handler = params -> TextContent(
         text = JSON3.write(Dict("result" => eval(Meta.parse(params["expression"]))))
@@ -354,11 +368,18 @@ or subscribe to the artifact instead of receiving inline base64.
 
 ## Long-Running Tools: Tasks (experimental)
 
-MCP Tasks (protocol 2025-11-25, SEP-1686) let clients run a tool call in the
-background instead of waiting on the response: the client augments `tools/call` with a
-`task` field, the server immediately answers with a task handle, executes the handler
-in a background Julia task, and the client polls `tasks/get` until the task completes,
-then fetches the real result via `tasks/result`.
+This section describes the **legacy-era** tasks model (SEP-1686), used by clients that
+negotiated protocol `2025-11-25` at `initialize`. It lets those clients run a tool call
+in the background instead of waiting on the response: the client augments `tools/call`
+with a `task` field, the server immediately answers with a task handle, executes the
+handler in a background Julia task, and the client polls `tasks/get` until the task
+completes, then fetches the real result via `tasks/result`.
+
+The modern era (2026-07-28) has a distinct tasks extension (SEP-2663) with different
+mechanics: creation is server-directed — the handler calls [`task_detach`](@ref) rather
+than the client augmenting the call — terminal results are inlined in `tasks/get`, and
+there is no `tasks/result`. See [The Modern Era](modern.md) for that surface. The
+per-tool `task_support` field below is shared by both models.
 
 Tools opt in per tool:
 
@@ -388,7 +409,10 @@ MCPTool(
 The setting is advertised per tool as `execution.taskSupport` in `tools/list`, and the
 server only offers the `tasks` capability to clients that negotiated protocol
 `2025-11-25`. Older clients fall back exactly as the spec mandates: their task
-metadata is ignored and the call runs synchronously.
+metadata is ignored and the call runs synchronously. Modern-era clients never see this
+capability: they obtain tasks by declaring the `io.modelcontextprotocol/tasks`
+extension per request, and their task records are kept in a store isolated from the
+legacy ones.
 
 What the server handles for you:
 
@@ -419,8 +443,10 @@ for the task's lifetime.
 
 !!! note "Experimental"
     Tasks are experimental in the MCP spec and may evolve in future protocol
-    versions. Client-initiated task flows (`input_required`, task-augmented
-    elicitation/sampling) are not applicable server-side and are not implemented.
+    versions. Server-initiated elicitation and sampling remain out of scope in the
+    legacy era; the modern era covers the equivalent flows through MRTR
+    (`InputRequired`) and mid-task input via [`task_await_input`](@ref) — see
+    [The Modern Era](modern.md).
 
 !!! tip "CPU-bound task handlers"
     Task handlers run via `Threads.@spawn`. In our measurements (Julia 1.10 and

@@ -10,6 +10,11 @@ Every prompt in ModelContextProtocol.jl is represented by the `MCPPrompt` struct
 - `description`: Human-readable explanation of the prompt's purpose
 - `arguments`: List of parameters the prompt accepts
 - `messages`: Template messages with placeholders for arguments
+- `title`: Optional human-friendly display name
+- `icons`: Optional icons for UI display
+- `_meta`: Optional metadata for protocol extensions, emitted verbatim in `prompts/list`
+- `completions`: Optional `completion/complete` suggestion sources per argument name
+  (see Argument Completion below)
 
 ## Creating Prompts
 
@@ -54,6 +59,7 @@ Prompt arguments are defined using the `PromptArgument` struct:
 - `name`: Parameter identifier
 - `description`: Explanation of the parameter
 - `required`: Whether the argument must be provided (default: false)
+- `title`: Optional human-friendly display name
 
 ## Template Syntax
 
@@ -61,6 +67,30 @@ Prompt templates support parameter substitution and conditional blocks:
 
 - Basic substitution: `{parameter_name}`
 - Conditional blocks: `{?parameter_name?content if parameter exists}`
+
+## Argument Completion
+
+A prompt's `completions` field supplies `completion/complete` suggestions for its
+arguments, so clients can offer values as the user fills the prompt in. It maps an
+argument name to either a `Vector{String}` (served filtered by prefix against the partial
+value) or a function — `value -> values`, or `(value, context_args) -> values` to also
+receive the arguments already resolved for the request:
+
+```julia
+report_prompt = MCPPrompt(
+    name = "city_report",
+    description = "Report on a city",
+    arguments = [PromptArgument(name = "city", description = "City name", required = true)],
+    messages = [PromptMessage(content = TextContent(text = "Report for {city}"))],
+    completions = Dict{String,Any}("city" => ["paris", "london", "tokyo"])
+)
+```
+
+The completion capability is advertised by default, and `completion/complete` is served
+in both protocol eras; suggestions are capped at 100 values with `total`/`hasMore`
+reported to the client. See the completion section of [The Modern Era](modern.md) for the
+wire format, and [Resources](resources.md) for the equivalent on resource-template
+variables.
 
 ## Registering Prompts
 
@@ -90,7 +120,9 @@ my_server/
     └── faq.jl
 ```
 
-Each file should export one or more `MCPPrompt` instances:
+Each file must define exactly one `MCPPrompt` as the file's final expression — the loader
+registers the value of the last expression and ignores everything else defined in the
+file:
 
 ```julia
 # greeting.jl

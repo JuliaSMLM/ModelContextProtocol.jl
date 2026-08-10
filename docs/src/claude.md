@@ -105,7 +105,20 @@ For HTTP-based MCP servers, you need to:
    }
    ```
 
-Note: The `--allow-http` flag is required since ModelContextProtocol.jl currently supports HTTP only, not HTTPS.
+Note: The `--allow-http` flag is required because the HTTP transport does not terminate
+TLS — it serves plain HTTP. To reach it over HTTPS, put it behind a TLS-terminating
+reverse proxy or tunnel; see [Deployment](@ref).
+
+## Remote and Authenticated Servers
+
+The configuration above runs the server as a local subprocess (or reaches a local HTTP
+port through `mcp-remote`), which is why `127.0.0.1` works. **Custom connectors are
+different**: Claude Desktop and claude.ai connect to them from Anthropic's cloud, not
+from your device, so `localhost`, LAN, and VPN-only addresses cannot work — the server
+needs a publicly reachable HTTPS URL.
+
+- [Deployment](@ref) — reaching a remote server: TLS front, reverse proxy, egress range.
+- [Authentication](@ref) — bearer-token validation once the server is exposed.
 
 ## Applying Changes
 

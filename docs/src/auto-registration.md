@@ -22,28 +22,38 @@ The auto-registration system expects a specific directory layout:
 
 ```
 components/
-├── tools/          # MCPTool definitions
-│   ├── data_tools.jl
-│   ├── file_tools.jl
-│   └── math_tools.jl
-├── prompts/        # MCPPrompt definitions  
+├── tools/          # MCPTool definitions, one per file
+│   ├── calculator.jl
+│   ├── file_reader.jl
+│   └── statistics.jl
+├── prompts/        # MCPPrompt definitions, one per file
 │   ├── analysis.jl
 │   └── code_review.jl
-└── resources/      # MCPResource definitions
+└── resources/      # MCPResource definitions, one per file
     ├── config.jl
     └── docs.jl
 ```
 
-Each subdirectory is scanned for `.jl` files containing component definitions.
+Exactly three subdirectory names are scanned — `tools/`, `resources/`, and `prompts/`.
+Any other directory in the component root is ignored, and the scan is **not recursive**:
+only `.jl` files sitting directly in one of those three directories are loaded, never
+files in nested subdirectories.
+
+`ResourceTemplate`s have no auto-registration directory. Pass them at server creation
+with `mcp_server(resource_templates = [...])` or add them later with
+`register!(server, template)`.
 
 ## Component File Format
 
 ### Tool Files (tools/)
 
-Each file should define one or more `MCPTool` instances:
+Each file must define **exactly one** `MCPTool`, and it must be the file's final
+expression. The loader evaluates the file in a fresh module and registers the value the
+file returns — anything defined earlier is available as a helper but is never registered,
+so a second tool in the same file is silently dropped. Give each tool its own file:
 
 ```julia
-# tools/math_tools.jl
+# tools/calculator.jl
 using ModelContextProtocol
 
 # Simple calculator tool
@@ -68,6 +78,11 @@ calculator_tool = MCPTool(
         end
     end
 )
+```
+
+```julia
+# tools/statistics.jl
+using ModelContextProtocol
 
 # Statistics tool
 stats_tool = MCPTool(
@@ -91,7 +106,7 @@ stats_tool = MCPTool(
 
 ### Prompt Files (prompts/)
 
-Define `MCPPrompt` instances for reusable prompt templates:
+Define one `MCPPrompt` per file, again as the file's final expression:
 
 ```julia
 # prompts/analysis.jl
@@ -132,7 +147,7 @@ Provide:
 
 ### Resource Files (resources/)
 
-Define `MCPResource` instances for data access:
+Define one `MCPResource` per file for data access, as the file's final expression:
 
 ```julia
 # resources/config.jl
@@ -223,9 +238,9 @@ server = mcp_server(
 Components loaded via auto-registration can share state through the global `Main.storage` dictionary:
 
 ```julia
-# In any tool file
+# tools/store_data.jl
 if !isdefined(Main, :storage)
-    Main.storage = Dict{String, Any}()
+    @eval Main storage = Dict{String, Any}()
 end
 
 # Tool that stores data
@@ -233,21 +248,31 @@ store_tool = MCPTool(
     name = "store_data",
     description = "Store data in shared storage",
     parameters = [
-        ToolParameter(name = "key", type = "string", required = true),
-        ToolParameter(name = "value", type = "string", required = true)
+        ToolParameter(name = "key", type = "string",
+                      description = "Key to store the value under", required = true),
+        ToolParameter(name = "value", type = "string",
+                      description = "Value to store", required = true)
     ],
     handler = function(params)
         Main.storage[params["key"]] = params["value"]
         return TextContent(text = "Data stored successfully")
     end
 )
+```
+
+```julia
+# tools/get_data.jl
+if !isdefined(Main, :storage)
+    @eval Main storage = Dict{String, Any}()
+end
 
 # Tool that retrieves data
 get_tool = MCPTool(
     name = "get_data", 
     description = "Get data from shared storage",
     parameters = [
-        ToolParameter(name = "key", type = "string", required = true)
+        ToolParameter(name = "key", type = "string",
+                      description = "Key to look up", required = true)
     ],
     handler = function(params)
         value = get(Main.storage, params["key"], "Not found")
@@ -269,16 +294,16 @@ get_tool = MCPTool(
    │   └── api_tools.jl
    ```
 
-2. **By Complexity**: Separate simple and complex tools
+2. **By Naming Prefix**: Convey grouping in the file name, since subdirectories under
+   `tools/`, `resources/`, and `prompts/` are never scanned — every component file must
+   sit directly in one of those three directories
    ```
    components/
    ├── tools/
-   │   ├── basic/
-   │   │   ├── math.jl
-   │   │   └── text.jl
-   │   └── advanced/
-   │       ├── ml_analysis.jl
-   │       └── data_processing.jl
+   │   ├── basic_math.jl
+   │   ├── basic_text.jl
+   │   ├── advanced_ml_analysis.jl
+   │   └── advanced_data_processing.jl
    ```
 
 3. **By Team**: Organize by development team
@@ -363,10 +388,19 @@ server = mcp_server(
 
 You'll see messages like:
 ```
-[ Info: Auto-registering components from /path/to/components
-[ Info: Registered MCPTool from /path/to/components/tools/math.jl: calculator_tool
-[ Info: Registered MCPPrompt from /path/to/components/prompts/analysis.jl: data_analysis_prompt
+[ Info: Registered MCPTool from /path/to/components/tools/calculator.jl
+[ Info: Registered MCPPrompt from /path/to/components/prompts/analysis.jl
 ```
+
+A file whose final expression is not the type expected for its directory is skipped with
+a warning — a stray trailing statement after the component is the usual cause:
+```
+┌ Warning: File /path/to/components/tools/helpers.jl did not return a MCPTool (got Nothing)
+```
+
+Note that a file defining two components produces no warning at all: the last one is
+registered and the earlier one is dropped silently, which is why one component per file
+matters.
 
 ## Complete Example
 

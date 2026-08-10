@@ -12,6 +12,9 @@ Every resource in ModelContextProtocol.jl is represented by the `MCPResource` st
 - `mime_type`: Content type (e.g., "application/json", "text/plain")
 - `data_provider`: Function that returns the resource's data
 - `annotations`: Optional metadata about the resource
+- `title`: Optional human-friendly display name
+- `icons`: Optional icons for UI display
+- `_meta`: Optional metadata for protocol extensions, emitted verbatim in `resources/list`
 
 ## Creating Resources
 
@@ -79,7 +82,9 @@ my_server/
     └── stock_data.jl
 ```
 
-Each file should export one or more `MCPResource` instances:
+Each file must define exactly one `MCPResource` as the file's final expression — the
+loader registers the value of the last expression and ignores everything else defined in
+the file:
 
 ```julia
 # weather.jl
@@ -189,3 +194,57 @@ requested URI — `provider(uri)` — or opts into `provider(uri, vars)` to also
 extracted placeholder values. Return values follow the same contract as resource
 providers (`ResourceContents`/vector, `String` verbatim, JSON fallback). Exact-URI
 resources always take precedence over templates.
+
+### Completing Template Variables
+
+A template's `completions` field supplies `completion/complete` suggestions for its
+placeholders, so clients can offer values as the user types a URI. It maps a variable
+name to either a `Vector{String}` (served filtered by prefix against the partial value)
+or a function — `value -> values`, or `(value, context_args) -> values` to also receive
+the arguments already resolved for the request:
+
+```julia
+artifact_template = ResourceTemplate(
+    name = "artifact",
+    uri_template = "app://artifact/{id}",
+    description = "Content-addressed result artifacts",
+    data_provider = (uri, vars) -> read_artifact(vars["id"]),
+    completions = Dict{String,Any}("id" => value -> recent_artifact_ids(value))
+)
+```
+
+Suggestions are capped at 100 values with `total`/`hasMore` reported to the client. The
+wire details are in [The Modern Era](modern.md); `completion/complete` is served in both
+eras and the completion capability is advertised by default.
+
+## Subscriptions and Change Notifications
+
+Clients can follow resource changes instead of re-reading, through a different mechanism
+in each era:
+
+- **Legacy era**: `resources/subscribe` / `resources/unsubscribe` record the client's
+  interest per URI on its session (the `subscribe` resource capability is advertised by
+  default). Both are idempotent and answer with an empty result.
+- **Modern era**: `subscriptions/listen` replaces both the legacy GET stream and
+  `resources/subscribe` — a single long-lived request whose response stream carries only
+  the notification types the client opted into. See [The Modern Era](modern.md).
+
+Announce changes from server code with two exported functions, which deliver to the open
+`subscriptions/listen` streams that opted into them:
+
+```julia
+# A resource's contents changed
+notify_resource_updated(server, "app://logs/recent")
+
+# A component list changed after registering or removing something at runtime
+notify_list_changed(server, :resources)   # or :tools, :prompts
+```
+
+Both return the number of streams notified. There is no backlog — only streams open at
+the time of the call are reached — and `notify_list_changed` delivers only when the
+corresponding `listChanged` capability is declared.
+
+Separately, `subscribe!(server, uri, callback)` and `unsubscribe!(server, uri, callback)`
+maintain an in-process registry of callbacks keyed by URI, for server-side code that
+wants to react to its own updates. They are local bookkeeping only and send nothing to
+clients on their own.

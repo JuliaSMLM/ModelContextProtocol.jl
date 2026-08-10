@@ -25,6 +25,7 @@ register!
 ```@docs
 MCPTool
 ToolParameter
+MCPIcon
 ```
 
 ### Resources
@@ -76,9 +77,12 @@ CallToolResult
 
 ## Transport Configuration
 
-!!! note "Transport Types"
-    Transport types (`StdioTransport`, `HttpTransport`) are internal implementation details
-    and are not exported. Use `mcp_server` with appropriate options to configure transport.
+```@docs
+Transport
+StdioTransport
+HttpTransport
+connect
+```
 
 ## Server Type
 
@@ -121,6 +125,62 @@ task_await_input
 TaskCancelledException
 ```
 
+## Protocol Version Negotiation
+
+```@docs
+LATEST_PROTOCOL_VERSION
+SUPPORTED_PROTOCOL_VERSIONS
+FEATURE_VERSIONS
+negotiate_version
+supports
+is_supported_version
+```
+
+## Authentication (OAuth Resource Server)
+
+### Configuration and Middleware
+
+```@docs
+OAuthConfig
+AuthMiddleware
+AuthResult
+AuthenticatedUser
+create_auth_middleware
+create_simple_auth
+disable_auth
+is_auth_enabled
+```
+
+### Token Validators
+
+```@docs
+AuthProvider
+TokenValidator
+SimpleTokenValidator
+JWTValidator
+JWKSValidator
+IntrospectionValidator
+GitHubOAuthValidator
+create_github_auth
+clear_cache!
+```
+
+### Protected Resource Metadata (RFC 9728)
+
+```@docs
+ProtectedResourceMetadata
+create_protected_resource_metadata
+create_github_resource_metadata
+```
+
+### Request Authentication
+
+```@docs
+authenticate_request
+validate_token
+extract_bearer_token
+```
+
 ## Utility Functions
 
 ```@docs
@@ -154,44 +214,6 @@ start!(server; transport = HttpTransport(;
 - Use `mcp-remote` with `--allow-http` flag for secure connections
 - Or deploy behind a reverse proxy (nginx, Apache) for TLS termination
 
-## All Exported Symbols
-
-### Types
-
-```@autodocs
-Modules = [ModelContextProtocol]
-Order = [:type]
-Public = true
-Private = false
-```
-
-### Functions
-
-```@autodocs
-Modules = [ModelContextProtocol]
-Order = [:function]
-Public = true
-Private = false
-```
-
-### Constants
-
-```@autodocs
-Modules = [ModelContextProtocol]
-Order = [:constant]
-Public = true
-Private = false
-```
-
-### Macros
-
-```@autodocs
-Modules = [ModelContextProtocol]
-Order = [:macro]
-Public = true
-Private = false
-```
-
 ## Internal API
 
 The following internal types and functions are documented for developers working on the package itself.
@@ -200,7 +222,9 @@ The following internal types and functions are documented for developers working
 
 ```@autodocs
 Modules = [ModelContextProtocol]
-Pages = ["protocol/messages.jl", "protocol/jsonrpc.jl"]
+Pages = ["protocol/messages.jl", "protocol/jsonrpc.jl", "protocol/handlers.jl",
+         "protocol/versioning.jl", "protocol/modern.jl", "protocol/mrtr.jl",
+         "protocol/tasks_ext.jl", "protocol/subscriptions.jl"]
 Public = false
 ```
 
@@ -208,7 +232,8 @@ Public = false
 
 ```@autodocs
 Modules = [ModelContextProtocol]
-Pages = ["core/server.jl", "core/capabilities.jl", "core/init.jl"]
+Pages = ["core/server.jl", "core/capabilities.jl", "core/init.jl",
+         "types.jl", "server_types.jl", "features/tasks.jl", "features/subscriptions.jl"]
 Public = false
 ```
 
@@ -217,6 +242,15 @@ Public = false
 ```@autodocs
 Modules = [ModelContextProtocol]
 Pages = ["transports/base.jl", "transports/stdio.jl", "transports/http.jl"]
+Public = false
+```
+
+### Authentication Implementation
+
+```@autodocs
+Modules = [ModelContextProtocol]
+Pages = ["auth/auth.jl", "auth/token.jl", "auth/middleware.jl", "auth/metadata.jl",
+         "auth/providers/github.jl"]
 Public = false
 ```
 
