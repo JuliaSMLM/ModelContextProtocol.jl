@@ -93,11 +93,12 @@ deploydocs(;
 Julia implementation of the Model Context Protocol (MCP) for seamless LLM-application integration.
 
 ## Features
-- MCP 2025-11-25 protocol support with per-client version negotiation
+- Full MCP 2026-07-28 (modern era) support plus legacy sessions negotiated per client
+  from 2025-11-25 down to 2024-11-05
 - stdio and Streamable HTTP (+SSE) transports
 - Tools, Resources, and Prompts
 - Multi-content returns
-- Session management
+- Session management (legacy) and stateless per-request handling (modern)
 
 ## Installation
 
@@ -181,8 +182,9 @@ curl -X POST http://127.0.0.1:3000/ ...
 # MCP Protocol Details
 
 ## Protocol Version
-ModelContextProtocol.jl targets MCP specification version `2025-11-25`, negotiating
-per client down through `2025-06-18` and `2025-03-26` to `2024-11-05`.
+ModelContextProtocol.jl serves the MCP `2026-07-28` modern era statelessly (selected
+per request via `_meta`) alongside legacy sessions negotiated per client from
+`2025-11-25` down through `2025-06-18` and `2025-03-26` to `2024-11-05`.
 
 ## JSON-RPC 2.0
 All communication uses JSON-RPC 2.0...

@@ -200,14 +200,18 @@ start!(server)  # Uses StdioTransport by default
 ### HTTP Transport
 ```julia
 server = mcp_server(name = "my-http-server")
-start!(server; transport = HttpTransport(; port = 3000))
+transport = HttpTransport(; port = 3000)
+connect(transport)   # binds the port and starts the listener
+start!(server; transport = transport)
 
 # With custom configuration
-start!(server; transport = HttpTransport(;
+transport = HttpTransport(;
     host = "127.0.0.1",  # Important for Windows
     port = 8080,         # Default port
     endpoint = "/"       # Default endpoint
-))
+)
+connect(transport)
+start!(server; transport = transport)
 ```
 
 **Note**: HTTP transport currently supports HTTP only, not HTTPS. For production use:

@@ -270,12 +270,16 @@ is_supported_version("2026-07-28")  # false — modern era, not an initialize ve
 
 ### `supports(version, feature) -> Bool`
 
-Gate optional behavior on the negotiated legacy version. Handlers reach the
-negotiated version through the per-request context as `ctx.state.protocol_version`.
+Gate optional behavior on the client's protocol version. Legacy sessions carry the
+negotiated version in `ctx.state.protocol_version`; modern requests carry theirs in
+`ctx.protocol_version` (their `ctx.state` is a fresh, unnegotiated state whose
+version is `nothing`) — so merge the two before gating:
 
 ```julia
 handler = (args, ctx) -> begin
-    if supports(ctx.state.protocol_version, :resource_links)
+    version = ctx.protocol_version === nothing ?
+        ctx.state.protocol_version : ctx.protocol_version
+    if version !== nothing && supports(version, :resource_links)
         return ResourceLink(uri = "app://report/42", name = "Report 42")
     end
     TextContent(text = "app://report/42")
@@ -1039,7 +1043,8 @@ CallToolResult(;
 )
 ```
 
-**Important:** Content must be pre-serialized dictionaries, not Content objects.
+**Note:** `content` accepts pre-serialized dictionaries or `Content` objects —
+the latter are converted automatically (`Base.convert(Dict{String,Any}, ::Content)`).
 
 **Example:**
 
@@ -1197,8 +1202,9 @@ confirming_tool = MCPTool(
   every transition of the subscribed ids; the ack echoes only ids the requestor
   could `tasks/get`, and requesting `taskIds` without the declared extension is
   `-32021`
-- Extension tasks and legacy (SEP-1686) tasks live in era-isolated stores; on HTTP,
-  `Mcp-Name` must mirror `params.taskId` for `tasks/*` requests
+- Extension tasks and legacy (SEP-1686) tasks share one era-tagged store — neither
+  era can see the other's records; on HTTP, `Mcp-Name` must mirror `params.taskId`
+  for `tasks/*` requests
 
 **Handler-side API:**
 
@@ -1208,8 +1214,10 @@ task_detach(ctx; ttl_ms = nothing, status_message = nothing) -> Bool
 # request, a client that did not declare the extension, or a tool that is not
 # task-capable. Idempotent — a second call returns true without creating a task.
 
-task_await_input(ctx, request::InputRequest) -> Any
-task_await_input(ctx, requests::Vector{InputRequest}) -> Vector{Any}
+task_await_input(ctx, request) -> Any
+task_await_input(ctx, requests::AbstractVector) -> Vector{Any}
+# Requests are built with elicit_request / sampling_request / roots_request (their
+# common type, ModelContextProtocol.InputRequest, is internal and not exported)
 # Park a detached task on client input; returns the client's response value(s), in
 # request order for the vector form. Throws TaskCancelledException if the task
 # reaches a terminal state while waiting (client `tasks/cancel`, or ttl expiry —
@@ -1598,14 +1606,16 @@ components/
 
 **Component File Requirements:**
 - Each `.jl` file is loaded in an isolated module
-- Define component variables (no exports needed)
-- Components are auto-discovered by type
+- Exactly one component per file, as the file's **final expression** — the loader
+  registers only the value the file evaluates to; anything defined earlier is a
+  helper and is silently dropped
+- The final expression's type must match the directory (`MCPTool` under `tools/`, etc.)
 
-**Example component file:**
+**Example component files** (one tool each):
 
 ```julia
-# tools/math.jl
-add = MCPTool(
+# tools/add.jl
+MCPTool(
     name = "add",
     description = "Add two numbers",
     parameters = [
@@ -1614,8 +1624,11 @@ add = MCPTool(
     ],
     handler = (p) -> TextContent(text = string(p["a"] + p["b"]))
 )
+```
 
-multiply = MCPTool(
+```julia
+# tools/multiply.jl
+MCPTool(
     name = "multiply",
     description = "Multiply two numbers",
     parameters = [
@@ -1709,8 +1722,10 @@ dict = content2dict(embedded)
 ### Progress Notifications
 
 A context-aware handler reports progress on a long operation with `send_progress`,
-which emits `notifications/progress` on the correct channel for the transport (stdout
-for stdio, the request's SSE stream for HTTP).
+which emits `notifications/progress` on the transport-appropriate channel: stdout
+for stdio; on HTTP, a synchronous handler's notifications ride the calling
+request's own POST SSE stream, while a legacy background-task execution (which has
+no request route) falls back to the standalone GET SSE notification stream.
 
 ```julia
 send_progress(ctx, progress::Real; total = nothing, message = nothing) -> Bool
@@ -1719,9 +1734,11 @@ send_progress(ctx, progress::Real; total = nothing, message = nothing) -> Bool
 - `ctx` is the second argument of a two-arg tool handler, `(args, ctx) -> ...`
 - Send an increasing `progress`; add `total` for a determinate bar and `message` for a
   status line
-- Returns `false` and does nothing when the client sent no `progressToken`, when no
-  transport is connected, or on a detachable modern-era task call (tasks do not carry
-  progress notifications) — so it is always safe to call unconditionally
+- Returns `false` and does nothing when the client sent no `progressToken`, when the
+  server has no transport, or on a detachable modern-era task call (tasks do not carry
+  progress notifications) — so it is always safe to call unconditionally. A `true`
+  return means the notification was handed to the transport, not that the client
+  received it (a disconnected HTTP peer drops it silently).
 
 ```julia
 indexing_tool = MCPTool(
@@ -2024,8 +2041,9 @@ ModelContextProtocol.jl is a dual-era server (details in
 - **Legacy era**: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`, negotiated at
   `initialize`. If the client requests a supported version the server echoes it;
   otherwise it responds with `LATEST_PROTOCOL_VERSION` and the client decides (per spec).
-- **Feature gating**: handlers gate on the negotiated legacy version with
-  `supports(ctx.state.protocol_version, :feature)`
+- **Feature gating**: handlers gate with `supports(version, :feature)`, where
+  `version` merges `ctx.protocol_version` (modern, per-request) with
+  `ctx.state.protocol_version` (legacy, negotiated) — see the `supports` section
 - **HTTP Header**: Streamable HTTP responses echo the session's negotiated version in
   `MCP-Protocol-Version`
 
@@ -2421,8 +2439,10 @@ Julia uses Just-In-Time compilation, which means:
 - **Tasks move work off the loop**: `task_detach(ctx)` (modern era) or a task-augmented
   `tools/call` (legacy era) returns immediately and runs the handler in a background
   Julia task, leaving the loop free for polls, cancels, and other clients
-- **Notifications are out-of-band**: `send_progress` and subscription notifications
-  reach the client while a request is still in flight
+- **Notifications flow while requests are in flight**: `send_progress` and
+  subscription notifications reach the client without waiting for the response —
+  on HTTP, either on the calling request's own POST SSE stream (synchronous
+  handlers) or on the standalone GET stream (background executions)
 
 ### Thread Safety Considerations
 
@@ -2500,7 +2520,9 @@ handler = function(params, ctx)
 end
 ```
 `ctx` carries `request_id`, `progress_token`, `authenticated_user` (when HTTP auth is
-enabled), and `state` (for `supports(ctx.state.protocol_version, :feature)` gating).
+enabled), `state` (whose `protocol_version` is the negotiated legacy version), and
+`protocol_version` (the modern-era per-request version, `nothing` on legacy requests) —
+merge the two for `supports(version, :feature)` gating.
 `send_progress` is a safe no-op when the client sent no `progressToken`. Note: do NOT
 annotate the second argument with `::RequestContext` — the type is intentionally not
 exported; just take `ctx` untyped.

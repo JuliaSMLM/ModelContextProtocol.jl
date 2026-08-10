@@ -375,7 +375,8 @@ end
 - Plain `handler(args)` keeps working; dispatch is by `applicable`.
 - `ctx` carries `request_id`, `progress_token` (parsed from `params._meta.progressToken`),
   `authenticated_user` (when HTTP auth is enabled), and `state` (negotiated protocol
-  version for `supports(ctx.state.protocol_version, :feature)` gating).
+  version for `supports(version, :feature)` gating — merge `ctx.protocol_version`,
+  set on modern requests, with `ctx.state.protocol_version`, set on legacy sessions).
 - `send_progress(ctx, progress; total, message)` is a safe no-op (returns `false`) when the
   client sent no `progressToken` or no transport is connected.
 - Delivery is transport-polymorphic via `send_notification`: stdio writes to stdout
@@ -502,7 +503,8 @@ complete: nothing on the 2026-07-28 spec's server side remains unimplemented.**
 - **Transports**: stdio; Streamable HTTP + SSE; session management (`Mcp-Session-Id`);
   Origin validation, localhost-by-default, secure session IDs; JSON-RPC 2.0 with batch
   rejection per spec
-- **Version negotiation + feature gating**: `supports(ctx.state.protocol_version, :feature)`
+- **Version negotiation + feature gating**: `supports(version, :feature)` (merge
+  `ctx.protocol_version` with `ctx.state.protocol_version`)
 - **Content types**: `TextContent`, `ImageContent`, `AudioContent`, `EmbeddedResource`,
   `ResourceLink` (spec wire shape `{"type":"resource_link","uri",...,"name",...}`);
   full ContentBlock union valid in prompt messages; multi-content tool returns

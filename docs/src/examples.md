@@ -326,8 +326,11 @@ running:
 connect(server.transport)
 start!(server)
 
-# Equivalent, without assigning the transport first:
-start!(server; transport = HttpTransport(host = "127.0.0.1", port = 8765))
+# Equivalent, without assigning the transport first — connect is still required
+# (start! only assigns the transport; a disconnected one ends the loop at once):
+transport = HttpTransport(host = "127.0.0.1", port = 8765)
+connect(transport)
+start!(server; transport = transport)
 ```
 
 See [Transports](transports.md) for session management, SSE, and the security options.

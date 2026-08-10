@@ -256,9 +256,11 @@ The HTTP transport returns appropriate HTTP status codes:
 
 - `200 OK` - Successful requests with JSON response
 - `202 Accepted` - Notification requests (no response body)
-- `400 Bad Request` - Invalid session, malformed requests, and modern-era protocol
-  violations (SEP-2243 header mismatch `-32020`, unsupported version `-32022`)
-- `401 Unauthorized` - Missing, malformed, or invalid bearer token (auth enabled)
+- `400 Bad Request` - Missing required session ID, malformed requests, and modern-era
+  protocol violations (SEP-2243 header mismatch `-32020`, missing client capability
+  `-32021`, unsupported version `-32022`)
+- `401 Unauthorized` - Missing, malformed, or invalid bearer token (auth enabled), or
+  a supplied session ID that does not match the session
 - `403 Forbidden` - Authenticated but not permitted (missing scope or allowlist), or a
   request rejected by the DNS-rebinding Host/Origin guard
 - `404 Not Found` - Unknown endpoints, and unknown methods on modern-era requests
