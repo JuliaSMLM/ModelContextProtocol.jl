@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-09
+
+**Full server-side support for the MCP 2026-07-28 specification.** This
+release completes the modern stateless era begun in 0.6.x: the tasks
+extension (server-directed handoff, mid-task input, status notifications),
+argument completion, and `x-mcp-header` parameter mirroring — nothing on the
+2026-07-28 spec's server side remains unimplemented. The official conformance
+suite passes every substantive check (modern-dated 40/40, `server-stateless`
+30/30, header validation 14/14 + custom headers 10/10, all `tasks-*`
+scenarios) and now runs in CI on every PR. All changes are additive, and legacy
+sessions (`2024-11-05`…`2025-11-25`) remain fully compatible.
+
+
 ### Added
 
 - **Tasks extension core (SEP-2663, `io.modelcontextprotocol/tasks`).** The modern
@@ -358,6 +371,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queue. Transport shutdown now closes the notification queue and atomically fences
   new response-channel registration (late connections get `503`), eliminating a
   shutdown race that could strand a connection handler.
+
+## [0.6.1] - 2026-07-30
 
 ### Changed
 
@@ -881,7 +896,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - stdio transport
 - Basic protocol compliance
 
-[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.6.0...v0.6.1
 [0.5.4]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/JuliaSMLM/ModelContextProtocol.jl/compare/v0.5.1...v0.5.2

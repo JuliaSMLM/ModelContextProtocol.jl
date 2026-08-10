@@ -1,0 +1,113 @@
+# Official MCP conformance suite against the fixture server — the client-side
+# gate for the 2026-07-28 modern era (the Inspector workflow covers the legacy
+# era; no production client speaks the modern era yet, so this suite is the
+# reference client for it).
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The suite evolves with the spec; pin to the commit the assertions below were
+# calibrated against and bump deliberately (scores are ratios — new scenarios
+# move the denominator).
+env:
+  CONFORMANCE_REF: 81eb1c3edaed87d7fd585d7b80186da7a2960660
+
+jobs:
+  conformance:
+    name: MCP conformance (modern era)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Build the conformance suite
+        run: |
+          git clone https://github.com/modelcontextprotocol/conformance.git /tmp/conformance
+          cd /tmp/conformance
+          git checkout "$CONFORMANCE_REF"
+          npm ci
+          npm run build
+
+      - name: Instantiate the package
+        run: julia --project -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Start the fixture server
+        run: |
+          julia --project dev/conformance/fixture_server.jl 8791 > fixture.log 2>&1 &
+          echo $! > fixture.pid
+          # Case-insensitive: the reliably-flushed readiness line is HTTP.jl's
+          # stderr "Listening on:" (the script's stdout println can lag behind
+          # buffering). Cold-cache CI spends ~2min in JIT before binding, so
+          # the window is generous.
+          for i in $(seq 1 300); do
+            grep -qi "listening" fixture.log && break
+            sleep 1
+          done
+          grep -qi "listening" fixture.log || { cat fixture.log; exit 1; }
+
+      - name: Run the conformance suites
+        run: |
+          set -eo pipefail
+          # The runner exits nonzero when scenarios fail (expected for the
+          # tolerated harness gap), so captures neutralize the exit status and
+          # every classification below REQUIRES the runner's final summary
+          # line — a crashed run that printed no summary can never go green.
+          run() { node /tmp/conformance/dist/index.js server "$@" --url http://127.0.0.1:8791/ 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true; }
+          fail=0
+
+          echo "::group::modern-dated (2026-07-28)"
+          out=$(run --spec-version 2026-07-28); echo "$out"
+          echo "$out" | grep -q "Total: 40 passed, 0 failed" || { echo "::error::modern-dated regressed (want 40/40)"; fail=1; }
+          echo "::endgroup::"
+
+          echo "::group::server-stateless"
+          out=$(run --suite draft --scenario server-stateless); echo "$out"
+          echo "$out" | grep -q "Passed: 30/30" || { echo "::error::server-stateless regressed (want 30/30)"; fail=1; }
+          echo "::endgroup::"
+
+          echo "::group::http-header-validation"
+          out=$(run --suite draft --scenario http-header-validation); echo "$out"
+          echo "$out" | grep -q "Passed: 14/14" || { echo "::error::header-validation regressed (want 14/14)"; fail=1; }
+          echo "::endgroup::"
+
+          echo "::group::http-custom-header-server-validation"
+          out=$(run --suite draft --scenario http-custom-header-server-validation); echo "$out"
+          echo "$out" | grep -q "Passed: 10/10" || { echo "::error::custom-header validation regressed (want 10/10)"; fail=1; }
+          echo "::endgroup::"
+
+          # Tasks-extension scenarios: every substantive check passes; the only
+          # tolerated failure per scenario is the suite's wire-schema-valid
+          # check, whose vendored core schema lacks the extension's
+          # CreateTaskResult shape (upstream harness gap).
+          for s in tasks-lifecycle tasks-capability-negotiation tasks-wire-fields \
+                   tasks-request-state-removal tasks-mrtr-input tasks-request-headers \
+                   tasks-dispatch-and-envelope tasks-required-task-error tasks-mrtr-composition; do
+            echo "::group::$s"
+            out=$(run --scenario "$s"); echo "$out"
+            if echo "$out" | grep -qE "Passed: [0-9]+/[0-9]+, 0 failed"; then
+              :
+            elif echo "$out" | grep -qE "Passed: [0-9]+/[0-9]+, 1 failed" \
+                 && [ "$(echo "$out" | grep -c FAILURE)" = "1" ] \
+                 && echo "$out" | grep -q "wire-schema-valid.*FAILURE"; then
+              :  # the known harness gap, alone, in a COMPLETED run
+            else
+              echo "::error::$s has substantive failures (or the run did not complete)"; fail=1
+            fi
+            echo "::endgroup::"
+          done
+
+          exit $fail
+
+      - name: Stop the fixture server
+        if: always()
+        run: kill "$(cat fixture.pid)" 2>/dev/null || true

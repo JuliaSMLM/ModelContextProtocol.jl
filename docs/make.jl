@@ -26,6 +26,7 @@ makedocs(;
             "Resources" => "resources.md",
             "Prompts" => "prompts.md",
             "Transports" => "transports.md",
+            "The Modern Era (2026-07-28)" => "modern.md",
             "Auto-Registration" => "auto-registration.md",
         ],
         "Integration" => [

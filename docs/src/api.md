@@ -91,6 +91,34 @@ Server
 ```@docs
 subscribe!
 unsubscribe!
+notify_list_changed
+notify_resource_updated
+```
+
+## Handler Context Helpers
+
+```@docs
+send_progress
+task_cancelled
+```
+
+## Multi Round-Trip Requests (MRTR)
+
+```@docs
+InputRequired
+elicit_request
+sampling_request
+roots_request
+input_responses
+input_state
+```
+
+## Tasks Extension
+
+```@docs
+task_detach
+task_await_input
+TaskCancelledException
 ```
 
 ## Utility Functions
