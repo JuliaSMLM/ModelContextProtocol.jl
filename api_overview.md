@@ -1238,20 +1238,21 @@ the legacy server-initiated surface.
 
 ```julia
 InputRequired(requests::AbstractDict; state = nothing)
-# requests: your keys (strings) => InputRequest values; the client answers under the
-#           same keys. At least one request, or a state, is required.
+# requests: your keys (strings) => input-request values built with the helpers
+#           below; the client answers under the same keys. At least one request,
+#           or a state, is required.
 # state:    JSON-serializable handler state carried to the retry inside the
 #           integrity-protected `requestState`. Signed, NOT encrypted — no secrets.
 
-elicit_request(message::String; requested_schema = nothing) -> InputRequest
+elicit_request(message::String; requested_schema = nothing) -> ModelContextProtocol.InputRequest
 # `elicitation/create`. requested_schema must be an object schema; when omitted a
 # minimal {"type":"object","properties":{}} is synthesized (the wire field is required).
 
-sampling_request(params::AbstractDict) -> InputRequest
+sampling_request(params::AbstractDict) -> ModelContextProtocol.InputRequest
 # `sampling/createMessage`; params is the CreateMessageRequest params (messages, maxTokens, ...)
 
-roots_request() -> InputRequest
-# `roots/list`
+roots_request() -> ModelContextProtocol.InputRequest
+# `roots/list` (the return type is internal — construct requests only via these helpers)
 
 input_responses(ctx) -> Dict{String,Any}  # the retry's responses, keyed as you asked; empty on a first call
 input_state(ctx) -> Any                   # whatever you passed as `state`; nothing on a first call
@@ -2254,12 +2255,13 @@ start!(server)
    Dispatch is by `applicable` — define whichever form you need; the two-arg form
    wins when both would apply.
 
-10. **Returning wrong Content format in CallToolResult**
+10. **Content format in CallToolResult** — both forms are accepted; `Content`
+    objects convert automatically:
     ```julia
-    # ❌ Wrong - passing Content objects
+    # Content objects (converted via Base.convert(Dict{String,Any}, ::Content))
     CallToolResult(content = [TextContent(text = "Error")], is_error = true)
-    
-    # ✅ Correct - must be dictionaries
+
+    # Equivalent, pre-serialized
     CallToolResult(content = [Dict("type" => "text", "text" => "Error")], is_error = true)
     ```
 
@@ -2440,9 +2442,12 @@ Julia uses Just-In-Time compilation, which means:
   `tools/call` (legacy era) returns immediately and runs the handler in a background
   Julia task, leaving the loop free for polls, cancels, and other clients
 - **Notifications flow while requests are in flight**: `send_progress` and
-  subscription notifications reach the client without waiting for the response —
-  on HTTP, either on the calling request's own POST SSE stream (synchronous
-  handlers) or on the standalone GET stream (background executions)
+  subscription notifications reach the client without waiting for the response.
+  On HTTP, progress rides the calling request's own POST SSE stream when the
+  sender has one (synchronous handlers) and falls back to the standalone GET
+  stream (legacy background-task executions); `subscriptions/listen`
+  notifications always travel on the listen stream's own captured POST route,
+  wherever they originate
 
 ### Thread Safety Considerations
 
@@ -2748,7 +2753,7 @@ curl -v -X POST http://127.0.0.1:3000/ \
 - HTTP transport requires `connect()` before `start!()`
 - Use `127.0.0.1` instead of `localhost` on Windows
 - Auto-registration loads each file in isolated module
-- CallToolResult requires pre-serialized content dictionaries
+- CallToolResult.content accepts Content objects or pre-serialized dictionaries
 - First execution will be slow due to JIT compilation (5-10 seconds typical)
 - Always use `julia --project` to ensure dependencies are loaded
 
