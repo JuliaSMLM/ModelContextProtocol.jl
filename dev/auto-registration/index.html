@@ -4,16 +4,16 @@
     version = &quot;1.0.0&quot;,
     auto_register_dir = &quot;path/to/components&quot;
 )</code></pre><p>The system will automatically scan for and register all components found in the directory structure.</p><h2 id="Directory-Structure"><a class="docs-heading-anchor" href="#Directory-Structure">Directory Structure</a><a id="Directory-Structure-1"></a><a class="docs-heading-anchor-permalink" href="#Directory-Structure" title="Permalink"></a></h2><p>The auto-registration system expects a specific directory layout:</p><pre><code class="nohighlight hljs">components/
-├── tools/          # MCPTool definitions
-│   ├── data_tools.jl
-│   ├── file_tools.jl
-│   └── math_tools.jl
-├── prompts/        # MCPPrompt definitions  
+├── tools/          # MCPTool definitions, one per file
+│   ├── calculator.jl
+│   ├── file_reader.jl
+│   └── statistics.jl
+├── prompts/        # MCPPrompt definitions, one per file
 │   ├── analysis.jl
 │   └── code_review.jl
-└── resources/      # MCPResource definitions
+└── resources/      # MCPResource definitions, one per file
     ├── config.jl
-    └── docs.jl</code></pre><p>Each subdirectory is scanned for <code>.jl</code> files containing component definitions.</p><h2 id="Component-File-Format"><a class="docs-heading-anchor" href="#Component-File-Format">Component File Format</a><a id="Component-File-Format-1"></a><a class="docs-heading-anchor-permalink" href="#Component-File-Format" title="Permalink"></a></h2><h3 id="Tool-Files-(tools/)"><a class="docs-heading-anchor" href="#Tool-Files-(tools/)">Tool Files (tools/)</a><a id="Tool-Files-(tools/)-1"></a><a class="docs-heading-anchor-permalink" href="#Tool-Files-(tools/)" title="Permalink"></a></h3><p>Each file should define one or more <code>MCPTool</code> instances:</p><pre><code class="language-julia hljs"># tools/math_tools.jl
+    └── docs.jl</code></pre><p>Exactly three subdirectory names are scanned — <code>tools/</code>, <code>resources/</code>, and <code>prompts/</code>. Any other directory in the component root is ignored, and the scan is <strong>not recursive</strong>: only <code>.jl</code> files sitting directly in one of those three directories are loaded, never files in nested subdirectories.</p><p><code>ResourceTemplate</code>s have no auto-registration directory. Pass them at server creation with <code>mcp_server(resource_templates = [...])</code> or add them later with <code>register!(server, template)</code>.</p><h2 id="Component-File-Format"><a class="docs-heading-anchor" href="#Component-File-Format">Component File Format</a><a id="Component-File-Format-1"></a><a class="docs-heading-anchor-permalink" href="#Component-File-Format" title="Permalink"></a></h2><h3 id="Tool-Files-(tools/)"><a class="docs-heading-anchor" href="#Tool-Files-(tools/)">Tool Files (tools/)</a><a id="Tool-Files-(tools/)-1"></a><a class="docs-heading-anchor-permalink" href="#Tool-Files-(tools/)" title="Permalink"></a></h3><p>Each file must define <strong>exactly one</strong> <code>MCPTool</code>, and it must be the file&#39;s final expression. The loader evaluates the file in a fresh module and registers the value the file returns — anything defined earlier is available as a helper but is never registered, so a second tool in the same file is silently dropped. Give each tool its own file:</p><pre><code class="language-julia hljs"># tools/calculator.jl
 using ModelContextProtocol
 
 # Simple calculator tool
@@ -37,7 +37,8 @@ calculator_tool = MCPTool(
             return TextContent(text = &quot;Error: $e&quot;)
         end
     end
-)
+)</code></pre><pre><code class="language-julia hljs"># tools/statistics.jl
+using ModelContextProtocol
 
 # Statistics tool
 stats_tool = MCPTool(
@@ -56,7 +57,7 @@ stats_tool = MCPTool(
         mean_val = sum(data) / length(data)
         return TextContent(text = &quot;Mean: $mean_val&quot;)
     end
-)</code></pre><h3 id="Prompt-Files-(prompts/)"><a class="docs-heading-anchor" href="#Prompt-Files-(prompts/)">Prompt Files (prompts/)</a><a id="Prompt-Files-(prompts/)-1"></a><a class="docs-heading-anchor-permalink" href="#Prompt-Files-(prompts/)" title="Permalink"></a></h3><p>Define <code>MCPPrompt</code> instances for reusable prompt templates:</p><pre><code class="language-julia hljs"># prompts/analysis.jl
+)</code></pre><h3 id="Prompt-Files-(prompts/)"><a class="docs-heading-anchor" href="#Prompt-Files-(prompts/)">Prompt Files (prompts/)</a><a id="Prompt-Files-(prompts/)-1"></a><a class="docs-heading-anchor-permalink" href="#Prompt-Files-(prompts/)" title="Permalink"></a></h3><p>Define one <code>MCPPrompt</code> per file, again as the file&#39;s final expression:</p><pre><code class="language-julia hljs"># prompts/analysis.jl
 using ModelContextProtocol
 
 data_analysis_prompt = MCPPrompt(
@@ -89,7 +90,7 @@ Provide:
             )
         )
     ]
-)</code></pre><h3 id="Resource-Files-(resources/)"><a class="docs-heading-anchor" href="#Resource-Files-(resources/)">Resource Files (resources/)</a><a id="Resource-Files-(resources/)-1"></a><a class="docs-heading-anchor-permalink" href="#Resource-Files-(resources/)" title="Permalink"></a></h3><p>Define <code>MCPResource</code> instances for data access:</p><pre><code class="language-julia hljs"># resources/config.jl
+)</code></pre><h3 id="Resource-Files-(resources/)"><a class="docs-heading-anchor" href="#Resource-Files-(resources/)">Resource Files (resources/)</a><a id="Resource-Files-(resources/)-1"></a><a class="docs-heading-anchor-permalink" href="#Resource-Files-(resources/)" title="Permalink"></a></h3><p>Define one <code>MCPResource</code> per file for data access, as the file&#39;s final expression:</p><pre><code class="language-julia hljs"># resources/config.jl
 using ModelContextProtocol
 using URIs
 
@@ -147,9 +148,9 @@ server = mcp_server(
     name = &quot;mixed-server&quot;,
     tools = [manual_tool],  # Manual registration
     auto_register_dir = &quot;components&quot;  # Auto registration
-)</code></pre><h2 id="Shared-State"><a class="docs-heading-anchor" href="#Shared-State">Shared State</a><a id="Shared-State-1"></a><a class="docs-heading-anchor-permalink" href="#Shared-State" title="Permalink"></a></h2><p>Components loaded via auto-registration can share state through the global <code>Main.storage</code> dictionary:</p><pre><code class="language-julia hljs"># In any tool file
+)</code></pre><h2 id="Shared-State"><a class="docs-heading-anchor" href="#Shared-State">Shared State</a><a id="Shared-State-1"></a><a class="docs-heading-anchor-permalink" href="#Shared-State" title="Permalink"></a></h2><p>Components loaded via auto-registration can share state through the global <code>Main.storage</code> dictionary:</p><pre><code class="language-julia hljs"># tools/store_data.jl
 if !isdefined(Main, :storage)
-    Main.storage = Dict{String, Any}()
+    @eval Main storage = Dict{String, Any}()
 end
 
 # Tool that stores data
@@ -157,21 +158,27 @@ store_tool = MCPTool(
     name = &quot;store_data&quot;,
     description = &quot;Store data in shared storage&quot;,
     parameters = [
-        ToolParameter(name = &quot;key&quot;, type = &quot;string&quot;, required = true),
-        ToolParameter(name = &quot;value&quot;, type = &quot;string&quot;, required = true)
+        ToolParameter(name = &quot;key&quot;, type = &quot;string&quot;,
+                      description = &quot;Key to store the value under&quot;, required = true),
+        ToolParameter(name = &quot;value&quot;, type = &quot;string&quot;,
+                      description = &quot;Value to store&quot;, required = true)
     ],
     handler = function(params)
         Main.storage[params[&quot;key&quot;]] = params[&quot;value&quot;]
         return TextContent(text = &quot;Data stored successfully&quot;)
     end
-)
+)</code></pre><pre><code class="language-julia hljs"># tools/get_data.jl
+if !isdefined(Main, :storage)
+    @eval Main storage = Dict{String, Any}()
+end
 
 # Tool that retrieves data
 get_tool = MCPTool(
     name = &quot;get_data&quot;, 
     description = &quot;Get data from shared storage&quot;,
     parameters = [
-        ToolParameter(name = &quot;key&quot;, type = &quot;string&quot;, required = true)
+        ToolParameter(name = &quot;key&quot;, type = &quot;string&quot;,
+                      description = &quot;Key to look up&quot;, required = true)
     ],
     handler = function(params)
         value = get(Main.storage, params[&quot;key&quot;], &quot;Not found&quot;)
@@ -181,14 +188,12 @@ get_tool = MCPTool(
 ├── tools/
 │   ├── database_tools.jl
 │   ├── file_tools.jl
-│   └── api_tools.jl</code></pre></li><li><p><strong>By Complexity</strong>: Separate simple and complex tools</p><pre><code class="nohighlight hljs">components/
+│   └── api_tools.jl</code></pre></li><li><p><strong>By Naming Prefix</strong>: Convey grouping in the file name, since subdirectories under <code>tools/</code>, <code>resources/</code>, and <code>prompts/</code> are never scanned — every component file must sit directly in one of those three directories</p><pre><code class="nohighlight hljs">components/
 ├── tools/
-│   ├── basic/
-│   │   ├── math.jl
-│   │   └── text.jl
-│   └── advanced/
-│       ├── ml_analysis.jl
-│       └── data_processing.jl</code></pre></li><li><p><strong>By Team</strong>: Organize by development team</p><pre><code class="nohighlight hljs">components/
+│   ├── basic_math.jl
+│   ├── basic_text.jl
+│   ├── advanced_ml_analysis.jl
+│   └── advanced_data_processing.jl</code></pre></li><li><p><strong>By Team</strong>: Organize by development team</p><pre><code class="nohighlight hljs">components/
 ├── tools/
 │   ├── backend_team.jl
 │   ├── frontend_team.jl
@@ -219,6 +224,5 @@ global_logger(ConsoleLogger(Logging.Debug))
 server = mcp_server(
     name = &quot;debug-server&quot;,
     auto_register_dir = &quot;components&quot;
-)</code></pre><p>You&#39;ll see messages like:</p><pre><code class="nohighlight hljs">[ Info: Auto-registering components from /path/to/components
-[ Info: Registered MCPTool from /path/to/components/tools/math.jl: calculator_tool
-[ Info: Registered MCPPrompt from /path/to/components/prompts/analysis.jl: data_analysis_prompt</code></pre><h2 id="Complete-Example"><a class="docs-heading-anchor" href="#Complete-Example">Complete Example</a><a id="Complete-Example-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Example" title="Permalink"></a></h2><p>See <code>examples/reg_dir.jl</code> and <code>examples/reg_dir_http.jl</code> for complete working examples of auto-registration with both stdio and HTTP transports.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../modern/">« The Modern Era (2026-07-28)</a><a class="docs-footer-nextpage" href="../claude/">Claude Desktop »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Monday 10 August 2026 15:08">Monday 10 August 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+)</code></pre><p>You&#39;ll see messages like:</p><pre><code class="nohighlight hljs">[ Info: Registered MCPTool from /path/to/components/tools/calculator.jl
+[ Info: Registered MCPPrompt from /path/to/components/prompts/analysis.jl</code></pre><p>A file whose final expression is not the type expected for its directory is skipped with a warning — a stray trailing statement after the component is the usual cause:</p><pre><code class="nohighlight hljs">┌ Warning: File /path/to/components/tools/helpers.jl did not return a MCPTool (got Nothing)</code></pre><p>Note that a file defining two components produces no warning at all: the last one is registered and the earlier one is dropped silently, which is why one component per file matters.</p><h2 id="Complete-Example"><a class="docs-heading-anchor" href="#Complete-Example">Complete Example</a><a id="Complete-Example-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Example" title="Permalink"></a></h2><p>See <code>examples/reg_dir.jl</code> and <code>examples/reg_dir_http.jl</code> for complete working examples of auto-registration with both stdio and HTTP transports.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../modern/">« The Modern Era (2026-07-28)</a><a class="docs-footer-nextpage" href="../claude/">Claude Desktop »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Tuesday 11 August 2026 14:17">Tuesday 11 August 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
