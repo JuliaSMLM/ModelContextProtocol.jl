@@ -118,10 +118,13 @@ location /auth/ {
     is configured to serve under `/auth`). Mixing these up is the most common cause of
     `404`s.
 
-!!! warning "SSE needs `proxy_buffering off`"
+!!! warning "Streamed responses need `proxy_buffering off`"
     The Streamable HTTP transport uses Server-Sent Events for notifications and Tasks. If
     the proxy buffers responses, the client never sees streamed events. Turn buffering
-    off and set a long read timeout on the MCP location.
+    off and set a long read timeout on the MCP location. The same settings are required
+    for modern-era (`2026-07-28`) clients: their `subscriptions/listen` replaces the GET
+    SSE stream with a long-lived **POST** response stream, which a buffering proxy or a
+    short `proxy_read_timeout` will stall or cut just the same.
 
 If you can add DNS records, dedicated subdomains (`mcp.example.org`,
 `auth.example.org`), each with its own `server` block, avoid the prefix-stripping
@@ -270,7 +273,7 @@ start!(server)
 
 !!! note "Per-tool scopes must be issued and advertised"
     `required_scopes = ["mcp:read"]` above is the server-wide baseline. If you gate
-    individual tools with `MCPTool(required_scopes = ["mcp:write"])` (0.6), the AS must
+    individual tools with `MCPTool(required_scopes = ["mcp:write"])`, the AS must
     actually issue `mcp:write` in the token, and you should list it in
     `ProtectedResourceMetadata(scopes_supported = [...])` so clients can discover it —
     per-tool scopes are **not** advertised through `tools/list`.
@@ -307,6 +310,14 @@ curl -s -X POST https://mcp.example.org/mcp/ \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1"}},"id":1}'
+
+# 4. modern-era clients never send `initialize` — verify the chain for them with a
+#    stateless `_meta`-carrying request instead (see The Modern Era for the details)
+curl -s -X POST https://mcp.example.org/mcp/ \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/list' \
+  -d '{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}},"id":2}'
 ```
 
 Decode the token (`jwt` payload) and confirm `iss`, `aud`, and `scope` match your

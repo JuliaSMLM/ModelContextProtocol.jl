@@ -17,14 +17,16 @@ Julia implementation of the [Model Context Protocol (MCP)](https://modelcontextp
   (server-directed handoff, mid-task input, status notifications) plus legacy
   [SEP-1686](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks) tasks for 2025-11-25 sessions
 - ✅ **Argument Completion** - `completion/complete` suggestions for prompt arguments and template variables
-- ✅ **OAuth Resource Server** - bearer-token validation for HTTP (GitHub tokens, JWT claims, RFC 7662 introspection) with RFC 9728 discovery
+- ✅ **[OAuth Resource Server](oauth.md)** - bearer-token validation for HTTP (JWKS signature verification, GitHub tokens, JWT claims, RFC 7662 introspection) with RFC 9728 discovery
 - ✅ **Logging Control** - runtime `logging/setLevel` (legacy) and per-request `logLevel` opt-in (modern)
 - ✅ **Auto-Registration** - automatic component discovery from directory structure
 - ✅ **Type-Safe** - leverages Julia's type system for robust implementations
 
 **Note:** This is a server-side implementation. Legacy-era server-initiated
 elicitation/sampling (the modern era covers these via MRTR) and the OAuth
-*Authorization Server* (token issuance) are not implemented.
+*Authorization Server* (token issuance) are not implemented; SSE streams are
+not resumable via `Last-Event-ID`, and synchronous requests are served on a
+single serial loop (tasks move long tool calls off-loop).
 
 ## Installation
 
@@ -74,7 +76,7 @@ For web-based integrations, use the HTTP transport:
 server = mcp_server(
     name = "http-server",
     version = "1.0.0",
-    tools = [...]  # Your tools here
+    tools = MCPTool[]  # Your tools here
 )
 
 server.transport = HttpTransport(host = "127.0.0.1", port = 3000)
@@ -97,6 +99,8 @@ start!(server)
 - **[The Modern Era](modern.md)** - The 2026-07-28 stateless protocol surface
 - **[Auto-Registration](auto-registration.md)** - Directory-based component organization
 - **[Claude Desktop Integration](claude.md)** - Integration with Claude Desktop
+- **[Authentication](oauth.md)** - OAuth Resource Server setup for HTTP transport
+- **[Deployment](deployment.md)** - Exposing a server to remote clients
 - **[API Reference](api.md)** - Complete API documentation
 
 ## Protocol Compliance
@@ -125,9 +129,9 @@ tool = MCPTool(
     name = "calculate",
     description = "Perform basic arithmetic",
     parameters = [
-        ToolParameter(name = "a", type = "number", required = true),
-        ToolParameter(name = "b", type = "number", required = true),
-        ToolParameter(name = "op", type = "string", required = true)
+        ToolParameter(name = "a", description = "First operand", type = "number", required = true),
+        ToolParameter(name = "b", description = "Second operand", type = "number", required = true),
+        ToolParameter(name = "op", description = "Operator: +, -, * or /", type = "string", required = true)
     ],
     handler = function(params)
         a, b = params["a"], params["b"]

@@ -32,10 +32,10 @@ The Streamable HTTP transport implements the MCP protocol over HTTP with Server-
 
 ```julia
 using ModelContextProtocol
-using ModelContextProtocol: HttpTransport
 
-# Create HTTP transport (the MCP protocol version is negotiated per client;
-# the server speaks 2025-11-25 down to 2024-11-05)
+# Create HTTP transport (the legacy protocol version is negotiated per client;
+# the server speaks 2025-11-25 down to 2024-11-05, and serves modern-era
+# 2026-07-28 requests on the same endpoint)
 transport = HttpTransport(
     host = "127.0.0.1",
     port = 3000
@@ -56,22 +56,35 @@ start!(server)
 
 ### Configuration Options
 
-The `HttpTransport` constructor accepts several configuration options:
+The `HttpTransport` constructor accepts the following keyword arguments, shown with
+their real defaults:
 
 ```julia
 transport = HttpTransport(
-    host = "127.0.0.1",           # Bind address (localhost by default)
-    port = 3000,                  # Port number
-    endpoint = "/",               # Base endpoint path
-    session_required = true,      # Require session validation
-    allowed_origins = ["http://localhost:8080"],  # CORS origins
-    auth = nothing,               # Optional AuthMiddleware (see Authentication below)
-    resource_metadata = nothing   # Optional RFC 9728 Protected Resource Metadata
+    host = "127.0.0.1",                 # Bind address (loopback by default)
+    port = 8080,                        # Port number
+    endpoint = "/",                     # Base endpoint path
+    allowed_origins = String[],         # Extra Origins accepted by the DNS-rebinding guard
+    allowed_hosts = String[],           # Extra Host hostnames accepted by that guard
+    protocol_version = LATEST_PROTOCOL_VERSION,  # Advertised legacy version ("2025-11-25")
+    session_required = false,           # Require a session on non-initialize legacy requests
+    auth = nothing,                     # Optional AuthMiddleware (see Authentication below)
+    resource_metadata = nothing,        # Optional RFC 9728 Protected Resource Metadata
+    sse_keepalive_secs = 15.0           # Idle interval between SSE keepalive comments
 )
 ```
 
-The advertised MCP protocol version defaults to the latest supported (`2025-11-25`) and is
-negotiated per client during `initialize`; response headers echo the negotiated version.
+`sse_keepalive_secs` must be finite and positive — the periodic write is the only way to
+notice a silently-dead SSE peer, so `Inf` (which would disable detection) and
+non-positive values are rejected at construction.
+
+`protocol_version` is the advertised **legacy** version: `2025-11-25` is the newest
+version reachable through `initialize`, negotiated per client down to `2024-11-05`, and
+response headers echo the negotiated value. It is not the newest protocol the server
+speaks — modern-era clients select `2026-07-28` per request through the params `_meta`
+key `io.modelcontextprotocol/protocolVersion`, with no handshake and no session; see
+[The Modern Era (2026-07-28)](modern.md).
+
 SSE is always available via `GET` with `Accept: text/event-stream` — there is no switch.
 
 ### Session Management
@@ -115,6 +128,42 @@ a standalone stream that clients open with a `GET` request:
 
 ```bash
 curl -N -H 'Accept: text/event-stream' http://127.0.0.1:3000/
+```
+
+That `GET` stream is **legacy-only**. The modern era removed it along with
+`resources/subscribe`: a client instead issues `subscriptions/listen`, a long-lived
+`POST` whose response stream carries the notification types it opted into (list-changed
+events, resource URIs, task ids). A `GET` that declares a modern
+`MCP-Protocol-Version` gets `405 Method Not Allowed`. See
+[The Modern Era (2026-07-28)](modern.md).
+
+### Modern-era requests (2026-07-28)
+
+Modern-era clients need no `initialize` and no session: each request carries
+`io.modelcontextprotocol/protocolVersion` in its params `_meta` and is answered as a
+self-contained exchange on the same endpoint. Over HTTP, SEP-2243 additionally requires
+standard headers that mirror the body:
+
+- `MCP-Protocol-Version` and `Mcp-Method` on **every** modern request, matching the
+  body's `_meta` version and its `method`.
+- `Mcp-Name` on the methods that name a primary target — `tools/call` and `prompts/get`
+  (mirroring `params.name`), `resources/read` (`params.uri`), and `tasks/get`,
+  `tasks/update`, `tasks/cancel` (`params.taskId`). A value that is not header-safe may
+  be wrapped in the `=?base64?…?=` sentinel, which the server decodes before comparing.
+
+Header names are matched case-insensitively; a duplicated header, one carrying
+non-visible-ASCII bytes, or any value that disagrees with the body is a `-32020`
+HeaderMismatch returned with HTTP `400`. An unknown method is `-32601` with HTTP `404`,
+and an unsupported protocol version is `-32022` with HTTP `400`. `Mcp-Session-Id` is
+ignored on modern requests and sessions are never minted for them.
+
+```bash
+curl -X POST http://127.0.0.1:3000/ \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: tools/list' \
+  -d '{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}},"id":1}'
 ```
 
 ### Security Features
@@ -207,8 +256,14 @@ The HTTP transport returns appropriate HTTP status codes:
 
 - `200 OK` - Successful requests with JSON response
 - `202 Accepted` - Notification requests (no response body)
-- `400 Bad Request` - Invalid session or malformed requests
-- `404 Not Found` - Unknown endpoints
+- `400 Bad Request` - Missing required session ID, malformed requests, and modern-era
+  protocol violations (SEP-2243 header mismatch `-32020`, missing client capability
+  `-32021`, unsupported version `-32022`)
+- `401 Unauthorized` - Missing, malformed, or invalid bearer token (auth enabled), or
+  a supplied session ID that does not match the session
+- `403 Forbidden` - Authenticated but not permitted (missing scope or allowlist), or a
+  request rejected by the DNS-rebinding Host/Origin guard
+- `404 Not Found` - Unknown endpoints, and unknown methods on modern-era requests
 - `500 Internal Server Error` - Server-side errors
 
 ### Performance Considerations
@@ -239,9 +294,14 @@ using Sockets
 
 #### Protocol Version Mismatches
 
-- The server accepts any supported version (`2025-11-25`, `2025-06-18`, `2025-03-26`,
-  `2024-11-05`) in the `MCP-Protocol-Version` header and negotiates during `initialize`
+- The server accepts any supported version in the `MCP-Protocol-Version` header:
+  the legacy versions (`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`), which
+  are negotiated during `initialize`, and the modern `2026-07-28`, which arrives
+  per-request in the params `_meta` and must also be asserted in the header under
+  SEP-2243
 - Response headers echo the **negotiated** version after initialization
+- A modern request whose header and body versions disagree is `-32020`/`400`, not a
+  negotiation failure — check both before suspecting the server
 - Check server logs for protocol version negotiation messages
 
 ### Migration from stdio

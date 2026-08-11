@@ -128,6 +128,51 @@ server = mcp_server(
 println("Multi-content tool configured: $(server.tools[1].name)")
 ```
 
+### Structured Tool Output
+
+A tool can declare an `output_schema` and return machine-readable data alongside the
+human-readable content, by returning a `CallToolResult` with `structured_content`:
+
+```@example structured
+using ModelContextProtocol
+
+stats_tool = MCPTool(
+    name = "summarize",
+    description = "Summarize a list of numbers",
+    parameters = [
+        ToolParameter(name = "values", description = "Comma-separated numbers",
+                      type = "string", required = true)
+    ],
+    output_schema = Dict{String,Any}(
+        "type" => "object",
+        "properties" => Dict{String,Any}(
+            "count" => Dict{String,Any}("type" => "integer"),
+            "mean"  => Dict{String,Any}("type" => "number")
+        )
+    ),
+    handler = function(params)
+        values = parse.(Float64, split(params["values"], ","))
+        summary = Dict("count" => length(values), "mean" => sum(values) / length(values))
+        return CallToolResult(
+            content = [TextContent(text = "count=$(summary["count"]), mean=$(summary["mean"])")],
+            structured_content = summary
+        )
+    end
+)
+
+server = mcp_server(
+    name = "stats-server",
+    version = "1.0.0",
+    tools = [stats_tool]
+)
+
+println("Structured-output tool configured: $(server.tools[1].name)")
+```
+
+The schema is emitted as `outputSchema` in `tools/list`, and `structured_content`
+serializes as `structuredContent` in the tool result. The spec recommends supplying
+both forms, as above.
+
 ### Resource Server with Custom Data
 
 Implementing resources with custom data providers:
@@ -254,11 +299,6 @@ println("Server configured with prompts: ", [p.name for p in server.prompts])
 ```@example http
 using ModelContextProtocol
 
-# Note: HttpTransport is an internal type not exported
-# Use stdio transport (default) or specify transport in mcp_server
-# For HTTP servers, the transport is configured internally
-
-# Example server configuration
 server = mcp_server(
     name = "http-server",
     version = "1.0.0",
@@ -267,13 +307,33 @@ server = mcp_server(
             name = "status",
             description = "Get server status",
             parameters = [],
-            handler = () -> TextContent(text = "Server is running")
+            handler = args -> TextContent(text = "Server is running")
         )
     ]
 )
 
-println("Server configured: $(server.config.name)")
+# HttpTransport is exported; constructing it does not bind the port yet
+server.transport = HttpTransport(host = "127.0.0.1", port = 8765)
+
+println("Server configured: $(server.config.name) on port $(server.transport.port)")
 ```
+
+`connect` binds the port and starts the HTTP listener; `start!` then blocks in the
+server loop — both are omitted above so building these docs does not leave a server
+running:
+
+```julia
+connect(server.transport)
+start!(server)
+
+# Equivalent, without assigning the transport first — connect is still required
+# (start! only assigns the transport; a disconnected one ends the loop at once):
+transport = HttpTransport(host = "127.0.0.1", port = 8765)
+connect(transport)
+start!(server; transport = transport)
+```
+
+See [Transports](transports.md) for session management, SSE, and the security options.
 
 ## Common Patterns
 
@@ -414,7 +474,8 @@ test_tool = MCPTool(
     name = "test_tool",
     description = "Tool for testing",
     parameters = [
-        ToolParameter(name = "input", type = "string", required = true)
+        ToolParameter(name = "input", description = "Text to process",
+                      type = "string", required = true)
     ],
     handler = function(params)
         return TextContent(text = "Processed: $(params["input"])")
@@ -457,6 +518,25 @@ curl -X POST http://127.0.0.1:8765/ \
   -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}'
 ```
 
+### Modern-Era Requests (2026-07-28)
+
+The same server also answers stateless 2026-07-28 requests — no `initialize`, no session.
+The era is selected per request by the `_meta` key
+`io.modelcontextprotocol/protocolVersion`, and over HTTP the SEP-2243 headers
+`MCP-Protocol-Version` and `Mcp-Method` must mirror the body:
+
+```bash
+curl -X POST http://127.0.0.1:8765/ \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/list" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}},"id":1}'
+```
+
+Calling a tool additionally needs `Mcp-Name` mirroring `params.name`. See
+[The Modern Era (2026-07-28)](modern.md) for the full modern surface.
+
 ## Best Practices
 
 1. **Always validate input parameters** in tool handlers
@@ -473,4 +553,9 @@ curl -X POST http://127.0.0.1:8765/ \
 - [Tools Documentation](tools.md) for detailed tool implementation
 - [Resources Documentation](resources.md) for resource management
 - [Prompts Documentation](prompts.md) for prompt templates
+- [Transports](transports.md) for stdio and Streamable HTTP configuration
+- [The Modern Era (2026-07-28)](modern.md) for stateless requests, MRTR, tasks, and
+  subscriptions
+- [Authentication](oauth.md) for OAuth Resource Server token validation
+- [Deployment](deployment.md) for exposing an authenticated server to remote clients
 - [API Reference](api.md) for complete function documentation

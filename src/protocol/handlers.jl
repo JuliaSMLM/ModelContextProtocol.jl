@@ -1611,9 +1611,10 @@ function spawn_task_execution!(ctx::RequestContext, tool::MCPTool, args::Abstrac
             # execute_tool_call catches handler errors itself; this guards the glue
             ErrorInfo(code=ErrorCodes.INTERNAL_ERROR, message="Tool execution failed: $(e)")
         end
-        # input_required inside a task belongs to the tasks EXTENSION
-        # (tasks/update), which is not implemented — fail the task rather than
-        # storing an unrepresentable outcome
+        # Legacy SEP-1686 tasks have no wire shape for input_required — mid-task
+        # input is a modern tasks-extension flow (task_await_input / tasks/update)
+        # and never applies to legacy-era executions — so fail the task rather
+        # than storing an unrepresentable outcome
         outcome isa InputRequired && (outcome = ErrorInfo(
             code=ErrorCodes.INVALID_REQUEST,
             message="input_required is not supported in task-augmented executions"))

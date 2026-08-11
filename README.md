@@ -9,7 +9,7 @@ A Julia implementation of the [Model Context Protocol](https://github.com/modelc
 
 ## Overview
 
-The Model Context Protocol allows applications to provide context and capabilities to LLMs in a standardized way. This package implements the MCP **2025-11-25** specification in Julia (negotiating down to `2024-11-05` for older clients), with `mcp_server()` as the main entry point for creating and configuring servers.
+The Model Context Protocol allows applications to provide context and capabilities to LLMs in a standardized way. This package implements the full server side of the MCP **2026-07-28** specification (the stateless "modern era") in Julia, while continuing to serve classic sessions negotiated from `2025-11-25` down to `2024-11-05` — a dual-era server on one endpoint. `mcp_server()` is the main entry point for creating and configuring servers.
 
 The `mcp_server()` function provides a flexible interface to:
 - Create MCP servers with custom names and configurations
@@ -21,7 +21,8 @@ Example:
 ```julia
 server = mcp_server(
     name = "my-server",
-    version = "1.0.0",            # YOUR server's version (the MCP protocol version is negotiated)
+    version = "1.0.0",            # YOUR server's version (the MCP protocol version is negotiated
+                                  # for legacy sessions, declared per-request in the 2026-07-28 era)
     tools = my_tool,              # Single tool or vector of tools
     resources = my_resource,      # Single resource or vector of resources
     prompts = my_prompt,          # Single prompt or vector of prompts
@@ -32,23 +33,42 @@ server = mcp_server(
 
 ## Features
 
-- **Protocol 2025-11-25** with version negotiation back to `2024-11-05`
-- **Transports**: stdio (default) and Streamable HTTP with SSE and session management
+- **Dual-era protocol support**: the 2026-07-28 modern era (stateless, per-request `_meta`,
+  `server/discover`, `subscriptions/listen`) plus legacy `initialize` negotiation across
+  `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`
+- **Conformance**: passes every substantive check of the official MCP conformance suite
+  (modern-dated 40/40, `server-stateless` 30/30, header validation 14/14, custom headers
+  10/10), run in CI on every PR
+- **Transports**: stdio (default) and Streamable HTTP with SSE — session management for
+  legacy sessions, stateless per-request handling in the modern era
 - **Content types**: text, image, audio, embedded resources, and `resource_link` references
 - **Structured tool output**: declare an `output_schema`, return `structuredContent`
 - **Tool annotations**: behavioral hints (`readOnlyHint`, `destructiveHint`, …) for client trust decisions
 - **Progress notifications**: long-running tools report progress via context-aware handlers
-- **Tasks (experimental)**: background tool execution with status polling, blocking result
-  retrieval, and cancellation (`task_support = :optional` per tool)
-- **OAuth Resource Server** (HTTP): bearer-token validation (GitHub tokens, JWT claims, RFC 7662
-  introspection) with RFC 9728 discovery metadata
-- **Logging control**: clients adjust verbosity at runtime via `logging/setLevel`; opt-in
-  per-request lifecycle logs
+- **Tasks — modern era (SEP-2663)**: server-directed background execution via `task_detach`,
+  `tasks/get`/`tasks/update`/`tasks/cancel`, mid-task client input via `task_await_input`,
+  and status notifications over `subscriptions/listen`
+- **Tasks — legacy 2025-11-25 (SEP-1686, experimental)**: task-augmented calls with status
+  polling, blocking result retrieval, and cancellation (`task_support = :optional` per tool)
+- **Client input from handlers (MRTR)**: tools request elicitation, sampling, or roots via
+  `InputRequired` and re-run with the client's responses
+- **Argument completion**: `completion/complete` for prompt arguments and resource-template
+  variables in both eras
+- **Resource templates**: RFC 6570 level-1 URI templates with read routing and completion
+- **Subscriptions**: `subscriptions/listen` change streams with `notify_list_changed` /
+  `notify_resource_updated`
+- **OAuth Resource Server** (HTTP): bearer-token validation (JWKS signature verification,
+  GitHub tokens, JWT claims, RFC 7662 introspection) with RFC 9728 discovery metadata —
+  Resource Server only; this package does not issue tokens (no Authorization Server / DCR / PKCE)
+- **Logging control**: clients adjust verbosity at runtime via `logging/setLevel` (legacy) or
+  per-request `logLevel` opt-in (modern); opt-in per-request lifecycle logs
+- **Header parameter mirroring**: `ToolParameter(header = …)` exposes arguments as validated
+  `Mcp-Param-*` HTTP headers (`x-mcp-header`)
 - **Auto-registration** of components from a directory layout
 
 ## Core Components
 
-The package provides three main types that can be registered with an MCP server:
+The package provides four main types that can be registered with an MCP server:
 
 1. `MCPTool`: Represents callable functions that LLMs can use
    - Has a name, description, parameters, and handler function
@@ -58,7 +78,11 @@ The package provides three main types that can be registered with an MCP server:
    - Has a URI, name, MIME type, and data provider function
    - Provides static or dynamic data access to LLMs
 
-3. `MCPPrompt`: Represents template-based prompts
+3. `ResourceTemplate`: Represents parameterized resource URIs
+   - RFC 6570 level-1 templates (`file://{path}`) with variable extraction
+   - Routes reads to a provider receiving the resolved variables
+
+4. `MCPPrompt`: Represents template-based prompts
    - Has a name, description, and parameterized message templates
    - Helps standardize interactions with LLMs
 
@@ -193,7 +217,7 @@ The package will automatically scan the directory structure and register all com
 - `resources/`: Contains resource definitions (MCPResource instances)
 - `prompts/`: Contains prompt definitions (MCPPrompt instances)
 
-Each component file should export one or more instances of the appropriate type. They will be automatically discovered and registered with the server.
+Each component file must evaluate to exactly one instance of the appropriate type as its final expression — that value is what gets registered (additional components defined earlier in the file are not picked up).
 
 ### Remote Server over HTTP (with optional GitHub-token auth)
 
@@ -266,6 +290,12 @@ To use your MCP server with Claude, you need to:
    - Report results back to you
 
 See our [documentation](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/) for more details on integration with Claude.
+
+## Learn More
+
+- [The Modern Era (2026-07-28)](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/modern/) — the stateless protocol surface: `server/discover`, MRTR, the tasks extension, mid-task input, `subscriptions/listen`, completion, and header mirroring
+- [Authentication](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/oauth/) and [Deployment](https://JuliaSMLM.github.io/ModelContextProtocol.jl/stable/deployment/) — OAuth Resource Server setup and exposing a server to remote clients
+- [`examples/`](examples/) — runnable servers covering stdio, HTTP, tasks, multi-content returns, and complex schemas
 
 ## License
 

@@ -7,7 +7,8 @@ do, because the security of your server depends on understanding the boundary.
 ## What this package is, and is not
 
 The package implements an **OAuth 2.1 *Resource Server* (RS)** for the Streamable HTTP
-transport, per the MCP 2025-11-25 authorization specification:
+transport, per the MCP authorization specification — it guards the endpoint itself, so
+`2025-11-25` legacy sessions and `2026-07-28` modern requests are validated alike:
 
 - It **validates** bearer tokens presented on incoming requests (signature and/or
   claims, or remote introspection).

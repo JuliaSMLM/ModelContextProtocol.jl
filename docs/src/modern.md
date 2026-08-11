@@ -14,8 +14,9 @@ below tour the modern surface and the handler APIs that drive it.
 
 ## Stateless requests and `server/discover`
 
-A modern request carries three `_meta` fields — the protocol version, the
-client's capabilities, and (optionally) client info:
+A modern request carries the protocol version and the client's capabilities in
+`_meta`, plus optional `clientInfo` and the per-request `logLevel` opt-in
+described below:
 
 ```json
 {
@@ -32,7 +33,7 @@ client's capabilities, and (optionally) client info:
 Validation is per-request: a missing required field is `-32602`, an
 unsupported version is `-32022` with the supported list, and methods removed
 from the modern era (`ping`, `logging/setLevel`, `resources/subscribe`,
-`tasks/result`, `tasks/list`) are `-32601`. `server/discover` replaces the
+`resources/unsubscribe`, `tasks/result`, `tasks/list`) are `-32601`. `server/discover` replaces the
 handshake for capability discovery — it returns supported versions across
 both eras, the modern capability set (including declared extensions), and the
 CacheableResult fields (`ttlMs`, `cacheScope`) the spec requires. Every
@@ -47,12 +48,12 @@ mismatch, 404 for unknown methods, and sessions ignored (never minted).
 
 ## Multi round-trip requests (MRTR)
 
-The modern era has no server-initiated requests. A handler that needs client
-input (elicitation, sampling, roots) **returns** an [`InputRequired`](@ref)
-value; the server answers with `resultType: "input_required"`, the requests to
-fulfill, and an integrity-protected `requestState`; the client retries the
-original method with its `inputResponses` and the echoed state, and the
-handler simply runs again:
+The modern era has no server-initiated requests. A tool handler that needs
+client input (elicitation, sampling, roots) **returns** an
+[`InputRequired`](@ref) value; the server answers with
+`resultType: "input_required"`, the requests to fulfill, and an
+integrity-protected `requestState`; the client retries `tools/call` with its
+`inputResponses` and the echoed state, and the handler simply runs again:
 
 ```julia
 tool = MCPTool(
@@ -106,7 +107,8 @@ slow = MCPTool(
 `tasks/cancel` is an idempotent empty ack (cooperative — poll
 [`task_cancelled`](@ref)); a tool-level `isError` result **completes** the
 task (`failed` is reserved for protocol errors); extension tasks and legacy
-SEP-1686 tasks live in era-isolated stores.
+SEP-1686 tasks share one era-tagged store, and neither era can see the
+other's records.
 
 ### Mid-task input
 
@@ -175,7 +177,8 @@ prompt = MCPPrompt(
 ## Header parameter mirroring (`x-mcp-header`)
 
 For transport-level routing, a tool parameter may declare a header-mirroring
-suffix — `ToolParameter(header = "Routing-Key")`, or `x-mcp-header` in a raw
+suffix — `ToolParameter(name = "route", description = "Routing key",
+type = "string", header = "Routing-Key")`, or `x-mcp-header` in a raw
 `input_schema` — and modern HTTP clients mirror the argument as an
 `Mcp-Param-<suffix>` request header. The server validates every mirror
 against the body (strict Base64 sentinel handling, exact numeric comparison)
