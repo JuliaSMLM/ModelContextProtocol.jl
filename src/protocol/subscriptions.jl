@@ -329,9 +329,10 @@ authenticated — client).
 - `params::AbstractDict`: The notification's params
 
 # Returns
-- `Bool`: `true` when the notification was handed to the transport (enqueued —
-  not proof of client receipt); `false` when there is no handshaken legacy
-  session, no transport, or the send failed
+- `Bool`: `true` when the transport handoff was attempted without error — NOT
+  proof of enqueue or client receipt (a disconnected HTTP transport, or one
+  whose notification queue is at its soft cap, drops silently); `false` when
+  there is no handshaken legacy session, no transport, or the send threw
 """
 function legacy_session_notification(state::ServerState, transport, method::String;
                                      params::AbstractDict = LittleDict{String,Any}())::Bool
@@ -406,9 +407,10 @@ Only streams open at the time of the change are notified (there is no backlog).
 - `kind::Symbol`: One of `:tools`, `:prompts`, `:resources`
 
 # Returns
-- `Int`: How many delivery targets the notification was handed to —
-  `subscriptions/listen` streams plus the legacy session. Counts enqueue to the
-  transport, not client receipt (a disconnected HTTP peer drops silently).
+- `Int`: How many delivery targets a transport handoff was attempted for —
+  `subscriptions/listen` streams plus the legacy session. Counts attempted
+  handoffs, not enqueue or client receipt (a disconnected HTTP peer, or a full
+  notification queue, drops silently).
 """
 function notify_list_changed(server::Server, kind::Symbol)::Int
     kind in (:tools, :prompts, :resources) ||
@@ -440,9 +442,10 @@ returned count.
 - `uri::AbstractString`: The resource URI that changed
 
 # Returns
-- `Int`: How many delivery targets the notification was handed to —
-  `subscriptions/listen` streams plus the legacy session. Counts enqueue to the
-  transport, not client receipt (a disconnected HTTP peer drops silently).
+- `Int`: How many delivery targets a transport handoff was attempted for —
+  `subscriptions/listen` streams plus the legacy session. Counts attempted
+  handoffs, not enqueue or client receipt (a disconnected HTTP peer, or a full
+  notification queue, drops silently).
 """
 function notify_resource_updated(server::Server, uri::AbstractString)::Int
     u = String(uri)

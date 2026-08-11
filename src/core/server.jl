@@ -326,8 +326,10 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
         server.active = false
         # Retire the session state on EVERY loop exit: notify_* called after
         # shutdown must see no legacy session, not a stale one whose transport
-        # is being torn down (a restart installs a fresh state)
-        server.legacy_state = nothing
+        # is being torn down. Generation-owned like task_queue below — an
+        # overlapping restart may have installed a FRESH state already, which
+        # this run's teardown must not erase
+        server.legacy_state === state && (server.legacy_state = nothing)
         logger.transport_active[] = false
         # End subscriptions/listen streams gracefully (an empty result on each
         # listen request) BEFORE the transport goes away, so clients can tell an

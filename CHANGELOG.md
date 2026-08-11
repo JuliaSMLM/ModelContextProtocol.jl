@@ -200,8 +200,9 @@ sessions (`2024-11-05`…`2025-11-25`) remain fully compatible.
   recorded interest that nothing ever delivered on. In-process `subscribe!`
   callbacks are now invoked (as `callback(uri)`, errors logged and swallowed) by
   `notify_resource_updated` instead of never firing. The notify helpers' return
-  value now counts every delivery target handed to the transport — listen
-  streams plus the legacy session (enqueue, not client receipt). Hardened
+  value now counts every delivery target a transport handoff was attempted
+  for — listen streams plus the legacy session (attempted handoff, not
+  enqueue or client receipt). Hardened
   semantics: legacy delivery requires a real `initialize` handshake (a bare
   `notifications/initialized` never arms it); the send explicitly bypasses the
   ambient request route, so an announcement made inside a modern request can

@@ -552,3 +552,38 @@ end
         @test notify_resource_updated(server, "test://gone") == 0
     end
 end
+
+@testset "legacy delivery bypasses a REAL ambient HTTP route" begin
+    # A registered response route on an HttpTransport is exactly what a modern
+    # request's notifications would ride; the legacy notification must skip it
+    # and land on the out-of-band GET queue instead
+    server = mcp_server(name = "route-bypass", version = "1.0.0")
+    ht = ModelContextProtocol.HttpTransport(port = 18995)
+    ht.connected = true  # send path only queues; no listener needed
+    server.transport = ht
+    state = ModelContextProtocol.ServerState()
+    state.initialized = true
+    state.protocol_version = "2025-11-25"
+    state.wire_subscriptions = Set(["test://http-route"])
+    server.legacy_state = state
+
+    route_ch = Channel{Tuple{Symbol,String}}(10)
+    lock(ht.channels_lock) do
+        ht.response_channels["ambient-req"] = route_ch
+    end
+    task_local_storage(:mcp_notification_route, "ambient-req")
+    try
+        @test notify_resource_updated(server, "test://http-route") == 1
+        # Nothing leaked onto the ambient request's response channel...
+        @test Base.n_avail(route_ch) == 0
+        # ...and the out-of-band GET notification queue got exactly the one message
+        @test Base.n_avail(ht.notification_queue) == 1
+        msg = JSON3.read(take!(ht.notification_queue))
+        @test msg["method"] == "notifications/resources/updated"
+        @test msg["params"]["uri"] == "test://http-route"
+        # The ambient route survives for the request's own subsequent notifications
+        @test task_local_storage(:mcp_notification_route) == "ambient-req"
+    finally
+        task_local_storage(:mcp_notification_route, nothing)
+    end
+end
