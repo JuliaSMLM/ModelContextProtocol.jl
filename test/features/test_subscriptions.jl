@@ -456,3 +456,99 @@ end
         @test count(m -> haskey(m["params"], "_meta"), msgs) == 1
     end
 end
+
+@testset "legacy subscription delivery — hardening" begin
+    function legacy_server2(; kwargs...)
+        server = mcp_server(name = "legacy-hardening", version = "1.0.0"; kwargs...)
+        out = IOBuffer()
+        server.transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = out)
+        state = ModelContextProtocol.ServerState()
+        state.initialized = true
+        state.protocol_version = "2025-11-25"
+        server.legacy_state = state
+        server, state, out
+    end
+    read_msgs(out) = [JSON3.read(l) for l in split(String(take!(out)), '\n') if !isempty(strip(l))]
+
+    @testset "wire envelope: jsonrpc, no id, empty list_changed params" begin
+        server, _, out = legacy_server2()
+        @test notify_list_changed(server, :prompts) == 1
+        msg = only(read_msgs(out))
+        @test msg["jsonrpc"] == "2.0"
+        @test msg["method"] == "notifications/prompts/list_changed"
+        @test !haskey(msg, "id")
+        @test isempty(msg["params"])
+    end
+
+    @testset "initialized without a negotiated version is not a handshake" begin
+        # A bare notifications/initialized sets initialized=true without any
+        # initialize — a modern-only server must never arm legacy delivery
+        server, state, out = legacy_server2()
+        state.protocol_version = nothing
+        state.wire_subscriptions = Set(["test://x"])
+        @test notify_resource_updated(server, "test://x") == 0
+        @test notify_list_changed(server, :tools) == 0
+        @test isempty(String(take!(out)))
+    end
+
+    @testset "callback may unsubscribe itself mid-delivery" begin
+        server, _, _ = legacy_server2()
+        order = String[]
+        cb1 = uri -> begin
+            push!(order, "cb1")
+            unsubscribe!(server, uri, identity)  # does not disturb the snapshot
+        end
+        local cb2
+        cb2 = uri -> begin
+            push!(order, "cb2")
+            unsubscribe!(server, uri, cb2)  # removes ITSELF during delivery
+        end
+        subscribe!(server, "test://re", cb1)
+        subscribe!(server, "test://re", cb2)
+        notify_resource_updated(server, "test://re")
+        @test order == ["cb1", "cb2"]     # snapshot: both ran exactly once
+        notify_resource_updated(server, "test://re")
+        @test order == ["cb1", "cb2", "cb1"]  # cb2 is gone on the next round
+    end
+
+    @testset "duplicate capability types: the LAST one (as advertised) wins" begin
+        caps_off = ModelContextProtocol.Capability[
+            ModelContextProtocol.ToolCapability(list_changed = true),
+            ModelContextProtocol.ToolCapability(list_changed = false)]
+        server, _, out = legacy_server2(capabilities = caps_off)
+        @test notify_list_changed(server, :tools) == 0
+        @test isempty(String(take!(out)))
+
+        caps_on = ModelContextProtocol.Capability[
+            ModelContextProtocol.ToolCapability(list_changed = false),
+            ModelContextProtocol.ToolCapability(list_changed = true)]
+        server2, _, out2 = legacy_server2(capabilities = caps_on)
+        @test notify_list_changed(server2, :tools) == 1
+    end
+
+    @testset "ambient request route is bypassed and restored" begin
+        server, _, out = legacy_server2()
+        ctx = RequestContext(server = server, state = server.legacy_state, request_id = 1)
+        ModelContextProtocol.handle_subscribe_resource(ctx,
+            ModelContextProtocol.SubscribeParams(uri = "test://route"))
+        take!(out)
+        task_local_storage(:mcp_notification_route, :sentinel)
+        try
+            @test notify_resource_updated(server, "test://route") == 1
+            # stdio delivered to its own stream, and the ambient route survived
+            @test only(read_msgs(out))["method"] == "notifications/resources/updated"
+            @test task_local_storage(:mcp_notification_route) === :sentinel
+        finally
+            task_local_storage(:mcp_notification_route, nothing)
+        end
+    end
+
+    @testset "loop exit retires the legacy session state" begin
+        server = mcp_server(name = "retire-test", version = "1.0.0")
+        # Empty stdio input -> immediate EOF -> the loop exits and the finally runs
+        server.transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = IOBuffer())
+        start!(server)
+        @test server.legacy_state === nothing
+        @test notify_resource_updated(server, "test://gone") == 0
+    end
+end

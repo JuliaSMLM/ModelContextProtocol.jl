@@ -128,7 +128,7 @@ export
     task_detach,  # Hand a modern-era tool call off to background task execution (tasks extension, SEP-2663)
     task_await_input, TaskCancelledException,  # Mid-task client input from a detached handler (tasks extension, SEP-2663)
     subscribe!, unsubscribe!,  # Resource subscription management (legacy in-process callbacks)
-    notify_list_changed, notify_resource_updated,  # Announce changes to subscriptions/listen streams
+    notify_list_changed, notify_resource_updated,  # Announce changes to subscribed clients (listen streams + the legacy session)
     InputRequired, elicit_request, sampling_request, roots_request,  # MRTR (2026-07-28): handlers requesting client input
     input_responses, input_state,  # MRTR retry accessors for ctx-aware handlers
     content2dict,  # Utility for debugging/testing

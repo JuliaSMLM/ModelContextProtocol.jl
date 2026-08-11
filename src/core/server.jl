@@ -324,6 +324,10 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
         rethrow(e)
     finally
         server.active = false
+        # Retire the session state on EVERY loop exit: notify_* called after
+        # shutdown must see no legacy session, not a stale one whose transport
+        # is being torn down (a restart installs a fresh state)
+        server.legacy_state = nothing
         logger.transport_active[] = false
         # End subscriptions/listen streams gracefully (an empty result on each
         # listen request) BEFORE the transport goes away, so clients can tell an
@@ -402,7 +406,9 @@ clients on its own (client delivery is `notify_resource_updated`'s job).
 """
 function subscribe!(server::Server, uri::String, callback::Function)
     subscription = Subscription(uri, callback, now())
-    push!(server.subscriptions[uri], subscription)
+    lock(server.subscriptions_lock) do
+        push!(server.subscriptions[uri], subscription)
+    end
     server
 end
 
@@ -420,7 +426,9 @@ Remove a subscription for a specific resource URI and callback function.
 - `Server`: The server instance for method chaining
 """
 function unsubscribe!(server::Server, uri::String, callback::Function)
-    filter!(s -> s.callback !== callback, server.subscriptions[uri])
+    lock(server.subscriptions_lock) do
+        filter!(s -> s.callback !== callback, server.subscriptions[uri])
+    end
     server
 end
 

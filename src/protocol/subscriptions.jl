@@ -302,43 +302,59 @@ function broadcast_subscription_notification(server::Server, method::String;
 end
 
 """
-    legacy_session_notification(server::Server, method::String;
+    legacy_session_notification(state::ServerState, transport, method::String;
                                 params::AbstractDict = LittleDict{String,Any}()) -> Bool
 
 Deliver a plain JSON-RPC notification to the connected legacy session, if there
-is one. The legacy session is the single `initialize`-negotiated client served
-by the running loop (`server.legacy_state`, set by `start!`); delivery is
-transport-polymorphic via `send_notification` — stdout on stdio, the standalone
-GET SSE stream on Streamable HTTP (or the calling request's own response stream
-when invoked from inside a handler, exactly like `send_progress`).
+is one. The caller passes the session state and transport it already fetched
+(one snapshot per announcement — a concurrent restart cannot authorize against
+one session and deliver through another). The session must have completed a real
+`initialize` handshake: `initialized` alone is not proof (a bare
+`notifications/initialized` sets it), so a negotiated `protocol_version` is
+required too — a server that only ever served modern requests is never armed
+for legacy delivery.
+
+Delivery is transport-polymorphic via `send_notification` — stdout on stdio,
+the standalone GET SSE stream on Streamable HTTP. The ambient request route is
+explicitly bypassed for the send: when an announcement happens inside a request
+handler (legacy or modern), the legacy notification must go out-of-band to the
+legacy session's own stream, never onto the calling request's response channel
+(which on a modern request would leak it to a different — possibly differently
+authenticated — client).
 
 # Arguments
-- `server::Server`: The server whose legacy session to notify
+- `state::ServerState`: The legacy session state snapshot
+- `transport`: The transport snapshot (`Transport` or `nothing`)
 - `method::String`: The notification method
 - `params::AbstractDict`: The notification's params
 
 # Returns
-- `Bool`: `true` when the notification was handed to the transport; `false` when
-  there is no initialized legacy session, no transport, or the send failed
+- `Bool`: `true` when the notification was handed to the transport (enqueued —
+  not proof of client receipt); `false` when there is no handshaken legacy
+  session, no transport, or the send failed
 """
-function legacy_session_notification(server::Server, method::String;
+function legacy_session_notification(state::ServerState, transport, method::String;
                                      params::AbstractDict = LittleDict{String,Any}())::Bool
-    state = server.legacy_state
-    state === nothing && return false
     state.initialized || return false
-    transport = server.transport
+    state.protocol_version === nothing && return false
     transport === nothing && return false
     payload = JSON3.write(Dict{String,Any}(
         "jsonrpc" => "2.0",
         "method" => method,
         "params" => Dict{String,Any}(String(k) => v for (k, v) in params),
     ))
+    # Bypass the ambient request route for the send, restoring it after
+    tls = task_local_storage()
+    saved_route = get(tls, :mcp_notification_route, nothing)
+    saved_route === nothing || task_local_storage(:mcp_notification_route, nothing)
     try
         send_notification(transport, payload)
         return true
     catch e
         @debug "Failed to deliver legacy notification" method=method error=e
         return false
+    finally
+        saved_route === nothing || task_local_storage(:mcp_notification_route, saved_route)
     end
 end
 
@@ -367,7 +383,9 @@ instead, via the honored filter subset).
 """
 function list_changed_declared(server::Server, kind::Symbol)::Bool
     T = LIST_CHANGED_CAPABILITY[kind]
-    idx = findfirst(c -> c isa T, server.config.capabilities)
+    # findlast, not findfirst: capability serialization overwrites duplicates, so
+    # the LAST entry of a type is what initialize advertised — gate on that one
+    idx = findlast(c -> c isa T, server.config.capabilities)
     idx === nothing && return false
     server.config.capabilities[idx].list_changed === true
 end
@@ -388,15 +406,19 @@ Only streams open at the time of the change are notified (there is no backlog).
 - `kind::Symbol`: One of `:tools`, `:prompts`, `:resources`
 
 # Returns
-- `Int`: How many clients were notified (`subscriptions/listen` streams plus the
-  legacy session when it was reached)
+- `Int`: How many delivery targets the notification was handed to —
+  `subscriptions/listen` streams plus the legacy session. Counts enqueue to the
+  transport, not client receipt (a disconnected HTTP peer drops silently).
 """
 function notify_list_changed(server::Server, kind::Symbol)::Int
     kind in (:tools, :prompts, :resources) ||
         throw(ArgumentError("notify_list_changed: kind must be :tools, :prompts, or :resources"))
     delivered = broadcast_subscription_notification(server, "notifications/$(kind)/list_changed")
-    if list_changed_declared(server, kind) &&
-       legacy_session_notification(server, "notifications/$(kind)/list_changed")
+    # One snapshot of session + transport for the whole announcement
+    state = server.legacy_state
+    if state !== nothing && list_changed_declared(server, kind) &&
+       legacy_session_notification(state, server.transport,
+                                   "notifications/$(kind)/list_changed")
         delivered += 1
     end
     delivered
@@ -418,31 +440,39 @@ returned count.
 - `uri::AbstractString`: The resource URI that changed
 
 # Returns
-- `Int`: How many clients were notified (`subscriptions/listen` streams plus the
-  legacy session when it was reached)
+- `Int`: How many delivery targets the notification was handed to —
+  `subscriptions/listen` streams plus the legacy session. Counts enqueue to the
+  transport, not client receipt (a disconnected HTTP peer drops silently).
 """
 function notify_resource_updated(server::Server, uri::AbstractString)::Int
     u = String(uri)
     delivered = broadcast_subscription_notification(server, "notifications/resources/updated";
                                                     params = LittleDict{String,Any}("uri" => u),
                                                     uri = u)
-    # Legacy era: the session that subscribed via resources/subscribe. The field
-    # read is a snapshot — the subscribe handlers replace the Set rather than
-    # mutating it, so an off-loop caller never observes a half-updated set
+    # Legacy era: the session that subscribed via resources/subscribe. ONE
+    # snapshot of state + transport serves the whole announcement (membership
+    # check and delivery use the same session — a concurrent restart cannot
+    # split them), and the wire_subscriptions field read is itself a snapshot:
+    # the subscribe handlers replace the Set rather than mutating it, so an
+    # off-loop caller never observes a half-updated set
     state = server.legacy_state
+    transport = server.transport
     if state !== nothing && u in state.wire_subscriptions &&
-       legacy_session_notification(server, "notifications/resources/updated";
+       legacy_session_notification(state, transport, "notifications/resources/updated";
                                    params = LittleDict{String,Any}("uri" => u))
         delivered += 1
     end
-    # In-process observers registered with subscribe!
-    if haskey(server.subscriptions, u)
-        for sub in server.subscriptions[u]
-            try
-                sub.callback(u)
-            catch e
-                @warn "subscribe! callback failed" uri=u error=e
-            end
+    # In-process observers registered with subscribe!: snapshot under the lock,
+    # invoke after releasing it — a callback may itself subscribe!/unsubscribe!
+    # (every callback in the snapshot runs exactly once regardless)
+    subs = lock(server.subscriptions_lock) do
+        haskey(server.subscriptions, u) ? copy(server.subscriptions[u]) : Subscription[]
+    end
+    for sub in subs
+        try
+            sub.callback(u)
+        catch e
+            @warn "subscribe! callback failed" uri=u error=e
         end
     end
     delivered

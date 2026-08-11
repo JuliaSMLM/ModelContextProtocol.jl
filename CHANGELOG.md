@@ -200,11 +200,19 @@ sessions (`2024-11-05`…`2025-11-25`) remain fully compatible.
   recorded interest that nothing ever delivered on. In-process `subscribe!`
   callbacks are now invoked (as `callback(uri)`, errors logged and swallowed) by
   `notify_resource_updated` instead of never firing. The notify helpers' return
-  value now counts every client reached — listen streams plus the legacy
-  session. Internals: `start!` exposes the loop's session state as
-  `server.legacy_state`, and the `resources/subscribe`/`unsubscribe` handlers
-  update the wire-subscription set copy-on-write so off-loop announcers read a
-  consistent snapshot without locking.
+  value now counts every delivery target handed to the transport — listen
+  streams plus the legacy session (enqueue, not client receipt). Hardened
+  semantics: legacy delivery requires a real `initialize` handshake (a bare
+  `notifications/initialized` never arms it); the send explicitly bypasses the
+  ambient request route, so an announcement made inside a modern request can
+  never leak the legacy notification onto that request's response stream;
+  duplicate capability declarations gate on the LAST entry (what initialize
+  actually advertised); callbacks are invoked from a lock-guarded snapshot
+  (safe to `subscribe!`/`unsubscribe!` from inside a callback). Internals:
+  `start!` exposes the loop's session state as `server.legacy_state` and
+  retires it on every loop exit; the `resources/subscribe`/`unsubscribe`
+  handlers update the wire-subscription set copy-on-write so off-loop
+  announcers read a consistent snapshot.
 
 ### Changed
 
