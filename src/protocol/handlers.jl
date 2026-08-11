@@ -953,7 +953,10 @@ subscriptions to the same URI are accepted.
 - `HandlerResult`: An empty result acknowledging the subscription
 """
 function handle_subscribe_resource(ctx::RequestContext, params::SubscribeParams)::HandlerResult
-    push!(ctx.state.wire_subscriptions, params.uri)
+    # Copy-on-write: notify_resource_updated may read this set from an off-loop
+    # task, so replace the Set rather than mutating it in place — a field swap
+    # always leaves readers with a consistent snapshot
+    ctx.state.wire_subscriptions = union(ctx.state.wire_subscriptions, (params.uri,))
     HandlerResult(
         response = JSONRPCResponse(
             id = ctx.request_id,
@@ -977,7 +980,8 @@ a URI that was never subscribed is accepted.
 - `HandlerResult`: An empty result acknowledging the unsubscription
 """
 function handle_unsubscribe_resource(ctx::RequestContext, params::UnsubscribeParams)::HandlerResult
-    delete!(ctx.state.wire_subscriptions, params.uri)
+    # Copy-on-write for the same reason as handle_subscribe_resource
+    ctx.state.wire_subscriptions = setdiff(ctx.state.wire_subscriptions, (params.uri,))
     HandlerResult(
         response = JSONRPCResponse(
             id = ctx.request_id,

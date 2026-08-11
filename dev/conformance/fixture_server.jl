@@ -115,7 +115,7 @@ tools = [
         end),
     MCPTool(
         name = "test_trigger_tool_change",
-        description = "Mutate the tool list and notify subscriptions/listen streams",
+        description = "Mutate the tool list and notify subscribed clients",
         parameters = ToolParameter[],
         handler = args -> begin
             push!(SERVER_REF[].tools, MCPTool(
@@ -124,11 +124,11 @@ tools = [
                 parameters = ToolParameter[],
                 handler = a -> TextContent(text = "added")))
             n = notify_list_changed(SERVER_REF[], :tools)
-            TextContent(text = "tools changed; notified $n stream(s)")
+            TextContent(text = "tools changed; notified $n target(s)")
         end),
     MCPTool(
         name = "test_trigger_prompt_change",
-        description = "Mutate the prompt list and notify subscriptions/listen streams",
+        description = "Mutate the prompt list and notify subscribed clients",
         parameters = ToolParameter[],
         handler = args -> begin
             push!(SERVER_REF[].prompts, MCPPrompt(
@@ -137,15 +137,15 @@ tools = [
                 arguments = PromptArgument[],
                 messages = [PromptMessage(content = TextContent(text = "added"))]))
             n = notify_list_changed(SERVER_REF[], :prompts)
-            TextContent(text = "prompts changed; notified $n stream(s)")
+            TextContent(text = "prompts changed; notified $n target(s)")
         end),
     MCPTool(
         name = "test_trigger_resource_update",
-        description = "Announce a resource update to subscriptions/listen streams",
+        description = "Announce a resource update to subscribed clients",
         parameters = ToolParameter[],
         handler = args -> begin
             n = notify_resource_updated(SERVER_REF[], "test://watched-resource")
-            TextContent(text = "resource updated; notified $n stream(s)")
+            TextContent(text = "resource updated; notified $n target(s)")
         end),
     MCPTool(
         name = "test_missing_capability",

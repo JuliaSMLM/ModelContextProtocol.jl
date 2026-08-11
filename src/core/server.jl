@@ -295,6 +295,9 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
     # else: use server's existing transport
     
     state = ServerState()
+    # Expose the loop's session state on the server so the exported notify_*
+    # helpers (called with only `server`) can reach wire_subscriptions
+    server.legacy_state = state
 
     # Set up MCP-compliant logging. The logger delivers notifications/message to the
     # client over the transport once the session initializes (handle_initialize flips
@@ -321,6 +324,12 @@ function start!(server::Server; transport::Union{Transport,Nothing}=nothing)::No
         rethrow(e)
     finally
         server.active = false
+        # Retire the session state on EVERY loop exit: notify_* called after
+        # shutdown must see no legacy session, not a stale one whose transport
+        # is being torn down. Generation-owned like task_queue below — an
+        # overlapping restart may have installed a FRESH state already, which
+        # this run's teardown must not erase
+        server.legacy_state === state && (server.legacy_state = nothing)
         logger.transport_active[] = false
         # End subscriptions/listen streams gracefully (an empty result on each
         # listen request) BEFORE the transport goes away, so clients can tell an
@@ -384,17 +393,24 @@ end
 
 Subscribe to updates for a specific resource identified by URI.
 
+The callback is an in-process observer: [`notify_resource_updated`](@ref) invokes
+it as `callback(uri)` whenever that URI is announced as changed. It runs on the
+announcing task, its errors are logged and swallowed, and it sends nothing to
+clients on its own (client delivery is `notify_resource_updated`'s job).
+
 # Arguments
 - `server::Server`: The server instance
 - `uri::String`: The resource URI to subscribe to
-- `callback::Function`: The function to call when the resource is updated
+- `callback::Function`: Called as `callback(uri::String)` on each announced update
 
 # Returns
 - `Server`: The server instance for method chaining
 """
 function subscribe!(server::Server, uri::String, callback::Function)
     subscription = Subscription(uri, callback, now())
-    push!(server.subscriptions[uri], subscription)
+    lock(server.subscriptions_lock) do
+        push!(server.subscriptions[uri], subscription)
+    end
     server
 end
 
@@ -412,7 +428,9 @@ Remove a subscription for a specific resource URI and callback function.
 - `Server`: The server instance for method chaining
 """
 function unsubscribe!(server::Server, uri::String, callback::Function)
-    filter!(s -> s.callback !== callback, server.subscriptions[uri])
+    lock(server.subscriptions_lock) do
+        filter!(s -> s.callback !== callback, server.subscriptions[uri])
+    end
     server
 end
 
