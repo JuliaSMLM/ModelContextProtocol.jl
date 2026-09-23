@@ -161,7 +161,7 @@ resource = MCPResource(
     name = "Application Config",
     description = "Current application configuration",
     mime_type = "application/json",
-    data_provider = () -> JSON3.read(read("config.json", String), Dict{String,Any})
+    data_provider = () -> JSON.parse(read("config.json", String), Dict{String,Any})
 )
 ```
 

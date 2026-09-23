@@ -86,7 +86,7 @@ Pkg.activate("dev")
 # Load packages
 using ModelContextProtocol
 using HTTP
-using JSON3
+using JSON
 
 # Parameters (adjust these as needed)
 server_port = 3000
@@ -103,7 +103,7 @@ println("Starting MCP development test...")
 # Save outputs
 results_file = joinpath(output_dir, "test_results.json")
 open(results_file, "w") do f
-    JSON3.write(f, results)
+    JSON.json(f, results)
 end
 println("Results saved to $results_file")
 ```
@@ -142,14 +142,14 @@ using ModelContextProtocol
 using BenchmarkTools
 
 # Benchmark JSON-RPC parsing
-@benchmark JSON3.read(msg, InitializeRequest)
+@benchmark JSON.parse(msg, InitializeRequest)
 ```
 
 ## Output Conventions
 
 ### Output Types
 - **Console output**: Use `println()` for text feedback
-- **JSON files**: For structured test results (JSON3.write)
+- **JSON files**: For structured test results (JSON.json)
 - **Log files**: For detailed debug information
 - **Test artifacts**: Temporary files for testing features
 
@@ -213,7 +213,7 @@ Create `dev/test_server.jl`:
 using Pkg; Pkg.activate("dev")
 using ModelContextProtocol
 using HTTP
-using JSON3
+using JSON
 
 # Test server with stdio
 server = Server("dev-test", "1.0.0")
@@ -229,7 +229,7 @@ request = Dict(
     "id" => 1
 )
 
-response = process_message(server, JSON3.write(request))
+response = process_message(server, JSON.json(request))
 println("Response: ", response)
 ```
 

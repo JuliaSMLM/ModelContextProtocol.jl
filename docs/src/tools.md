@@ -33,7 +33,7 @@ calculator_tool = MCPTool(
         )
     ],
     handler = params -> TextContent(
-        text = JSON3.write(Dict(
+        text = JSON.json(Dict(
             "result" => eval(Meta.parse(params["expression"]))
         ))
     )
@@ -198,7 +198,7 @@ file:
 ```julia
 # calculator.jl
 using ModelContextProtocol
-using JSON3
+using JSON
 
 calculator_tool = MCPTool(
     name = "calculate",
@@ -212,7 +212,7 @@ calculator_tool = MCPTool(
         )
     ],
     handler = params -> TextContent(
-        text = JSON3.write(Dict("result" => eval(Meta.parse(params["expression"]))))
+        text = JSON.json(Dict("result" => eval(Meta.parse(params["expression"]))))
     )
 )
 ```

@@ -14,7 +14,7 @@
         contents = result.response.result.contents[1]
         @test contents["uri"] == "test://config"
         @test contents["mimeType"] == "application/json"  # MCPResource default
-        @test JSON3.read(contents["text"])["threshold"] == 42
+        @test JSON.parse(contents["text"])["threshold"] == 42
     end
 
     @testset "resources/read serves ResourceContents returns directly" begin

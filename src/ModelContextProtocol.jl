@@ -46,7 +46,7 @@ Or access the complete API documentation programmatically:
 """
 module ModelContextProtocol
 
-using JSON3, URIs, DataStructures, OrderedCollections, Logging, Dates, StructTypes, MacroTools, Base64
+using JSON, URIs, DataStructures, OrderedCollections, Logging, Dates, MacroTools, Base64
 
 # 1. All Types (consolidated in dependency order)
 include("types.jl")

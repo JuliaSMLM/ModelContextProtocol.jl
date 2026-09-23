@@ -16,7 +16,7 @@ function sign_rs256_fixture(payload::AbstractDict; key_pem::AbstractString, kid:
     b64url(x) = replace(base64encode(x), "+" => "-", "/" => "_", "=" => "")
     key_path = isabspath(key_pem) ? key_pem : joinpath(@__DIR__, "fixtures", key_pem)
     header = Dict("alg" => "RS256", "typ" => "JWT", "kid" => kid)
-    signing_input = b64url(JSON3.write(header)) * "." * b64url(JSON3.write(payload))
+    signing_input = b64url(JSON.json(header)) * "." * b64url(JSON.json(payload))
     ctx = MbedTLS.parse_keyfile(key_path)
     rng = MbedTLS.CtrDrbg()
     MbedTLS.seed!(rng, MbedTLS.Entropy())
@@ -232,7 +232,7 @@ end
         )
 
         json = ModelContextProtocol.metadata_to_json(metadata)
-        parsed = JSON3.read(json)
+        parsed = JSON.parse(json)
 
         @test parsed["resource"] == "https://example.com"
         @test "https://auth.example.com" in parsed["authorization_servers"]
@@ -366,7 +366,7 @@ end
 
 @testset "OAuth Resource Server hardening" begin
     _b64url(s) = replace(base64encode(s), "+" => "-", "/" => "_", "=" => "")
-    _mkjwt(header, payload) = "$(_b64url(JSON3.write(header))).$(_b64url(JSON3.write(payload))).sig"
+    _mkjwt(header, payload) = "$(_b64url(JSON.json(header))).$(_b64url(JSON.json(payload))).sig"
     cfg = OAuthConfig(issuer = "https://issuer.example", audience = "my-mcp")
     v = JWTValidator(insecure_skip_signature_verification = true)
     future = round(Int, datetime2unix(now(UTC))) + 3600
@@ -418,12 +418,12 @@ end
                 parameters = ToolParameter[]),
     ])
     state = ServerState()
-    whoami(user) = JSON3.read(process_message(server, state,
+    whoami(user) = JSON.parse(process_message(server, state,
         """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"whoami","arguments":{}},"id":1}""";
         authenticated_user = user)).result.content[1].text
 
     # Plain handler(args) still works
-    rplain = JSON3.read(process_message(server, state,
+    rplain = JSON.parse(process_message(server, state,
         """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"plain","arguments":{}},"id":1}"""))
     @test rplain.result.content[1].text == "ok"
 
@@ -448,7 +448,7 @@ end
                 required_scopes = ["mcp:admin"]),
     ])
     state = ServerState()
-    invoke_tool(tool, user) = JSON3.read(process_message(server, state,
+    invoke_tool(tool, user) = JSON.parse(process_message(server, state,
         """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"$tool","arguments":{}},"id":1}""";
         authenticated_user = user))
 
@@ -526,7 +526,7 @@ end
     @testset "header gate: alg/kid policy before crypto" begin
         v = JWKSValidator(fixture_url("jwks_test.json"))
         _b64url(s) = replace(base64encode(s), "+" => "-", "/" => "_", "=" => "")
-        payload_b64 = _b64url(JSON3.write(base_claims()))
+        payload_b64 = _b64url(JSON.json(base_claims()))
         # alg=none
         none_token = "$(_b64url("""{"alg":"none","kid":"test-key-1"}"""))" * ".$payload_b64."
         @test validate_token(v, none_token, cfg).error_code == :invalid_token
@@ -695,12 +695,12 @@ end
     # alongside the signing keys. They can never verify a token and must be filtered
     # out (JWTs.refresh! would warn on every fetch otherwise).
     fixture_dir = joinpath(@__DIR__, "fixtures")
-    sig_entry = JSON3.read(read(joinpath(fixture_dir, "jwks_test.json"), String))["keys"][1]
+    sig_entry = JSON.parse(read(joinpath(fixture_dir, "jwks_test.json"), String))["keys"][1]
     mktempdir() do dir
         mixed = joinpath(dir, "jwks.json")
         enc_entry = Dict("kty" => "RSA", "kid" => "enc-key-1", "use" => "enc",
                          "alg" => "RSA-OAEP", "n" => sig_entry["n"], "e" => sig_entry["e"])
-        write(mixed, JSON3.write(Dict("keys" => [enc_entry, Dict(sig_entry)])))
+        write(mixed, JSON.json(Dict("keys" => [enc_entry, Dict(sig_entry)])))
         keys = ModelContextProtocol.fetch_jwks_keys("file://" * mixed)
         @test keys !== nothing
         @test length(keys) == 1  # enc entry filtered

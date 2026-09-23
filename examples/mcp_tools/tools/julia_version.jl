@@ -1,5 +1,5 @@
 # examples/mcp_tools/julia_version.jl
-using JSON3
+using JSON
 
 # Define a tool - now with simplified return
 julia_version_tool = MCPTool(

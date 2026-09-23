@@ -1,18 +1,18 @@
 using Test
-using JSON3
+using JSON
 
 # Simple test that just verifies basic stdio communication without Python dependencies
 @testset "Basic Stdio Communication" begin
     # Create a simple echo server that doesn't require ModelContextProtocol
     echo_server_code = """
-    using JSON3
+    using JSON
     
     # Read a line from stdin
     line = readline(stdin)
     
     # Parse it as JSON
     try
-        msg = JSON3.read(line)
+        msg = JSON.parse(line)
         
         # Echo it back with a response wrapper
         response = Dict(
@@ -20,7 +20,7 @@ using JSON3
             "timestamp" => time()
         )
         
-        println(stdout, JSON3.write(response))
+        println(stdout, JSON.json(response))
         flush(stdout)
     catch e
         println(stderr, "Error: ", e)
@@ -37,18 +37,18 @@ using JSON3
         test_msg = Dict("test" => "hello", "value" => 42)
         
         # Run the server and communicate. The subprocess must inherit this harness's
-        # project environment: the server code does `using JSON3`, and without
+        # project environment: the server code does `using JSON`, and without
         # --project it would resolve against the machine's global environment —
         # working or failing depending on what happens to be installed there.
         julia_exe = Base.julia_cmd().exec[1]
 
         output = read(pipeline(
-            `echo $(JSON3.write(test_msg))`,
+            `echo $(JSON.json(test_msg))`,
             `$julia_exe --project=$(Base.active_project()) $server_file`
         ), String)
         
         # Parse response
-        response = JSON3.read(output)
+        response = JSON.parse(output)
         
         @test haskey(response, "received")
         @test response["received"]["test"] == "hello"

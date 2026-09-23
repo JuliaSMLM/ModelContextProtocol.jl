@@ -105,7 +105,7 @@ handler-provided `_meta`).
 The known handler result types are re-shaped WITHOUT a JSON round-trip, so values
 travel by reference — no numeric precision loss (Int64 above 2^53 survives) and no
 extra copies of base64 payloads. Only unknown result types fall back to an untyped
-JSON3 round-trip (which preserves Int64, unlike a `Dict{String,Any}`-typed read).
+JSON round-trip (which preserves Int64, unlike a `Dict{String,Any}`-typed read).
 
 # Arguments
 - `response::JSONRPCResponse`: The handler's response
@@ -125,7 +125,7 @@ function modern_result_envelope(response::JSONRPCResponse, server::Server)::JSON
         end
         d
     elseif result isa CallToolResult
-        # Mirror the StructTypes wire contract (names + omitempties) by hand
+        # Mirror the JSON wire contract (field-tag names + omit_null) by hand
         d = LittleDict{String,Any}("content" => result.content, "isError" => result.is_error)
         result.structured_content !== nothing && (d["structuredContent"] = result.structured_content)
         result._meta !== nothing && (d["_meta"] = result._meta)
@@ -133,9 +133,9 @@ function modern_result_envelope(response::JSONRPCResponse, server::Server)::JSON
     elseif result isa ReadResourceResult
         LittleDict{String,Any}("contents" => result.contents)
     else
-        # Unknown result type: one untyped round-trip (JSON3.Object keeps Int64;
+        # Unknown result type: one untyped round-trip (JSON.Object keeps Int64;
         # a Dict{String,Any}-typed read would coerce numbers to Float64)
-        obj = JSON3.read(JSON3.write(result))
+        obj = JSON.parse(JSON.json(result))
         d = LittleDict{String,Any}()
         for (k, v) in pairs(obj)
             d[String(k)] = v

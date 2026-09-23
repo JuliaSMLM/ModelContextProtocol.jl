@@ -27,7 +27,7 @@ with the subscription id the spec requires on every stream message.
 function subscription_notification(method::String, params::AbstractDict, sub_id)::String
     p = Dict{String,Any}(String(k) => v for (k, v) in params)
     p["_meta"] = Dict{String,Any}(META_SUBSCRIPTION_ID => sub_id)
-    JSON3.write(Dict{String,Any}(
+    JSON.json(Dict{String,Any}(
         "jsonrpc" => "2.0",
         "method" => method,
         "params" => p
@@ -339,7 +339,7 @@ function legacy_session_notification(state::ServerState, transport, method::Stri
     state.initialized || return false
     state.protocol_version === nothing && return false
     transport === nothing && return false
-    payload = JSON3.write(Dict{String,Any}(
+    payload = JSON.json(Dict{String,Any}(
         "jsonrpc" => "2.0",
         "method" => method,
         "params" => Dict{String,Any}(String(k) => v for (k, v) in params),
@@ -537,7 +537,7 @@ function close_subscriptions!(server::Server)::Nothing
     registry = server.listen_subscriptions
     lock(registry.lock) do
         for s in registry.subs
-            payload = JSON3.write(Dict{String,Any}(
+            payload = JSON.json(Dict{String,Any}(
                 "jsonrpc" => "2.0",
                 "id" => s.id,
                 "result" => Dict{String,Any}(

@@ -32,7 +32,7 @@ The documentation environment includes:
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 ModelContextProtocol = "..."  # Package UUID
-JSON3 = "..."  # For examples
+JSON = "..."  # For examples
 HTTP = "..."   # For HTTP examples
 ```
 
@@ -287,7 +287,7 @@ server  # Display server info
 ```markdown
 ```@example protocol
 using ModelContextProtocol
-using JSON3
+using JSON
 
 # Show JSON-RPC message structure
 request = Dict(
@@ -297,7 +297,7 @@ request = Dict(
     "id" => 1
 )
 
-JSON3.pretty(request)
+JSON.json(request; pretty=true)
 ```
 ```
 

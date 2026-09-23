@@ -113,10 +113,10 @@ end
 @testset "Protocol Messages" begin
     # Test serialization
     msg = InitializeRequest(...)
-    json = JSON3.write(msg)
+    json = JSON.json(msg)
     
     # Test deserialization
-    parsed = JSON3.read(json, InitializeParams)
+    parsed = JSON.parse(json, InitializeParams)
     @test parsed.protocolVersion == "2025-11-25"
 end
 ```

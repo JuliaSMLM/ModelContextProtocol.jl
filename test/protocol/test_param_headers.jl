@@ -50,13 +50,13 @@ const _PH_META = Dict{String,Any}(
 )
 
 function _ph_call(server, state, name, arguments; headers = Dict{String,Any}(), id = 1)
-    r = process_message(server, state, JSON3.write(
+    r = process_message(server, state, JSON.json(
             Dict("jsonrpc" => "2.0", "id" => id, "method" => "tools/call",
                  "params" => Dict("name" => name, "arguments" => arguments,
                                   "_meta" => _PH_META)));
         param_headers = headers)
     task_local_storage(:mcp_suppress_log_notifications, false)
-    JSON3.read(r)
+    JSON.parse(r)
 end
 
 _ph_b64(s) = Base64.base64encode(s)
@@ -65,11 +65,11 @@ _ph_b64(s) = Base64.base64encode(s)
 
     @testset "schema emits the annotation" begin
         server, state = _ph_server()
-        r = process_message(server, state, JSON3.write(
+        r = process_message(server, state, JSON.json(
             Dict("jsonrpc" => "2.0", "id" => 1, "method" => "tools/list",
                  "params" => Dict("_meta" => _PH_META))))
         task_local_storage(:mcp_suppress_log_notifications, false)
-        tools = JSON3.read(r)["result"]["tools"]
+        tools = JSON.parse(r)["result"]["tools"]
         routed = first(t for t in tools if t["name"] == "routed")
         @test routed["inputSchema"]["properties"]["routing_key"]["x-mcp-header"] == "Routing-Key"
         @test !haskey(routed["inputSchema"]["properties"]["plain"], "x-mcp-header")
@@ -132,7 +132,7 @@ _ph_b64(s) = Base64.base64encode(s)
         # The -32020 response maps to HTTP 400 at the transport layer
         r = _ph_call(server, state, "routed", Dict("routing_key" => "east-1");
                      headers = Dict{String,Any}())
-        @test ModelContextProtocol.modern_error_http_status(JSON3.write(r)) == 400
+        @test ModelContextProtocol.modern_error_http_status(JSON.json(r)) == 400
     end
 
     @testset "out-of-scope requests skip the validation" begin
@@ -149,27 +149,27 @@ _ph_b64(s) = Base64.base64encode(s)
         @test haskey(r2, "result")
 
         # stdio: no headers collected (param_headers === nothing) -> no validation
-        r3 = process_message(server, state, JSON3.write(
+        r3 = process_message(server, state, JSON.json(
             Dict("jsonrpc" => "2.0", "id" => 3, "method" => "tools/call",
                  "params" => Dict("name" => "routed",
                                   "arguments" => Dict("routing_key" => "east-1"),
                                   "_meta" => _PH_META))))
         task_local_storage(:mcp_suppress_log_notifications, false)
-        @test haskey(JSON3.read(r3), "result")
+        @test haskey(JSON.parse(r3), "result")
 
         # Legacy-era sessions are untouched even with headers present
         lstate = ServerState()
-        process_message(server, lstate, JSON3.write(
+        process_message(server, lstate, JSON.json(
             Dict("jsonrpc" => "2.0", "id" => 1, "method" => "initialize",
                  "params" => Dict("protocolVersion" => "2025-11-25", "capabilities" => Dict(),
                                   "clientInfo" => Dict("name" => "l", "version" => "1")))))
-        rl = process_message(server, lstate, JSON3.write(
+        rl = process_message(server, lstate, JSON.json(
             Dict("jsonrpc" => "2.0", "id" => 2, "method" => "tools/call",
                  "params" => Dict("name" => "routed",
                                   "arguments" => Dict("routing_key" => "east-1"))));
             param_headers = Dict{String,Any}())
         task_local_storage(:mcp_suppress_log_notifications, false)
-        @test haskey(JSON3.read(rl), "result")
+        @test haskey(JSON.parse(rl), "result")
     end
 
     @testset "pre-header positional ToolParameter still constructs (Codex r1 B5)" begin
@@ -245,14 +245,14 @@ _ph_b64(s) = Base64.base64encode(s)
         # A debug logLevel opt-in must not let a notification precede the -32020:
         # the preflight answers the error as the request's ONLY message
         meta = merge(_PH_META, Dict{String,Any}("io.modelcontextprotocol/logLevel" => "debug"))
-        r = process_message(server, state, JSON3.write(
+        r = process_message(server, state, JSON.json(
                 Dict("jsonrpc" => "2.0", "id" => 9, "method" => "tools/call",
                      "params" => Dict("name" => "routed",
                                       "arguments" => Dict("routing_key" => "east-1"),
                                       "_meta" => meta)));
             param_headers = Dict{String,Any}())
         task_local_storage(:mcp_suppress_log_notifications, false)
-        @test JSON3.read(r)["error"]["code"] == -32020
+        @test JSON.parse(r)["error"]["code"] == -32020
     end
 
     @testset "invalid suffixes are refused at registration (Codex r1 W1)" begin
@@ -292,7 +292,7 @@ _ph_b64(s) = Base64.base64encode(s)
                      headers = Dict{String,Any}())
         @test r["error"]["code"] == -32020
         @test ncodeunits(r["error"]["message"]) < 1000
-        @test ModelContextProtocol.modern_error_http_status(JSON3.write(r)) == 400
+        @test ModelContextProtocol.modern_error_http_status(JSON.json(r)) == 400
     end
 
     @testset "exact integer mirrors and constrained number syntax (Codex r2 B1 + r3 B1)" begin
@@ -315,7 +315,7 @@ _ph_b64(s) = Base64.base64encode(s)
         @test _ph_call(server, state, "routed", max_safe;
                        headers = hdr("9007199254740990"), id = 3)["error"]["code"] == -32020
 
-        # JSON3 normalizes integral tokens (42.0, 1e3) to Int64 — every JSON
+        # JSON normalizes integral tokens (42.0, 1e3) to Int64 — every JSON
         # spelling of the same integer is a valid mirror, compared exactly
         for (body, goods, bads) in (
             (Dict{String,Any}(base..., "level" => 42.0), ("42", "42.0", "4.2e1"), ("42.5", "43")),
@@ -397,7 +397,7 @@ _ph_b64(s) = Base64.base64encode(s)
         # stays 200 (the top-level result key precedes any such nesting), and
         # error-shaped TEXT inside strings serializes escaped, so it never
         # matches the structural needles
-        big_success = JSON3.write(Dict{String,Any}(
+        big_success = JSON.json(Dict{String,Any}(
             "jsonrpc" => "2.0", "id" => 1,
             "result" => Dict{String,Any}(
                 "content" => [Dict{String,Any}("type" => "text",
@@ -444,7 +444,7 @@ _ph_b64(s) = Base64.base64encode(s)
         base = Dict{String,Any}("routing_key" => "e")
         hdr(level) = Dict{String,Any}("routing-key" => "e", "level" => level)
 
-        # Integer tokens beyond Int64 arrive as Float64 from JSON3 — the
+        # Integer tokens beyond Int64 arrive as Float64 from JSON — the
         # JavaScript-safe range check must catch integral floats too, or
         # 9223372036854775808 and ...809 would collapse in the float compare
         huge = Dict{String,Any}(base..., "level" => Int128(9223372036854775808))
@@ -519,7 +519,7 @@ _ph_b64(s) = Base64.base64encode(s)
         end
 
         # Serialization-equivalent containers cannot smuggle annotations:
-        # JSON3 emits Tuples and Sets as arrays, and the normalized walk sees
+        # JSON emits Tuples and Sets as arrays, and the normalized walk sees
         # exactly the advertised JSON
         annotated = Dict{String,Any}("type" => "string", "x-mcp-header" => "A")
         tup = Dict{String,Any}("type" => "object",

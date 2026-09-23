@@ -163,7 +163,7 @@ function format_log_notification(level, message, _module, filepath, line; kwargs
     end
 
     buf = IOBuffer()
-    JSON3.write(buf, log_message)
+    JSON.json(buf, log_message)
     (mcp_level, String(take!(buf)))
 end
 
@@ -189,7 +189,7 @@ Format and output log messages according to the MCP protocol format.
 function Logging.handle_message(logger::MCPLogger, level, message, _module, group, id,
                               filepath, line; kwargs...)
     # Reentrancy guard FIRST: everything below — string(message), string(v) on kwarg
-    # values, JSON3.write, is_connected, the transport send — can invoke user-defined
+    # values, JSON.json, is_connected, the transport send — can invoke user-defined
     # show methods or transport code that logs, re-entering this function. A recursive
     # record gets a minimal fixed fallback line (still gated by the operator's level:
     # a record that would not have printed must not leave a marker either): no

@@ -380,7 +380,7 @@ end
 
         @test send_progress(ctx, 3; total=10, message="working") == true
 
-        notif = JSON3.read(String(take!(buf)))
+        notif = JSON.parse(String(take!(buf)))
         @test notif["jsonrpc"] == "2.0"
         @test notif["method"] == "notifications/progress"
         @test notif["params"]["progressToken"] == "tok-1"
@@ -397,7 +397,7 @@ end
 
         @test send_progress(ctx, 1.5) == true
 
-        notif = JSON3.read(String(take!(buf)))
+        notif = JSON.parse(String(take!(buf)))
         @test notif["params"]["progressToken"] == 7
         @test notif["params"]["progress"] == 1.5
         @test !haskey(notif["params"], "total")
@@ -460,7 +460,7 @@ end
         @test send_progress(ctx, 2; total=5) == true
         @test isready(transport.notification_queue)   # delivered out-of-band (SSE)
         @test isempty(transport.response_channels)     # response path untouched
-        notif = JSON3.read(take!(transport.notification_queue))
+        notif = JSON.parse(take!(transport.notification_queue))
         @test notif["method"] == "notifications/progress"
         @test notif["params"]["progressToken"] == "http-tok"
         @test notif["params"]["progress"] == 2.0
@@ -496,7 +496,7 @@ end
 
         # Full wire path: parse -> typed params -> dispatch (this was "Unknown method"
         # before the handlers existed, despite the advertised subscribe capability)
-        req = ModelContextProtocol.parse_message(JSON3.write(Dict(
+        req = ModelContextProtocol.parse_message(JSON.json(Dict(
             "jsonrpc" => "2.0",
             "id" => 7,
             "method" => "resources/subscribe",

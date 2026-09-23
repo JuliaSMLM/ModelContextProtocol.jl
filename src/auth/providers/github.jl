@@ -60,7 +60,7 @@ function fetch_github_user(token::String)
         )
 
         if response.status == 200
-            return JSON3.read(String(response.body), Dict{String,Any})
+            return JSON.parse(String(response.body), Dict{String,Any})
         end
         return nothing
     catch e
@@ -94,7 +94,7 @@ function check_github_org_membership(token::String, org::String)
         response.status == 200 || return false
         # A 200 can still be a *pending* invitation; only "active" membership grants access.
         membership = try
-            JSON3.read(String(response.body), Dict{String,Any})
+            JSON.parse(String(response.body), Dict{String,Any})
         catch
             return false
         end

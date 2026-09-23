@@ -50,9 +50,9 @@ function _cmp_server()
 end
 
 function _cmp_rpc(server, state, msg)
-    r = process_message(server, state, JSON3.write(msg))
+    r = process_message(server, state, JSON.json(msg))
     task_local_storage(:mcp_suppress_log_notifications, false)
-    r === nothing ? nothing : JSON3.read(r)
+    r === nothing ? nothing : JSON.parse(r)
 end
 
 _cmp_init(server, state) = _cmp_rpc(server, state,

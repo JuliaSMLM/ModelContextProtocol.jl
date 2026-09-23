@@ -1,6 +1,6 @@
 using Test
 using ModelContextProtocol
-using JSON3, URIs, DataStructures, Logging, Base64, HTTP, Dates
+using JSON, URIs, DataStructures, Logging, Base64, HTTP, Dates
 using OrderedCollections: LittleDict
 import MbedTLS  # test-only: RS256 fixture signing (sign_rs256_fixture in test/auth/test_auth.jl)
 

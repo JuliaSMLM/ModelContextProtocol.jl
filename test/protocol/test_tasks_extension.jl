@@ -48,13 +48,13 @@ end
 
 # One request/response round-trip; nothing when the call deferred its response.
 function _ext_rpc(server, state, msg)
-    r = process_message(server, state, JSON3.write(msg))
+    r = process_message(server, state, JSON.json(msg))
     task_local_storage(:mcp_suppress_log_notifications, false)
-    r === nothing ? nothing : JSON3.read(r)
+    r === nothing ? nothing : JSON.parse(r)
 end
 
 # Drain JSON lines delivered out-of-loop (deferred responses).
-_ext_oob(buf::IOBuffer) = [JSON3.read(l) for l in split(String(take!(buf)), '\n') if startswith(l, "{")]
+_ext_oob(buf::IOBuffer) = [JSON.parse(l) for l in split(String(take!(buf)), '\n') if startswith(l, "{")]
 
 # Deliver a deferred tools/call and wait for its out-of-loop response by id.
 function _ext_deferred_response(buf, id)
@@ -577,7 +577,7 @@ _ext_tools() = [
             handler=(args, ctx) -> begin
                 task_detach(ctx)
                 resp = task_await_input(ctx, elicit_request("Proceed?"))
-                TextContent(text="confirmed: $(JSON3.write(resp))")
+                TextContent(text="confirmed: $(JSON.json(resp))")
             end)
         server, state, buf = _ext_test_server(tools=[confirmer])
         elicit_caps = Dict{String,Any}(
@@ -627,7 +627,7 @@ _ext_tools() = [
             handler=(args, ctx) -> begin
                 task_detach(ctx)
                 rs = task_await_input(ctx, [elicit_request("First?"), elicit_request("Second?")])
-                TextContent(text="fanout: $(JSON3.write(rs))")
+                TextContent(text="fanout: $(JSON.json(rs))")
             end)
         tworounds = MCPTool(name="tworounds", description="d", parameters=[],
             task_support=:optional,
@@ -635,7 +635,7 @@ _ext_tools() = [
                 task_detach(ctx)
                 a = task_await_input(ctx, elicit_request("Round 1?"))
                 b = task_await_input(ctx, elicit_request("Round 2?"))
-                TextContent(text="rounds: $(JSON3.write(Any[a, b]))")
+                TextContent(text="rounds: $(JSON.json(Any[a, b]))")
             end)
         server, state, buf = _ext_test_server(tools=[fanout, tworounds])
         elicit_caps = Dict{String,Any}(
@@ -834,7 +834,7 @@ _ext_tools() = [
         r = ModelContextProtocol._frozen_input_request(
             sampling_request(Dict{String,Any}("maxTokens" => big_n, "messages" => Any[])))
         @test r.params["maxTokens"] == big_n
-        @test occursin(string(big_n), JSON3.write(r.params))
+        @test occursin(string(big_n), JSON.json(r.params))
 
         # Mutation isolation holds with the owned copy, at depth
         src = Dict{String,Any}("m" => Dict{String,Any}("x" => 1))
@@ -850,7 +850,7 @@ _ext_tools() = [
         r3 = ModelContextProtocol._frozen_input_request(sampling_request(Dict{String,Any}(
             "s" => src_set, "nt" => (inner = src_inner,))))
         push!(src_set, "CHANGED"); src_inner["x"] = 99
-        w = JSON3.write(r3.params)
+        w = JSON.json(r3.params)
         @test !occursin("CHANGED", w) && !occursin("99", w)
 
         # Even a BigInt is snapshotted by value: its GMP backing is mutable in place
@@ -861,7 +861,7 @@ _ext_tools() = [
         @test r4.params["n"] == 7
 
         # Everything outside the closed plain-JSON set refuses with a clear error —
-        # including JSON3-serializable values that deepcopy passes through by
+        # including JSON-serializable values that deepcopy passes through by
         # identity (Regex) or that wrap arbitrary mutable state (Ref, functions),
         # at any nesting depth
         for bad in (identity, Ref(1), r"safe", Dict{String,Any}("nested" => Ref(1)))
@@ -904,7 +904,7 @@ _ext_tools() = [
             handler=(args, ctx) -> begin
                 task_detach(ctx)
                 resp = task_await_input(ctx, elicit_request("Proceed?"))
-                TextContent(text="notified: $(JSON3.write(resp))")
+                TextContent(text="notified: $(JSON.json(resp))")
             end)
         server, state, buf = _ext_test_server(tools=[confirmer])
         elicit_caps = Dict{String,Any}(
@@ -1108,7 +1108,7 @@ _ext_tools() = [
 
     @testset "Mcp-Name routing header mirrors taskId (SEP-2243)" begin
         body = """{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"taskId":"abc-123","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"""
-        msg = JSON3.read(body)
+        msg = JSON.parse(body)
         mk(headers) = HTTP.Request("POST", "/", headers, body)
         ok_headers = ["MCP-Protocol-Version" => "2026-07-28", "Mcp-Method" => "tasks/get",
                       "Mcp-Name" => "abc-123"]

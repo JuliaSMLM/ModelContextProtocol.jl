@@ -88,8 +88,8 @@
         @test content[3]["type"] == "text"
         @test content[3]["text"] == "Third item"
 
-        @test contains(JSON3.write(result.response.result), "Third item")
-        @test contains(JSON3.write(result.response.result), "image/png")
+        @test contains(JSON.json(result.response.result), "Third item")
+        @test contains(JSON.json(result.response.result), "image/png")
     end
     
     @testset "Mixed return types" begin
@@ -551,7 +551,7 @@ end
         @test length(result.response.result.content) == 1
         @test result.response.result.content[1]["type"] == "text"
         # The text is the JSON encoding of the returned Dict
-        parsed = JSON3.read(result.response.result.content[1]["text"])
+        parsed = JSON.parse(result.response.result.content[1]["text"])
         @test parsed.answer == 42
         @test parsed.ok == true
     end

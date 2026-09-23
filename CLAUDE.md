@@ -115,13 +115,13 @@ Create a test script for comprehensive testing:
 
 ```julia
 # test_client.jl
-using HTTP, JSON3
+using HTTP, JSON
 
 function test_mcp_server(url)
     # Initialize
     init_response = HTTP.post(url,
         ["Content-Type" => "application/json"],
-        JSON3.write(Dict(
+        JSON.json(Dict(
             "jsonrpc" => "2.0",
             "method" => "initialize",
             "params" => Dict(
@@ -143,7 +143,7 @@ function test_mcp_server(url)
     end
     
     tools_response = HTTP.post(url, headers,
-        JSON3.write(Dict(
+        JSON.json(Dict(
             "jsonrpc" => "2.0",
             "method" => "tools/list",
             "params" => Dict(),
@@ -166,7 +166,7 @@ test_mcp_server("http://localhost:3000/")
 ```julia
 # ✅ CORRECT: Parse body first, then check session
 body = String(read(stream))
-msg = JSON3.read(body)
+msg = JSON.parse(body)
 is_initialize = get(msg, "method", "") == "initialize"
 
 if !is_initialize && transport.session_required
@@ -290,7 +290,7 @@ src/
 ```
 
 ## Code Style
-- Imports: Group related imports (e.g., `using JSON3, URIs, DataStructures`)
+- Imports: Group related imports (e.g., `using JSON, URIs, DataStructures`)
 - Types: Use abstract type hierarchy, concrete types with `Base.@kwdef`
 - Naming: 
   - PascalCase for types (e.g., `MCPTool`, `TextContent`)

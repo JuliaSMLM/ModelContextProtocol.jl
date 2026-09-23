@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the deprecated JSON3.jl and StructTypes.jl dependencies with JSON.jl 1.x.
+  Parsed messages are now `JSON.Object{String,Any}` (same `obj.key` / `obj[:key]` /
+  `obj["key"]` access as before) with arrays as `Vector{Any}`. Request param types
+  are `JSON.@kwarg` structs, so absent optional fields take their declared defaults;
+  wire-key renames use JSON field tags and optional fields use `JSON.omit_null` /
+  `JSON.omit_empty`. JSON.jl keeps integral floats (`42.0`) as `Float64` and parses
+  integers beyond `Int64` exactly (`Int128`/`BigInt`) instead of as `Float64`.
+- MRTR `requestState` handler state is now validated as plain JSON data up front
+  (JSON.jl would otherwise stringify a `Function` or serialize arbitrary structs).
+
 ## [0.7.0] - 2026-08-09
 
 **Full server-side support for the MCP 2026-07-28 specification.** This

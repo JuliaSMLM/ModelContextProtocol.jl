@@ -72,7 +72,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-06-18",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -160,7 +160,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -205,7 +205,7 @@
 
         # Emit an out-of-band notification (no request being handled, so no
         # task-local route): it must flow over the standalone GET SSE stream.
-        ModelContextProtocol.send_notification(transport, JSON3.write(Dict(
+        ModelContextProtocol.send_notification(transport, JSON.json(Dict(
             "jsonrpc" => "2.0",
             "method" => "notifications/progress",
             "params" => Dict(
@@ -284,7 +284,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-11-25",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -305,7 +305,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "tools/call",
                 "params" => Dict(
@@ -332,7 +332,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "tools/call",
                 "params" => Dict("name" => "log_test", "arguments" => Dict()),
@@ -351,7 +351,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "tools/call",
                 "params" => Dict("name" => "quiet_test", "arguments" => Dict()),
@@ -359,7 +359,7 @@
             ))
         )
         @test startswith(HTTP.header(quiet_response, "Content-Type", ""), "application/json")
-        quiet_result = JSON3.read(String(quiet_response.body))
+        quiet_result = JSON.parse(String(quiet_response.body))
         @test quiet_result["id"] == 4
 
         # A client whose Accept lacks text/event-stream gets plain JSON with the
@@ -369,7 +369,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "application/json"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "tools/call",
                 "params" => Dict(
@@ -381,7 +381,7 @@
             ))
         )
         @test startswith(HTTP.header(json_only, "Content-Type", ""), "application/json")
-        json_result = JSON3.read(String(json_only.body))
+        json_result = JSON.parse(String(json_only.body))
         @test json_result["id"] == 5
         @test haskey(json_result, "result")
 
@@ -417,7 +417,7 @@
                 "Accept" => "application/json, text/event-stream"]
         mhdrs(method; version = "2026-07-28") = vcat(base,
             ["MCP-Protocol-Version" => version, "Mcp-Method" => method])
-        post(hdrs, msg) = HTTP.post(url, hdrs, JSON3.write(msg); status_exception = false)
+        post(hdrs, msg) = HTTP.post(url, hdrs, JSON.json(msg); status_exception = false)
 
         # Legacy initialize first: mints a session and negotiates a legacy version
         init = post(vcat(base, ["MCP-Protocol-Version" => "2025-11-25"]), Dict(
@@ -441,27 +441,27 @@
         @test r.status == 200
         @test HTTP.header(r, "MCP-Protocol-Version", "") == "2026-07-28"
         @test HTTP.header(r, "Mcp-Session-Id", "") == ""
-        @test JSON3.read(String(r.body))["result"]["resultType"] == "complete"
+        @test JSON.parse(String(r.body))["result"]["resultType"] == "complete"
 
         # Missing Mcp-Method -> 400 + -32020
         r = post(vcat(base, ["MCP-Protocol-Version" => "2026-07-28"]),
             Dict("jsonrpc" => "2.0", "id" => 4, "method" => "tools/list",
                  "params" => Dict("_meta" => mmeta)))
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        @test JSON.parse(String(r.body))["error"]["code"] == -32020
 
         # Mcp-Method mismatch -> 400 + -32020
         r = post(mhdrs("tools/call"), Dict("jsonrpc" => "2.0", "id" => 5,
             "method" => "tools/list", "params" => Dict("_meta" => mmeta)))
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        @test JSON.parse(String(r.body))["error"]["code"] == -32020
 
         # Missing MCP-Protocol-Version header -> 400 + -32020
         r = post(vcat(base, ["Mcp-Method" => "tools/list"]),
             Dict("jsonrpc" => "2.0", "id" => 6, "method" => "tools/list",
                  "params" => Dict("_meta" => mmeta)))
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        @test JSON.parse(String(r.body))["error"]["code"] == -32020
 
         # tools/call requires Mcp-Name mirroring params.name
         call_msg(id) = Dict("jsonrpc" => "2.0", "id" => id, "method" => "tools/call",
@@ -469,12 +469,12 @@
                              "_meta" => mmeta))
         r = post(mhdrs("tools/call"), call_msg(7))                     # missing Mcp-Name
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        @test JSON.parse(String(r.body))["error"]["code"] == -32020
         r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => "wrong"]), call_msg(8))
         @test r.status == 400
         r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => "echo"]), call_msg(9))
         @test r.status == 200
-        @test JSON3.read(String(r.body))["result"]["content"][1]["text"] == "hi"
+        @test JSON.parse(String(r.body))["result"]["content"][1]["text"] == "hi"
 
         # Base64 sentinel value decodes before comparison; malformed sentinel rejects
         sentinel = "=?base64?" * Base64.base64encode("echo") * "?="
@@ -482,7 +482,7 @@
         @test r.status == 200
         r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => "=?base64?!!notb64!!?="]), call_msg(11))
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        @test JSON.parse(String(r.body))["error"]["code"] == -32020
 
         # Unsupported version (header matches body) -> 400 + -32022 with data
         bad_meta = Dict("io.modelcontextprotocol/protocolVersion" => "1999-01-01",
@@ -491,7 +491,7 @@
             Dict("jsonrpc" => "2.0", "id" => 12, "method" => "tools/list",
                  "params" => Dict("_meta" => bad_meta)))
         @test r.status == 400
-        err = JSON3.read(String(r.body))["error"]
+        err = JSON.parse(String(r.body))["error"]
         @test err["code"] == -32022
         @test err["data"]["requested"] == "1999-01-01"
 
@@ -499,21 +499,21 @@
         r = post(mhdrs("ping"), Dict("jsonrpc" => "2.0", "id" => 13, "method" => "ping",
                                      "params" => Dict("_meta" => mmeta)))
         @test r.status == 404
-        @test JSON3.read(String(r.body))["error"]["code"] == -32601
+        @test JSON.parse(String(r.body))["error"]["code"] == -32601
 
         # Missing clientCapabilities -> 400 + -32602
         r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 14,
             "method" => "tools/list", "params" => Dict("_meta" => Dict(
                 "io.modelcontextprotocol/protocolVersion" => "2026-07-28"))))
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32602
+        @test JSON.parse(String(r.body))["error"]["code"] == -32602
 
         # server/discover without _meta -> 400 + -32602 (modern-only method)
         r = post(vcat(base, ["Mcp-Method" => "server/discover"]),
             Dict("jsonrpc" => "2.0", "id" => 15, "method" => "server/discover",
                  "params" => Dict()))
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32602
+        @test JSON.parse(String(r.body))["error"]["code"] == -32602
 
         # A modern HEADER with a legacy body must NOT slip past validation: a
         # gateway routing on the header and a backend executing the body would
@@ -524,14 +524,14 @@
         r = post(mhdrs("tools/list"), Dict("jsonrpc" => "2.0", "id" => 17,
             "method" => "tools/list", "params" => Dict()))  # no modern _meta
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32602
+        @test JSON.parse(String(r.body))["error"]["code"] == -32602
 
         # Duplicate standard headers are a smuggling vector -> 400 + -32020
         r = post(vcat(mhdrs("tools/list"), ["Mcp-Method" => "tools/list"]),
             Dict("jsonrpc" => "2.0", "id" => 18, "method" => "tools/list",
                  "params" => Dict("_meta" => mmeta)))
         @test r.status == 400
-        @test JSON3.read(String(r.body))["error"]["code"] == -32020
+        @test JSON.parse(String(r.body))["error"]["code"] == -32020
 
         # Permissive Base64 must be rejected: missing padding and invalid chars
         # both decode "successfully" under Julia's lenient decoder
@@ -539,7 +539,7 @@
                     "=?base64?" * "SGVs!!!bG8=" * "?=")      # invalid characters
             r = post(vcat(mhdrs("tools/call"), ["Mcp-Name" => bad]), call_msg(19))
             @test r.status == 400
-            @test JSON3.read(String(r.body))["error"]["code"] == -32020
+            @test JSON.parse(String(r.body))["error"]["code"] == -32020
         end
 
         # Header injection via the body version string: the response must never
@@ -572,13 +572,13 @@
         # The health GET must not leak the legacy session ID
         r = HTTP.get(url, ["Accept" => "application/json"]; status_exception = false)
         @test r.status == 200
-        @test !haskey(JSON3.read(String(r.body)), "session_id")
+        @test !haskey(JSON.parse(String(r.body)), "session_id")
 
         # Legacy session still intact after all the modern traffic
         r = post(vcat(base, ["Mcp-Session-Id" => session]),
             Dict("jsonrpc" => "2.0", "id" => 16, "method" => "tools/list", "params" => Dict()))
         @test r.status == 200
-        @test !haskey(JSON3.read(String(r.body))["result"], "resultType")
+        @test !haskey(JSON.parse(String(r.body))["result"], "resultType")
 
         # Clean up
         server.active = false
@@ -614,7 +614,7 @@
                           "Accept" => "application/json, text/event-stream",
                           "MCP-Protocol-Version" => "2026-07-28",
                           "Mcp-Method" => "subscriptions/listen"]
-        listen_body(id) = JSON3.write(Dict(
+        listen_body(id) = JSON.json(Dict(
             "jsonrpc" => "2.0", "id" => id, "method" => "subscriptions/listen",
             "params" => Dict("_meta" => mmeta,
                              "notifications" => Dict("toolsListChanged" => true))))
@@ -659,7 +659,7 @@
                                 "Mcp-Method" => "subscriptions/listen"],
                 listen_body("sub-reject"); status_exception = false)
             @test r.status == 400
-            @test JSON3.read(String(r.body))["error"]["code"] == -32600
+            @test JSON.parse(String(r.body))["error"]["code"] == -32600
 
             # ...and q=0 is a refusal, not an acceptance (media-range matching,
             # not a substring test)
@@ -697,7 +697,7 @@
                                 "Accept" => "application/json, text/event-stream",
                                 "MCP-Protocol-Version" => "2026-07-28",
                                 "Mcp-Method" => "tools/list"],
-                JSON3.write(Dict("jsonrpc" => "2.0", "id" => 9, "method" => "tools/list",
+                JSON.json(Dict("jsonrpc" => "2.0", "id" => 9, "method" => "tools/list",
                                  "params" => Dict("_meta" => mmeta)));
                 status_exception = false)
             @test r.status == 200
@@ -856,7 +856,7 @@
              "Origin" => "http://localhost:3000",
              "MCP-Protocol-Version" => "2025-06-18",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -878,7 +878,7 @@
                  "Origin" => "http://evil.com",
                  "MCP-Protocol-Version" => "2025-06-18",
                  "Accept" => "application/json, text/event-stream"],
-                JSON3.write(Dict(
+                JSON.json(Dict(
                     "jsonrpc" => "2.0",
                     "method" => "initialize",
                     "params" => Dict(
@@ -936,7 +936,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-11-25",  # Client sends newer version
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -948,7 +948,7 @@
             ))
         )
         @test init_response.status == 200
-        result = JSON3.read(String(init_response.body))
+        result = JSON.parse(String(init_response.body))
         @test haskey(result, "result")
         # Server echoes back the negotiated (supported) version
         @test result["result"]["protocolVersion"] == "2025-11-25"
@@ -961,7 +961,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2024-11-05",  # Older version header
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -973,7 +973,7 @@
             ))
         )
         @test response.status == 200
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test haskey(result, "result")
         # Server echoes back the negotiated (older, supported) version
         @test result["result"]["protocolVersion"] == "2024-11-05"
@@ -1031,7 +1031,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-06-18",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -1054,7 +1054,7 @@
                     ["Content-Type" => "application/json",
                      "Mcp-Session-Id" => session_id,
                      "Accept" => "application/json, text/event-stream"],
-                    JSON3.write(Dict(
+                    JSON.json(Dict(
                         "jsonrpc" => "2.0",
                         "method" => "tools/call",
                         "params" => Dict(
@@ -1064,7 +1064,7 @@
                         "id" => i + 1
                     ))
                 )
-                JSON3.read(String(response.body))
+                JSON.parse(String(response.body))
             end
             push!(tasks, task)
         end

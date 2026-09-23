@@ -55,7 +55,7 @@ end
 Serialize Protected Resource Metadata to JSON for HTTP response.
 """
 function metadata_to_json(metadata::ProtectedResourceMetadata)
-    return JSON3.write(Dict{String,Any}(
+    return JSON.json(Dict{String,Any}(
         "resource" => metadata.resource,
         "authorization_servers" => metadata.authorization_servers,
         "scopes_supported" => metadata.scopes_supported,

@@ -1259,8 +1259,8 @@ input_state(ctx) -> Any                   # whatever you passed as `state`; noth
 ```
 
 `state` round-trips through JSON inside `requestState`, so it comes back **parsed**, not
-as the original Julia object: a `Dict` returns as a `JSON3.Object` (index it with
-`st["key"]` or `st.key`), a vector as a `JSON3.Array`. Keep it to plain JSON data.
+as the original Julia object: a `Dict` returns as a `JSON.Object` (index it with
+`st["key"]` or `st.key`), a vector as a `Vector{Any}`. Keep it to plain JSON data.
 
 ```julia
 confirm_tool = MCPTool(
@@ -1282,7 +1282,7 @@ confirm_tool = MCPTool(
                 state = Dict("draft" => args["draft_id"]))
         end
         # Retry: the handler re-runs from the top with the answer available.
-        draft = input_state(ctx)["draft"]   # JSON3.Object — see note above
+        draft = input_state(ctx)["draft"]   # JSON.Object — see note above
         TextContent(text = "published $draft: $(answers["confirm"])")
     end
 )

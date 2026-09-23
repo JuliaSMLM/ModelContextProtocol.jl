@@ -133,8 +133,8 @@ end
     without_sc = CallToolResult(
         content = [Dict{String,Any}("type" => "text", "text" => "hi")],
     )
-    j_with = JSON3.read(JSON3.write(with_sc), Dict{String,Any})
-    j_without = JSON3.read(JSON3.write(without_sc), Dict{String,Any})
+    j_with = JSON.parse(JSON.json(with_sc), Dict{String,Any})
+    j_without = JSON.parse(JSON.json(without_sc), Dict{String,Any})
 
     # structured_content is emitted as `structuredContent`, omitted when nothing
     @test j_with["structuredContent"]["answer"] == 42
@@ -148,7 +148,7 @@ end
         content = [Dict{String,Any}("type" => "text", "text" => "hi")],
         _meta = Dict("trace" => "abc"),
     )
-    j_meta = JSON3.read(JSON3.write(with_meta), Dict{String,Any})
+    j_meta = JSON.parse(JSON.json(with_meta), Dict{String,Any})
     @test j_meta["_meta"]["trace"] == "abc"
     @test !haskey(j_without, "_meta")
 end
@@ -172,7 +172,7 @@ end
     @test !r2.is_error
 
     # same wire shape as pre-built Dicts
-    j = JSON3.read(JSON3.write(r), Dict{String,Any})
+    j = JSON.parse(JSON.json(r), Dict{String,Any})
     @test j["content"][1]["type"] == "text"
     @test j["content"][1]["text"] == "denied"
     @test j["isError"] == true

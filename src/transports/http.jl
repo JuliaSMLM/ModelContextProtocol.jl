@@ -1,7 +1,7 @@
 # src/transports/http.jl
 
 using HTTP
-using JSON3
+using JSON
 using UUIDs: uuid4
 using Sockets: IPv4, IPv6
 using Base64: base64decode
@@ -366,7 +366,7 @@ function handle_sse_stream(transport::HttpTransport, stream::HTTP.Stream, stream
     # Send initial connection event
     transport.event_counter += 1
     connection_event = format_sse_event(
-        JSON3.write(Dict("type" => "connection", "status" => "connected")),
+        JSON.json(Dict("type" => "connection", "status" => "connected")),
         event="connection",
         id=transport.event_counter
     )
@@ -619,7 +619,7 @@ this function — the caller rejects it as a missing required field, -32602.)
 
 # Arguments
 - `request`: The HTTP request (for header access)
-- `msg`: The parsed JSON body (a `JSON3.Object`)
+- `msg`: The parsed JSON body (a `JSON.Object`)
 - `body_version`: The body's `_meta` protocol version
 
 # Returns
@@ -649,7 +649,7 @@ function modern_header_violation(request, msg, body_version::String)::Union{Stri
 
     if haskey(MCP_NAME_METHODS, method)
         field = MCP_NAME_METHODS[method]
-        body_name = get(msg, "params", nothing) isa JSON3.Object ?
+        body_name = get(msg, "params", nothing) isa JSON.Object ?
                     get(msg.params, Symbol(field), nothing) : nothing
         header_name_raw = mcp_standard_header(request, "Mcp-Name")
         header_name_raw === :invalid &&
@@ -695,7 +695,7 @@ function modern_error_http_status(payload::String)::Int
     if ncodeunits(payload) <= 4096
         contains(payload, "\"error\"") || return 200
         code = try
-            msg = JSON3.read(payload)
+            msg = JSON.parse(payload)
             haskey(msg, "error") ? Int(msg.error.code) : nothing
         catch
             nothing
@@ -864,7 +864,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             # legacy session and must not be readable by an unauthenticated GET.
             HTTP.setstatus(stream, 200)
             HTTP.setheader(stream, "Content-Type" => "application/json")
-            health_response = JSON3.write(Dict(
+            health_response = JSON.json(Dict(
                 "status" => "ok",
                 "protocol_version" => transport.protocol_version
             ))
@@ -957,8 +957,8 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         local modern_version::Union{String,Nothing} = nothing
         local parsed_msg = nothing
         try
-            msg = JSON3.read(body)
-            if msg isa JSON3.Object
+            msg = JSON.parse(body)
+            if msg isa JSON.Object
                 parsed_msg = msg
                 has_method = haskey(msg, "method")
                 has_id = haskey(msg, "id")
@@ -969,8 +969,8 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 is_invalid = !has_method && !is_client_response
                 # Modern-era (2026-07-28+) requests are stateless: protocol-level
                 # sessions do not exist for them, so session validation must not apply
-                if has_method && haskey(msg, "params") && msg.params isa JSON3.Object &&
-                   haskey(msg.params, "_meta") && msg.params._meta isa JSON3.Object
+                if has_method && haskey(msg, "params") && msg.params isa JSON.Object &&
+                   haskey(msg.params, "_meta") && msg.params._meta isa JSON.Object
                     v = get(msg.params._meta, Symbol(META_PROTOCOL_VERSION), nothing)
                     if v isa AbstractString
                         is_modern = true
@@ -997,7 +997,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         if is_invalid
             HTTP.setstatus(stream, 400)
             HTTP.setheader(stream, "Content-Type" => "application/json")
-            error_response = JSON3.write(Dict(
+            error_response = JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "error" => Dict(
                     "code" => -32600,
@@ -1051,7 +1051,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                                Dict{String,Any}(
                                    "supported" => vcat(MODERN_PROTOCOL_VERSIONS, SUPPORTED_PROTOCOL_VERSIONS),
                                    "requested" => modern_version))
-                elseif !(get(parsed_msg.params._meta, Symbol(META_CLIENT_CAPABILITIES), nothing) isa JSON3.Object)
+                elseif !(get(parsed_msg.params._meta, Symbol(META_CLIENT_CAPABILITIES), nothing) isa JSON.Object)
                     failure = (ErrorCodes.INVALID_PARAMS,
                                "Missing required _meta field: $(META_CLIENT_CAPABILITIES)", nothing)
                 end
@@ -1060,7 +1060,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 code, message, data = failure
                 err = Dict{String,Any}("code" => code, "message" => message)
                 data === nothing || (err["data"] = data)
-                error_response = JSON3.write(Dict{String,Any}(
+                error_response = JSON.json(Dict{String,Any}(
                     "jsonrpc" => "2.0",
                     "error" => err,
                     "id" => req_id
@@ -1083,7 +1083,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # response route.
         if parsed_msg !== nothing && get(parsed_msg, "method", "") == "subscriptions/listen" &&
            !is_notification && !accepts_sse(accept_header)
-            error_response = JSON3.write(Dict{String,Any}(
+            error_response = JSON.json(Dict{String,Any}(
                 "jsonrpc" => "2.0",
                 "error" => Dict{String,Any}(
                     "code" => ErrorCodes.INVALID_REQUEST,
@@ -1112,7 +1112,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 @debug "Missing required session ID"
                 HTTP.setstatus(stream, 400)  # 400 Bad Request per spec
                 HTTP.setheader(stream, "Content-Type" => "application/json")
-                error_response = JSON3.write(Dict(
+                error_response = JSON.json(Dict(
                     "jsonrpc" => "2.0",
                     "error" => Dict(
                         "code" => -32000,
@@ -1129,7 +1129,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 @debug "Invalid session ID" provided=session_id expected=transport.session_id
                 HTTP.setstatus(stream, 401)  # 401 Unauthorized for invalid authentication
                 HTTP.setheader(stream, "Content-Type" => "application/json")
-                error_response = JSON3.write(Dict(
+                error_response = JSON.json(Dict(
                     "jsonrpc" => "2.0",
                     "error" => Dict(
                         "code" => -32000,
@@ -1309,7 +1309,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 if stream.nwritten < 0
                     HTTP.setstatus(stream, 500)
                     HTTP.setheader(stream, "Content-Type" => "application/json")
-                    error_response = JSON3.write(Dict(
+                    error_response = JSON.json(Dict(
                         "jsonrpc" => "2.0",
                         "error" => Dict(
                             "code" => -32603,
@@ -1340,7 +1340,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             if stream.nwritten < 0  # response not started (see comment above)
                 HTTP.setstatus(stream, 500)
                 HTTP.setheader(stream, "Content-Type" => "application/json")
-                error_response = JSON3.write(Dict(
+                error_response = JSON.json(Dict(
                     "jsonrpc" => "2.0",
                     "error" => Dict(
                         "code" => -32603,

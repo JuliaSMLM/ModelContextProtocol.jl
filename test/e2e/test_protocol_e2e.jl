@@ -9,7 +9,7 @@
 # Gated by `RUN_E2E` in runtests.jl: runs locally by default, skipped on CI
 # (each spawned server pays full JIT startup). Force either way with the
 # MCP_TEST_E2E environment variable. No `using` here by convention — runtests.jl
-# provides Test, ModelContextProtocol, JSON3, and HTTP.
+# provides Test, ModelContextProtocol, JSON, and HTTP.
 
 const _E2E_REPO  = pkgdir(ModelContextProtocol)
 const _E2E_JULIA = Base.julia_cmd()
@@ -50,7 +50,7 @@ end
             resp = nothing
             for line in split(out, '\n')
                 if occursin("\"protocolVersion\"", line)
-                    resp = JSON3.read(line)
+                    resp = JSON.parse(line)
                     break
                 end
             end
@@ -83,7 +83,7 @@ end
                 @test ready
                 if ready
                     # Health check (plain GET) reports a version we actually support
-                    health = JSON3.read(String(HTTP.get(url; status_exception=false).body))
+                    health = JSON.parse(String(HTTP.get(url; status_exception=false).body))
                     @test String(health.protocol_version) in SUPPORTED_PROTOCOL_VERSIONS
 
                     hdrs = ["Content-Type" => "application/json",
@@ -92,7 +92,7 @@ end
                     for (requested, expected) in _E2E_CASES
                         r = HTTP.post(url, hdrs, _e2e_init(requested); status_exception=false)
                         @test r.status == 200
-                        @test JSON3.read(String(r.body)).result.protocolVersion == expected
+                        @test JSON.parse(String(r.body)).result.protocolVersion == expected
                         if isempty(session)
                             session = HTTP.header(r, "Mcp-Session-Id", "")
                         end
@@ -100,7 +100,7 @@ end
 
                     # Sanity: the server actually serves tools end-to-end over the wire
                     lhdrs = isempty(session) ? hdrs : vcat(hdrs, ["Mcp-Session-Id" => session])
-                    tools = JSON3.read(String(HTTP.post(url, lhdrs,
+                    tools = JSON.parse(String(HTTP.post(url, lhdrs,
                         """{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}""";
                         status_exception=false).body))
                     @test haskey(tools.result, :tools)

@@ -1,76 +1,41 @@
 # src/utils/serialization.jl
 
 """
-    StructTypes definitions for MCP types
+    JSON serialization rules for MCP types
 
-Define serialization behavior for ModelContextProtocol types via StructTypes.jl.
-This module configures how various MCP types are serialized to and from JSON.
+JSON.jl serializes structs by field name. Wire-key renames live on the struct
+definitions as `JSON.@kwarg` field tags (e.g. `CallToolResult.is_error` → `isError`);
+the type-level `omit_null`/`omit_empty` rules below drop optional fields from the wire.
 """
 
-# Add StructTypes support for JSON serialization
-StructTypes.StructType(::Type{TextContent}) = StructTypes.Struct()
-StructTypes.StructType(::Type{ImageContent}) = StructTypes.Struct()
-StructTypes.StructType(::Type{AudioContent}) = StructTypes.Struct()
-StructTypes.StructType(::Type{TextResourceContents}) = StructTypes.Struct()
-StructTypes.StructType(::Type{BlobResourceContents}) = StructTypes.Struct()
-StructTypes.StructType(::Type{EmbeddedResource}) = StructTypes.Struct()
-StructTypes.StructType(::Type{ClientCapabilities}) = StructTypes.Struct()
-StructTypes.StructType(::Type{Implementation}) = StructTypes.Struct()
-StructTypes.StructType(::Type{InitializeParams}) = StructTypes.Struct()
-StructTypes.StructType(::Type{RequestMeta}) = StructTypes.Struct()
-StructTypes.StructType(::Type{ErrorInfo}) = StructTypes.Struct()
-StructTypes.StructType(::Type{ListResourcesParams}) = StructTypes.Struct()
-StructTypes.StructType(::Type{ListPromptsParams}) = StructTypes.Struct()
-StructTypes.StructType(::Type{GetPromptParams}) = StructTypes.Struct()
-StructTypes.StructType(::Type{PromptMessage}) = StructTypes.Struct()
-StructTypes.StructType(::Type{T}) where {T<:RequestParams} = StructTypes.Struct()
-StructTypes.StructType(::Type{T}) where {T<:ResponseResult} = StructTypes.Struct()
+"""
+    JSON.omit_null(::Type{ClientCapabilities}) -> Bool
+
+Omit `nothing`-valued capability fields (`experimental`, `roots`, `sampling`) from JSON.
+"""
+JSON.omit_null(::Type{ClientCapabilities}) = true
 
 """
-    StructTypes.omitempties(::Type{ClientCapabilities}) -> Tuple{Symbol,Symbol,Symbol}
+    JSON.omit_empty(::Type{ClientCapabilities}) -> Bool
 
-Specify which fields should be omitted from JSON serialization when they are empty or null.
-
-# Arguments
-- `::Type{ClientCapabilities}`: The ClientCapabilities type
-
-# Returns
-- `Tuple{Symbol,Symbol,Symbol}`: Fields to omit when empty
+Omit empty capability objects from JSON.
 """
-function StructTypes.omitempties(::Type{ClientCapabilities})
-    (:experimental, :roots, :sampling)
-end
+JSON.omit_empty(::Type{ClientCapabilities}) = true
 
 """
-    StructTypes.omitempties(::Type{ListPromptsResult}) -> Tuple{Symbol}
+    JSON.omit_null(::Type{ListPromptsResult}) -> Bool
 
-Specify which fields should be omitted from JSON serialization when they are empty or null.
-
-# Arguments
-- `::Type{ListPromptsResult}`: The ListPromptsResult type
-
-# Returns
-- `Tuple{Symbol}`: Fields to omit when empty
+Omit `nextCursor` from JSON when it is `nothing`.
 """
-function StructTypes.omitempties(::Type{ListPromptsResult})
-    (:nextCursor,)
-end
+JSON.omit_null(::Type{ListPromptsResult}) = true
 
 """
-    StructTypes.names(::Type{CallToolResult})
+    JSON.omit_null(::Type{CallToolResult}) -> Bool
 
-Map Julia field names to their MCP wire keys: `is_error` → `isError` (the spec key —
-clients rely on it to detect tool errors) and `structured_content` → `structuredContent`.
-"""
-StructTypes.names(::Type{CallToolResult}) = ((:is_error, :isError), (:structured_content, :structuredContent))
-
-"""
-    StructTypes.omitempties(::Type{CallToolResult}) -> Tuple{Symbol,Symbol}
-
-Omit `structured_content` and `_meta` from the response when they are `nothing`, so
+Omit `structuredContent` and `_meta` from the response when they are `nothing`, so
 tools that don't use them emit no `structuredContent`/`_meta` keys.
 """
-StructTypes.omitempties(::Type{CallToolResult}) = (:structured_content, :_meta)
+JSON.omit_null(::Type{CallToolResult}) = true
 
 """
     content2dict(content::Content) -> Dict{String,Any}

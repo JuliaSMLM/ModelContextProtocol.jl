@@ -1,4 +1,4 @@
-using JSON3
+using JSON
 
 """
 Get formatted information about variables in Main.storage
@@ -54,12 +54,12 @@ workspace_inspector_tool = MCPTool(
             # Return as TextContent but let the handler serialization handle the Dict
             return TextContent(
                 type = "text",
-                text = JSON3.write(result)  # Need JSON3 for proper Dict serialization
+                text = JSON.json(result)  # Need JSON for proper Dict serialization
             )
         catch e
             return TextContent(
                 type = "text",
-                text = JSON3.write(Dict(
+                text = JSON.json(Dict(
                     "error" => true,
                     "message" => "Error inspecting workspace: $e"
                 ))

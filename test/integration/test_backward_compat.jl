@@ -1,6 +1,6 @@
 using Test
 using ModelContextProtocol
-using JSON3
+using JSON
 
 @testset "Transport Defaults and Protocol Validation" begin
     @testset "Server defaults to StdioTransport" begin
@@ -71,7 +71,7 @@ using JSON3
         response = ModelContextProtocol.process_message(server, state, init_msg)
         
         @test !isnothing(response)
-        parsed = JSON3.read(response)
+        parsed = JSON.parse(response)
         @test parsed.jsonrpc == "2.0"
         @test parsed.id == 1
         @test haskey(parsed, :result)
@@ -89,7 +89,7 @@ using JSON3
         response = ModelContextProtocol.process_message(server, state, old_protocol_msg)
         
         @test !isnothing(response)
-        parsed = JSON3.read(response)
+        parsed = JSON.parse(response)
         @test parsed.jsonrpc == "2.0"
         @test parsed.id == 1
         @test haskey(parsed, :error)

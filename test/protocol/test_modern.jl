@@ -30,7 +30,7 @@
     # request (the real server loop re-arms it per message); reset it here so it
     # cannot leak into later testsets running in this same task
     roundtrip(server, state, msg) = begin
-        r = JSON3.read(process_message(server, state, JSON3.write(msg)))
+        r = JSON.parse(process_message(server, state, JSON.json(msg)))
         task_local_storage(:mcp_suppress_log_notifications, false)
         r
     end
@@ -223,14 +223,14 @@
                     structured_content = Dict("value" => big),
                     _meta = Dict{String,Any}("trace" => "keep-me")))])
         state = ServerState()
-        out = process_message(server, state, JSON3.write(Dict(
+        out = process_message(server, state, JSON.json(Dict(
             "jsonrpc" => "2.0", "id" => 23, "method" => "tools/call",
             "params" => Dict("name" => "bignum", "arguments" => Dict(),
                              "_meta" => modern_meta()))))
         task_local_storage(:mcp_suppress_log_notifications, false)
         # Assert on the raw wire text: the exact integer must appear undamaged
         @test occursin(string(big), out)
-        resp = JSON3.read(out)
+        resp = JSON.parse(out)
         @test resp["result"]["structuredContent"]["value"] == big
         # handler _meta merged, not replaced
         @test resp["result"]["_meta"]["trace"] == "keep-me"
@@ -325,7 +325,7 @@
         run_msg(msg) = begin
             task_local_storage(:mcp_suppress_log_notifications, true)
             with_logger(logger) do
-                process_message(server, state, JSON3.write(msg))
+                process_message(server, state, JSON.json(msg))
             end
             task_local_storage(:mcp_suppress_log_notifications, false)
         end
@@ -383,13 +383,13 @@
             task_local_storage(:mcp_suppress_log_notifications, true)
             raw = try
                 with_logger(logger) do
-                    process_message(server, state, JSON3.write(msg))
+                    process_message(server, state, JSON.json(msg))
                 end
             finally
                 task_local_storage(:mcp_suppress_log_notifications, false)
             end
             (String(take!(out)), String(take!(fallback)),
-             raw === nothing ? nothing : JSON3.read(raw))
+             raw === nothing ? nothing : JSON.parse(raw))
         end
 
         call_log_tool(level; id = 20) = Dict(
@@ -474,7 +474,7 @@
             "params" => Dict("notifications" => Dict("toolsListChanged" => true),
                              "_meta" => meta_with_level("debug")))
         raw = with_logger(llogger) do
-            process_message(listen_server, listen_state, JSON3.write(listen_msg))
+            process_message(listen_server, listen_state, JSON.json(listen_msg))
         end
         task_local_storage(:mcp_suppress_log_notifications, false)
         @test raw === nothing  # deferred: the stream is served out-of-loop
@@ -511,7 +511,7 @@
             raw = try
                 with_logger(logger) do
                     m = level === nothing ? modern_meta() : meta_with_level(level)
-                    process_message(server, state, JSON3.write(Dict(
+                    process_message(server, state, JSON.json(Dict(
                         "jsonrpc" => "2.0", "id" => 30, "method" => "tools/call",
                         "params" => Dict("name" => "child_tool", "arguments" => Dict(),
                                          "_meta" => m))))
@@ -519,7 +519,7 @@
             finally
                 task_local_storage(:mcp_suppress_log_notifications, false)
             end
-            (String(take!(out)), JSON3.read(raw))
+            (String(take!(out)), JSON.parse(raw))
         end
 
         # No opt-in: an awaited child-task record must NOT reach the wire even
@@ -609,13 +609,13 @@
         m = modern_meta()
         m["io.modelcontextprotocol/logLevel"] = "info"
         raw = with_logger(loggerB) do
-            process_message(serverA, ServerState(), JSON3.write(Dict(
+            process_message(serverA, ServerState(), JSON.json(Dict(
                 "jsonrpc" => "2.0", "id" => 31, "method" => "tools/call",
                 "params" => Dict("name" => "child_tool", "arguments" => Dict(),
                                  "_meta" => m))))
         end
         task_local_storage(:mcp_suppress_log_notifications, false)
-        @test JSON3.read(raw)["result"]["resultType"] == "complete"
+        @test JSON.parse(raw)["result"]["resultType"] == "complete"
         @test !occursin("foreign-active-probe", String(take!(outB)))
         @test !occursin("foreign-active-probe", String(take!(outA)))
 

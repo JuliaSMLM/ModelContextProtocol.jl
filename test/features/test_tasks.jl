@@ -17,7 +17,7 @@ end
 
 # Collect JSON lines written out-of-band (deferred responses + notifications).
 function _tasks_oob_lines(buf::IOBuffer)
-    [JSON3.read(l) for l in split(String(take!(buf)), '\n') if startswith(l, "{")]
+    [JSON.parse(l) for l in split(String(take!(buf)), '\n') if startswith(l, "{")]
 end
 
 function _tasks_test_server(; tools=MCPTool[])
@@ -26,7 +26,7 @@ function _tasks_test_server(; tools=MCPTool[])
     server.transport = StdioTransport(input=IOBuffer(), output=buf)
     state = ServerState()
     init = """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"""
-    init_resp = JSON3.read(process_message(server, state, init))
+    init_resp = JSON.parse(process_message(server, state, init))
     (server, state, buf, init_resp)
 end
 
@@ -109,11 +109,11 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         @test haskey(tasks_cap.requests.tools, :call)
 
         # tools/list carries execution.taskSupport
-        list = JSON3.read(_tasks_msg(server, state, """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"""))
+        list = JSON.parse(_tasks_msg(server, state, """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"""))
         @test list.result.tools[1].execution.taskSupport == "optional"
 
         # create: immediate CreateTaskResult, no tool output in it
-        create = JSON3.read(_tasks_msg(server, state,
+        create = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"slow_echo","arguments":{"msg":"hi"},"task":{"ttl":60000}}}"""))
         task = create.result.task
         @test task.status == "working"
@@ -122,7 +122,7 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         tid = String(task.taskId)
 
         # tasks/get returns the task flattened into the result
-        get1 = JSON3.read(_tasks_msg(server, state,
+        get1 = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":4,"method":"tasks/get","params":{"taskId":"$tid"}}"""))
         @test get1.result.taskId == tid
         @test get1.result.status in ("working", "completed")
@@ -154,12 +154,12 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         @test notes[end].params.status == "completed"
 
         # terminal tasks/result now answers immediately
-        res2 = JSON3.read(_tasks_msg(server, state,
+        res2 = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":6,"method":"tasks/result","params":{"taskId":"$tid"}}"""))
         @test res2.result.content[1].text == "echo: hi"
 
         # unknown task id -> -32602
-        nf = JSON3.read(_tasks_msg(server, state,
+        nf = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":7,"method":"tasks/get","params":{"taskId":"nope"}}"""))
         @test nf.error.code == -32602
     end
@@ -173,24 +173,24 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         server, state, buf, _ = _tasks_test_server(tools=[boom, toolerr])
 
         # handler exception -> failed; tasks/result returns the JSON-RPC error
-        c1 = JSON3.read(_tasks_msg(server, state,
+        c1 = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"boom","task":{}}}"""))
         tid1 = String(c1.result.task.taskId)
         @test _tasks_wait_for(() -> get_task(server.tasks, tid1, nothing).status == "failed")
-        g = JSON3.read(_tasks_msg(server, state,
+        g = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tasks/get","params":{"taskId":"$tid1"}}"""))
         @test occursin("kaboom", g.result.statusMessage)
-        r = JSON3.read(_tasks_msg(server, state,
+        r = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":4,"method":"tasks/result","params":{"taskId":"$tid1"}}"""))
         @test r.error.code == -32603
         @test occursin("kaboom", r.error.message)
 
         # CallToolResult(is_error=true) -> failed, but tasks/result returns the payload
-        c2 = JSON3.read(_tasks_msg(server, state,
+        c2 = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"toolerr","task":{}}}"""))
         tid2 = String(c2.result.task.taskId)
         @test _tasks_wait_for(() -> get_task(server.tasks, tid2, nothing).status == "failed")
-        r2 = JSON3.read(_tasks_msg(server, state,
+        r2 = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":6,"method":"tasks/result","params":{"taskId":"$tid2"}}"""))
         @test r2.result.isError == true
         @test r2.result.content[1].text == "bad"
@@ -209,16 +209,16 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
             task_support=:optional)
         server, state, buf, _ = _tasks_test_server(tools=[stubborn])
 
-        c = JSON3.read(_tasks_msg(server, state,
+        c = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stubborn","task":{}}}"""))
         tid = String(c.result.task.taskId)
 
-        cancel = JSON3.read(_tasks_msg(server, state,
+        cancel = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tasks/cancel","params":{"taskId":"$tid"}}"""))
         @test cancel.result.status == "cancelled"
 
         # second cancel rejected per spec
-        again = JSON3.read(_tasks_msg(server, state,
+        again = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":4,"method":"tasks/cancel","params":{"taskId":"$tid"}}"""))
         @test again.error.code == -32602
         @test occursin("terminal", again.error.message)
@@ -226,12 +226,12 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         # cooperative handler observed the cancellation; status stays cancelled
         @test _tasks_wait_for(() -> observed[])
         sleep(0.2)  # let the worker's (discarded) finish attempt run
-        g = JSON3.read(_tasks_msg(server, state,
+        g = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":5,"method":"tasks/get","params":{"taskId":"$tid"}}"""))
         @test g.result.status == "cancelled"
 
         # tasks/result on a cancelled-before-completion task -> error
-        r = JSON3.read(_tasks_msg(server, state,
+        r = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":6,"method":"tasks/result","params":{"taskId":"$tid"}}"""))
         @test r.error.code == -32602
         @test occursin("cancelled", r.error.message)
@@ -245,22 +245,22 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         server, state, _, _ = _tasks_test_server(tools=[plain, must])
 
         # forbidden tool called as task -> -32601
-        f = JSON3.read(_tasks_msg(server, state,
+        f = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"plain","task":{}}}"""))
         @test f.error.code == -32601
 
         # required tool called synchronously -> -32601
-        s = JSON3.read(_tasks_msg(server, state,
+        s = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"must"}}"""))
         @test s.error.code == -32601
 
         # required tool called as task -> works
-        t = JSON3.read(_tasks_msg(server, state,
+        t = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"must","task":{}}}"""))
         @test t.result.task.status == "working"
 
         # forbidden tool called normally still works
-        n = JSON3.read(_tasks_msg(server, state,
+        n = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"plain"}}"""))
         @test n.result.content[1].text == "ok"
     end
@@ -271,18 +271,18 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         server = mcp_server(name="tasks-old", version="0.0.1", tools=[plain])
         server.transport = StdioTransport(input=IOBuffer(), output=IOBuffer())
         state = ServerState()
-        init = JSON3.read(process_message(server, state,
+        init = JSON.parse(process_message(server, state,
             """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"""))
         # capability withheld from pre-2025-11-25 clients
         @test !haskey(init.result.capabilities, :tasks)
 
         # task metadata ignored -> synchronous execution (spec-mandated)
-        call = JSON3.read(process_message(server, state,
+        call = JSON.parse(process_message(server, state,
             """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"plain","task":{}}}"""))
         @test call.result.content[1].text == "ok"
 
         # tasks/* methods don't exist for this session
-        g = JSON3.read(process_message(server, state,
+        g = JSON.parse(process_message(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tasks/get","params":{"taskId":"x"}}"""))
         @test g.error.code == -32601
     end
@@ -299,7 +299,7 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         cursor = nothing
         for _ in 1:5  # bounded; expect 3 pages
             params = cursor === nothing ? "{}" : """{"cursor":"$cursor"}"""
-            page = JSON3.read(_tasks_msg(server, state,
+            page = JSON.parse(_tasks_msg(server, state,
                 """{"jsonrpc":"2.0","id":2,"method":"tasks/list","params":$params}"""))
             append!(ids, String.(t.taskId for t in page.result.tasks))
             haskey(page.result, :nextCursor) || break
@@ -308,7 +308,7 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         @test length(ids) == 5              # alice's task filtered out
         @test length(unique(ids)) == 5      # no duplicates across pages
 
-        bad = JSON3.read(_tasks_msg(server, state,
+        bad = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tasks/list","params":{"cursor":"junk"}}"""))
         @test bad.error.code == -32602
     end
@@ -319,10 +319,10 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         server, state, _, _ = _tasks_test_server(tools=[opt])
 
         # non-numeric / negative ttl -> -32602 (not silently defaulted)
-        bad1 = JSON3.read(_tasks_msg(server, state,
+        bad1 = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"opt","task":{"ttl":"soon"}}}"""))
         @test bad1.error.code == -32602
-        bad2 = JSON3.read(_tasks_msg(server, state,
+        bad2 = JSON.parse(_tasks_msg(server, state,
             """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"opt","task":{"ttl":-5}}}"""))
         @test bad2.error.code == -32602
 
@@ -331,13 +331,13 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
             capabilities=ModelContextProtocol.Capability[TaskCapability(cancel=false)])
         server2.transport = StdioTransport(input=IOBuffer(), output=IOBuffer())
         state2 = ServerState()
-        init2 = JSON3.read(process_message(server2, state2,
+        init2 = JSON.parse(process_message(server2, state2,
             """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"""))
         @test !haskey(init2.result.capabilities.tasks, :cancel)
-        c = JSON3.read(process_message(server2, state2,
+        c = JSON.parse(process_message(server2, state2,
             """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"opt","task":{}}}"""))
         tid = String(c.result.task.taskId)
-        x = JSON3.read(process_message(server2, state2,
+        x = JSON.parse(process_message(server2, state2,
             """{"jsonrpc":"2.0","id":3,"method":"tasks/cancel","params":{"taskId":"$tid"}}"""))
         @test x.error.code == -32601
     end
@@ -346,13 +346,13 @@ _tasks_msg(server, state, s) = process_message(server, state, s)
         server = mcp_server(name="tasks-http", version="0.0.1")
         server.transport = HttpTransport(port=39999)  # not connected; auth === nothing
         state = ServerState()
-        init = JSON3.read(process_message(server, state,
+        init = JSON.parse(process_message(server, state,
             """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"""))
         tasks_cap = init.result.capabilities.tasks
         @test !haskey(tasks_cap, :list)          # cannot identify requestors
         @test haskey(tasks_cap, :cancel)
 
-        l = JSON3.read(process_message(server, state,
+        l = JSON.parse(process_message(server, state,
             """{"jsonrpc":"2.0","id":2,"method":"tasks/list","params":{}}"""))
         @test l.error.code == -32601
     end

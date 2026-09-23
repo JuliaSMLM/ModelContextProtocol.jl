@@ -110,7 +110,7 @@ function decode_jwt_payload(token::String)
         payload_b64 = replace(payload_b64, "-" => "+", "_" => "/")
 
         payload_json = String(base64decode(payload_b64))
-        return JSON3.read(payload_json, Dict{String,Any})
+        return JSON.parse(payload_json, Dict{String,Any})
     catch
         return nothing
     end
@@ -218,7 +218,7 @@ function decode_jwt_header(token::String)
         header_b64 = parts[1]
         padding = mod(4 - mod(length(header_b64), 4), 4)
         header_b64 = replace(header_b64 * repeat("=", padding), "-" => "+", "_" => "/")
-        return JSON3.read(String(base64decode(header_b64)), Dict{String,Any})
+        return JSON.parse(String(base64decode(header_b64)), Dict{String,Any})
     catch
         return nothing
     end
@@ -342,7 +342,7 @@ function fetch_jwks_keys(url::String)
             captured === nothing && return nothing
             captured
         end
-        parsed = JSON3.read(body)
+        parsed = JSON.parse(body)
         haskey(parsed, "keys") || return nothing
         # Keep signature keys only: real-world JWKS documents (e.g. Keycloak) also
         # publish encryption keys (use="enc", alg=RSA-OAEP) that can never verify a
@@ -517,7 +517,7 @@ function validate_token(validator::IntrospectionValidator, token::AbstractString
             return AuthResult("Introspection request failed", :introspection_error)
         end
 
-        result = JSON3.read(String(response.body), Dict{String,Any})
+        result = JSON.parse(String(response.body), Dict{String,Any})
 
         # Check if token is active
         if !get(result, "active", false)

@@ -252,7 +252,7 @@ Create a debug server in tmp/ to see what Inspector sends:
 
 ```julia
 # tmp/debug_server.jl
-using JSON3
+using JSON
 
 # Use project tmp/ folder for logs
 log = open("tmp/mcp_debug.log", "w")

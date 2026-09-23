@@ -102,7 +102,7 @@
         @test_throws ArgumentError mcp_server(name = "short-key", version = "1.0.0",
                                               mrtr_state_key = rand(UInt8, 16))
         # Expiry: a hand-signed payload with an old iat is rejected
-        old = JSON3.write(Dict("v" => 2, "iat" => round(Int, time()) - 10_000, "ttl" => 600,
+        old = JSON.json(Dict("v" => 2, "iat" => round(Int, time()) - 10_000, "ttl" => 600,
                                "sub" => "alice", "mth" => "tools/call",
                                "dig" => "digest-1", "st" => nothing))
         mac = ModelContextProtocol.hmac_sha256(server.mrtr_state_key, old)
@@ -111,7 +111,7 @@
         @test !okx && occursin("expired", why)
         # Format versioning: a v1 (pre-provider-qualified-principal) token is
         # rejected as "unsupported version", never as a principal mismatch
-        v1 = JSON3.write(Dict("v" => 1, "iat" => round(Int, time()), "ttl" => 600,
+        v1 = JSON.json(Dict("v" => 1, "iat" => round(Int, time()), "ttl" => 600,
                               "sub" => "alice", "mth" => "tools/call",
                               "dig" => "digest-1", "st" => nothing))
         mac1 = ModelContextProtocol.hmac_sha256(server.mrtr_state_key, v1)
@@ -132,13 +132,13 @@
             end)
         server = mcp_server(name = "mrtr-wire", version = "1.0.0", tools = [tool])
         state = ServerState()
-        call(id, params) = JSON3.read(process_message(server, state, JSON3.write(Dict(
+        call(id, params) = JSON.parse(process_message(server, state, JSON.json(Dict(
             "jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => params))))
 
         # Undeclared capability -> -32021 with requiredCapabilities as an OBJECT
         r = call(1, Dict("name" => "confirm_tool", "arguments" => Dict(), "_meta" => mmeta(Dict())))
         @test r["error"]["code"] == -32021
-        @test r["error"]["data"]["requiredCapabilities"]["elicitation"] isa JSON3.Object
+        @test r["error"]["data"]["requiredCapabilities"]["elicitation"] isa JSON.Object
 
         # Declared -> InputRequiredResult with the full envelope, including the
         # REQUIRED (and defaulted) object schema on the form elicitation
@@ -158,7 +158,7 @@
                          "inputResponses" => Dict("confirm" => Dict("action" => "accept")),
                          "requestState" => tok))
         @test r["result"]["resultType"] == "complete"
-        @test occursin("answer=accept carried=42", JSON3.write(r["result"]))
+        @test occursin("answer=accept carried=42", JSON.json(r["result"]))
 
         # Retry with the state but WITHOUT the response -> re-issue, not error
         r = call(4, Dict("name" => "confirm_tool", "arguments" => Dict(), "_meta" => mmeta(caps),

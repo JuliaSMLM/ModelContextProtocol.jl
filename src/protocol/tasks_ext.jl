@@ -290,7 +290,7 @@ task_await_input(ctx::RequestContext, request::InputRequest) =
 # no such loophole. The scalar branches are equally closed: EXACT concrete
 # numeric types only (an accepted abstract Real could serialize differently on
 # every poll — a Ptr-backed isbits subtype demonstrates it), floats must be
-# finite (JSON3 rejects NaN/Inf, which would otherwise register a request no
+# finite (JSON.json rejects NaN/Inf, which would otherwise register a request no
 # tasks/get can ever serialize), and non-String strings are snapshotted through
 # OUR buffer (a custom subtype's String()/string() can return a byte-aliased
 # String). Numeric fidelity is exact (a JSON round-trip would reparse an
@@ -306,7 +306,7 @@ function _frozen_json(x)
         x
     elseif x isa Union{Float16,Float32,Float64,BigInt,BigFloat}
         (x isa AbstractFloat && !isfinite(x)) && throw(ArgumentError(
-            "input request params must be finite numbers (JSON has no NaN/Inf); got $x"))
+            "JSON numbers must be finite (JSON has no NaN/Inf); got $x"))
         # BigInt/BigFloat have mutable GMP/MPFR backing; Base owns this deepcopy
         x isa Union{BigInt,BigFloat} ? deepcopy(x) : x
     elseif x isa Union{AbstractDict,NamedTuple}
@@ -319,7 +319,7 @@ function _frozen_json(x)
         Any[_frozen_json(v) for v in x]
     else
         throw(ArgumentError(
-            "input request params must be plain JSON data (dicts, vectors, " *
+            "value must be plain JSON data (dicts, vectors, " *
             "strings, numbers, booleans); got $(typeof(x))"))
     end
 end

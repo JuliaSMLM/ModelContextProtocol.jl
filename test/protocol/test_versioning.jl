@@ -88,13 +88,13 @@
         # Client requesting a supported older version gets it echoed back
         init_old = """{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
         resp_old = process_message(server, state, init_old)
-        parsed_old = JSON3.read(resp_old)
+        parsed_old = JSON.parse(resp_old)
         @test parsed_old.result.protocolVersion == "2025-06-18"
 
         # Client requesting an unknown version gets our latest
         init_unknown = """{"jsonrpc":"2.0","method":"initialize","id":2,"params":{"protocolVersion":"1999-01-01","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"""
         resp_unknown = process_message(server, state, init_unknown)
-        parsed_unknown = JSON3.read(resp_unknown)
+        parsed_unknown = JSON.parse(resp_unknown)
         @test parsed_unknown.result.protocolVersion == LATEST_PROTOCOL_VERSION
     end
 

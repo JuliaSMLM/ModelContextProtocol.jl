@@ -1,6 +1,6 @@
 # Define a tool 
 
-using JSON3
+using JSON
 
 
 function gen_2d_array(name::String, sz::Int)
@@ -39,7 +39,7 @@ julia_gen_array = MCPTool(
         result = gen_2d_array(name, sz)
         TextContent(
             type = "text",
-            text = JSON3.write(result)
+            text = JSON.json(result)
         )
     end
     

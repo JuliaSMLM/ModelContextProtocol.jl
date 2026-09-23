@@ -10,7 +10,7 @@
 using ModelContextProtocol
 using ModelContextProtocol: HttpTransport
 using URIs
-using JSON3
+using JSON
 using Base64
 
 const PORT = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 8791
@@ -307,7 +307,7 @@ templates = [
         data_provider = (uri, vars) -> TextResourceContents(
             uri = URI(uri),
             mime_type = "application/json",
-            text = JSON3.write(Dict(
+            text = JSON.json(Dict(
                 "id" => vars["id"],
                 "templateTest" => true,
                 "data" => "Data for ID: $(vars["id"])"))),

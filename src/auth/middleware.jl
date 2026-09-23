@@ -63,7 +63,7 @@ function auth_error_response(error_code::Symbol, message::String; resource_metad
         "WWW-Authenticate" => www_auth,
         "Content-Type" => "application/json"
     )
-    body = JSON3.write(Dict(
+    body = JSON.json(Dict(
         "error" => oauth_error,
         "error_description" => description
     ))

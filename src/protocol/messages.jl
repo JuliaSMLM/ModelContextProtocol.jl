@@ -60,7 +60,7 @@ Capabilities reported by an MCP client during initialization.
 - `roots::Union{Dict{String,Bool},Nothing}`: Root directories client has access to
 - `sampling::Union{Dict{String,Any},Nothing}`: Sampling capabilities for model generation
 """
-Base.@kwdef struct ClientCapabilities
+JSON.@kwarg struct ClientCapabilities
     experimental::Union{Dict{String,Dict{String,Any}},Nothing} = nothing
     roots::Union{Dict{String,Bool},Nothing} = nothing
     sampling::Union{Dict{String,Any},Nothing} = nothing
@@ -79,7 +79,7 @@ Information about a client or server implementation of the MCP protocol.
 - `title::Union{String,Nothing}`: Optional human-readable display name
 - `description::Union{String,Nothing}`: Optional human-readable description (MCP 2025-11-25)
 """
-Base.@kwdef struct Implementation
+JSON.@kwarg struct Implementation
     name::String = "default-client"
     version::String = "1.0.0"
     title::Union{String,Nothing} = nothing
@@ -98,7 +98,7 @@ Parameters for MCP protocol initialization requests.
 - `clientInfo::Implementation`: Information about the client implementation  
 - `protocolVersion::Union{String,Nothing}`: Version of the MCP protocol requested by the client. The server negotiates against `SUPPORTED_PROTOCOL_VERSIONS` (latest: `LATEST_PROTOCOL_VERSION`); see `negotiate_version`.
 """
-Base.@kwdef struct InitializeParams <: RequestParams
+JSON.@kwarg struct InitializeParams <: RequestParams
     capabilities::ClientCapabilities = ClientCapabilities()
     clientInfo::Implementation = Implementation()
     protocolVersion::Union{String,Nothing} = nothing  # Negotiated against SUPPORTED_PROTOCOL_VERSIONS
@@ -133,7 +133,7 @@ Parameters for requesting a list of available resources from an MCP server.
 # Fields
 - `cursor::Union{String,Nothing}`: Optional pagination cursor for long resource lists
 """
-Base.@kwdef struct ListResourcesParams <: RequestParams
+JSON.@kwarg struct ListResourcesParams <: RequestParams
     cursor::Union{String,Nothing} = nothing
 end
 
@@ -160,7 +160,7 @@ Parameters for requesting the contents of a specific resource.
 # Fields
 - `uri::String`: URI identifier of the resource to read
 """
-Base.@kwdef struct ReadResourceParams <: RequestParams
+JSON.@kwarg struct ReadResourceParams <: RequestParams
     uri::String
 end
 
@@ -186,7 +186,7 @@ Parameters for requesting a list of available tools from an MCP server.
 # Fields
 - `cursor::Union{String,Nothing}`: Optional pagination cursor for long tool lists
 """
-Base.@kwdef struct ListToolsParams <: RequestParams 
+JSON.@kwarg struct ListToolsParams <: RequestParams 
     cursor::Union{String,Nothing} = nothing
 end
 
@@ -216,7 +216,7 @@ Parameters for invoking a specific tool on an MCP server.
 - `task::Union{Dict{String,Any},Nothing}`: When present, the caller requests task-augmented
   execution (MCP Tasks, experimental); may carry a requested `"ttl"` in milliseconds
 """
-Base.@kwdef struct CallToolParams <: RequestParams
+JSON.@kwarg struct CallToolParams <: RequestParams
     name::String
     arguments::Union{Dict{String,Any},Nothing} = nothing
     task::Union{Dict{String,Any},Nothing} = nothing
@@ -240,10 +240,10 @@ Result returned from a tool invocation.
 - `_meta::Union{Nothing,AbstractDict}`: Optional result metadata for protocol extensions,
   serialized as `_meta` and omitted when `nothing`
 """
-Base.@kwdef struct CallToolResult <: ResponseResult
+JSON.@kwarg struct CallToolResult <: ResponseResult
     content::Vector{Dict{String,Any}}
-    is_error::Bool = false
-    structured_content::Union{Nothing,AbstractDict} = nothing
+    is_error::Bool = false &(json=(name="isError",),)
+    structured_content::Union{Nothing,AbstractDict} = nothing &(json=(name="structuredContent",),)
     _meta::Union{Nothing,AbstractDict} = nothing
 end
 
@@ -255,7 +255,7 @@ Parameters for a `resources/templates/list` request.
 # Fields
 - `cursor::Union{String,Nothing}`: Optional pagination cursor for long template lists
 """
-Base.@kwdef struct ListResourceTemplatesParams <: RequestParams
+JSON.@kwarg struct ListResourceTemplatesParams <: RequestParams
     cursor::Union{String,Nothing} = nothing
 end
 
@@ -269,7 +269,7 @@ Parameters for a `tasks/get` status poll.
 # Fields
 - `taskId::String`: The task identifier to query
 """
-Base.@kwdef struct GetTaskParams <: RequestParams
+JSON.@kwarg struct GetTaskParams <: RequestParams
     taskId::String
 end
 
@@ -282,7 +282,7 @@ reaches a terminal status and then matches the original request's result type.
 # Fields
 - `taskId::String`: The task identifier to retrieve results for
 """
-Base.@kwdef struct TaskResultParams <: RequestParams
+JSON.@kwarg struct TaskResultParams <: RequestParams
     taskId::String
 end
 
@@ -294,7 +294,7 @@ Parameters for a `tasks/cancel` request.
 # Fields
 - `taskId::String`: The task identifier to cancel
 """
-Base.@kwdef struct CancelTaskParams <: RequestParams
+JSON.@kwarg struct CancelTaskParams <: RequestParams
     taskId::String
 end
 
@@ -306,7 +306,7 @@ Parameters for a paginated `tasks/list` request.
 # Fields
 - `cursor::Union{String,Nothing}`: Opaque pagination cursor from a previous response
 """
-Base.@kwdef struct ListTasksParams <: RequestParams
+JSON.@kwarg struct ListTasksParams <: RequestParams
     cursor::Union{String,Nothing} = nothing
 end
 
@@ -323,7 +323,7 @@ typed parsing and is rejected with -32602.
 - `inputResponses::Dict{String,Any}`: Responses keyed to match the server-issued
   `inputRequests` keys
 """
-Base.@kwdef struct UpdateTaskParams <: RequestParams
+JSON.@kwarg struct UpdateTaskParams <: RequestParams
     taskId::String
     inputResponses::Dict{String,Any}
 end
@@ -338,7 +338,7 @@ Parameters for requesting a list of available prompts from an MCP server.
 # Fields
 - `cursor::Union{String,Nothing}`: Optional pagination cursor for long prompt lists
 """
-Base.@kwdef struct ListPromptsParams <: RequestParams
+JSON.@kwarg struct ListPromptsParams <: RequestParams
     cursor::Union{String,Nothing} = nothing
 end
 
@@ -366,7 +366,7 @@ Parameters for requesting a specific prompt from an MCP server.
 - `name::String`: Name of the prompt to retrieve
 - `arguments::Union{Dict{String,String},Nothing}`: Optional arguments to apply to the prompt template
 """
-Base.@kwdef struct GetPromptParams <: RequestParams
+JSON.@kwarg struct GetPromptParams <: RequestParams
     name::String
     arguments::Union{Dict{String,String},Nothing} = nothing
 end
@@ -400,7 +400,7 @@ Identify what a `completion/complete` request targets: a prompt (`type` of
 - `name::Union{String,Nothing}`: The prompt name (for `ref/prompt`)
 - `uri::Union{String,Nothing}`: The URI template (for `ref/resource`)
 """
-Base.@kwdef struct CompletionReference
+JSON.@kwarg struct CompletionReference
     type::String
     name::Union{String,Nothing} = nothing
     uri::Union{String,Nothing} = nothing
@@ -415,7 +415,7 @@ Name the argument being completed and the partial value typed so far.
 - `name::String`: The argument (or template variable) name
 - `value::String`: The partial value to complete
 """
-Base.@kwdef struct CompletionArgument
+JSON.@kwarg struct CompletionArgument
     name::String
     value::String
 end
@@ -432,7 +432,7 @@ Parameters for a `completion/complete` request.
 - `context::Union{Dict{String,Any},Nothing}`: Optional context; its `arguments`
   entry carries already-resolved argument values
 """
-Base.@kwdef struct CompleteParams <: RequestParams
+JSON.@kwarg struct CompleteParams <: RequestParams
     ref::CompletionReference
     argument::CompletionArgument
     context::Union{Dict{String,Any},Nothing} = nothing
@@ -448,7 +448,7 @@ Parameters for `resources/subscribe` requests.
 # Fields
 - `uri::String`: URI of the resource the client wants update notifications for
 """
-Base.@kwdef struct SubscribeParams <: RequestParams
+JSON.@kwarg struct SubscribeParams <: RequestParams
     uri::String
 end
 
@@ -460,7 +460,7 @@ Parameters for `resources/unsubscribe` requests.
 # Fields
 - `uri::String`: URI of the resource to stop receiving update notifications for
 """
-Base.@kwdef struct UnsubscribeParams <: RequestParams
+JSON.@kwarg struct UnsubscribeParams <: RequestParams
     uri::String
 end
 
@@ -476,7 +476,7 @@ Parameters for `subscriptions/listen` requests (modern era).
   filter is rejected with -32602 by the handler (see `parse_subscription_filter`);
   `nothing` here only represents the not-yet-validated wire state.
 """
-Base.@kwdef struct SubscriptionsListenParams <: RequestParams
+JSON.@kwarg struct SubscriptionsListenParams <: RequestParams
     notifications::Union{Nothing,Dict{String,Any}} = nothing
 end
 
@@ -491,7 +491,7 @@ Parameters for `logging/setLevel` requests.
 - `level::String`: Minimum log level the client wants to receive (one of the MCP/RFC-5424
   levels: "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency")
 """
-Base.@kwdef struct SetLevelParams <: RequestParams
+JSON.@kwarg struct SetLevelParams <: RequestParams
     level::String
 end
 
@@ -508,7 +508,7 @@ Parameters for progress notifications during long-running operations.
 - `progress::Float64`: Current progress value
 - `total::Union{Float64,Nothing}`: Optional total expected value
 """
-Base.@kwdef struct ProgressParams <: RequestParams
+JSON.@kwarg struct ProgressParams <: RequestParams
     progress_token::ProgressToken
     progress::Float64
     total::Union{Float64,Nothing} = nothing
@@ -524,7 +524,7 @@ Error information structure for JSON-RPC error responses.
 - `message::String`: Human-readable error description
 - `data::Union{Dict{String,Any},Nothing}`: Optional additional error details
 """
-Base.@kwdef struct ErrorInfo
+JSON.@kwarg struct ErrorInfo
     code::Int
     message::String
     data::Union{Dict{String,Any},Nothing} = nothing

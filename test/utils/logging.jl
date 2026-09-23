@@ -65,7 +65,7 @@ end
         server = mcp_server(name = "test", version = "1.0.0")
         state = ServerState()
         raw = """{"jsonrpc":"2.0","method":"logging/setLevel","params":{"level":"warning"},"id":9}"""
-        response = JSON3.read(process_message(server, state, raw))
+        response = JSON.parse(process_message(server, state, raw))
         @test response["id"] == 9
         @test haskey(response, "result")
     end

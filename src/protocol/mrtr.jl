@@ -286,7 +286,7 @@ bind an issued `requestState` to the exact original params it may resume.
 # Returns
 - `String`: The hex digest
 """
-canonical_json_digest(x)::String = bytes2hex(sha256(JSON3.write(canonicalize_json(x))))
+canonical_json_digest(x)::String = bytes2hex(sha256(JSON.json(canonicalize_json(x))))
 
 """
     principal_identity(user::AuthenticatedUser) -> String
@@ -299,7 +299,7 @@ delimiter concatenation) makes the pair unambiguous — `("a", "b\\x1fc")` and
 so it never participates.
 """
 principal_identity(user::AuthenticatedUser)::String =
-    JSON3.write([user.provider, user.subject])
+    JSON.json([user.provider, user.subject])
 
 """
     mrtr_principal(user::Union{AuthenticatedUser,Nothing}) -> String
@@ -359,14 +359,16 @@ function issue_request_state(server::Server, method::String, params_digest,
     # must fail as "unsupported version", not as a confusing principal
     # mismatch, and mixed-version replica fleets sharing a key must drain
     # in-flight exchanges (<= the state TTL) across such an upgrade.
-    payload = JSON3.write(LittleDict{String,Any}(
+    payload = JSON.json(LittleDict{String,Any}(
         "v" => 2,
         "iat" => round(Int, time()),
         "ttl" => MRTR_STATE_TTL_SECS,
         "sub" => principal,
         "mth" => method,
         "dig" => something(params_digest, ""),
-        "st" => handler_state,
+        # Closed-world check: JSON.json would silently stringify a Function or
+        # dump an arbitrary struct's fields, so non-JSON state must fail here
+        "st" => _frozen_json(handler_state),
     ))
     mac = hmac_sha256(server.mrtr_state_key, payload)
     string(base64encode(payload), ".", base64encode(mac))
@@ -403,7 +405,7 @@ function verify_request_state(server::Server, token::AbstractString, method::Str
     _ct_eq(mac, hmac_sha256(server.mrtr_state_key, payload_json)) ||
         return (false, "signature mismatch")
     payload = try
-        JSON3.read(payload_json)
+        JSON.parse(payload_json)
     catch
         return (false, "malformed token")
     end

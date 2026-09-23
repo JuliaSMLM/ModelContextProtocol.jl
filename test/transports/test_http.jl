@@ -40,7 +40,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-06-18",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -56,7 +56,7 @@
         @test HTTP.header(response, "Content-Type") == "application/json"
         
         # Parse response
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["jsonrpc"] == "2.0"
         @test result["id"] == 1
         @test haskey(result, "result")
@@ -73,7 +73,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "tools/list",
                 "params" => Dict(),
@@ -82,7 +82,7 @@
         )
         
         @test response.status == 200
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["id"] == 2
         @test length(result["result"]["tools"]) == 1
         @test result["result"]["tools"][1]["name"] == "test_tool"
@@ -139,7 +139,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-06-18",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -159,7 +159,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "tools/call",
                 "params" => Dict(
@@ -171,7 +171,7 @@
         )
         
         @test response.status == 200
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["id"] == 2
         @test result["result"]["content"][1]["text"] == "Echo: Hello MCP"
         @test result["result"]["isError"] == false
@@ -212,7 +212,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-06-18",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -234,7 +234,7 @@
                 "http://127.0.0.1:$port/",
                 ["Content-Type" => "application/json",
                  "Accept" => "application/json, text/event-stream"],
-                JSON3.write(Dict(
+                JSON.json(Dict(
                     "jsonrpc" => "2.0",
                     "method" => "ping",
                     "params" => Dict(),
@@ -258,7 +258,7 @@
                 ["Content-Type" => "application/json",
                  "Mcp-Session-Id" => "wrong-session-id",
                  "Accept" => "application/json, text/event-stream"],
-                JSON3.write(Dict(
+                JSON.json(Dict(
                     "jsonrpc" => "2.0",
                     "method" => "ping",
                     "params" => Dict(),
@@ -280,7 +280,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "ping",
                 "params" => Dict(),
@@ -289,7 +289,7 @@
         )
         
         @test response.status == 200
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["id"] == 4
         
         # Clean up
@@ -324,7 +324,7 @@
             ["Content-Type" => "application/json",
              "MCP-Protocol-Version" => "2025-06-18",
              "Accept" => "application/json, text/event-stream"],
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "notifications/initialized",
                 "params" => Dict()
@@ -373,7 +373,7 @@
         @test response.status == 200
         @test HTTP.header(response, "Content-Type") == "application/json"
 
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["status"] == "ok"
         @test haskey(result, "protocol_version")
         @test result["protocol_version"] == LATEST_PROTOCOL_VERSION
@@ -382,7 +382,7 @@
         response = HTTP.get("http://127.0.0.1:$port/")
 
         @test response.status == 200
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["status"] == "ok"
 
         # Clean up
@@ -428,7 +428,7 @@
             "http://127.0.0.1:$port/",
             ["Content-Type" => "application/json",
              "Accept" => "application/json"],  # Missing text/event-stream
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "initialize",
                 "params" => Dict(
@@ -442,7 +442,7 @@
 
         # Should succeed despite non-compliant Accept header
         @test response.status == 200
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["jsonrpc"] == "2.0"
         @test result["id"] == 1
         @test haskey(result, "result")
@@ -455,7 +455,7 @@
             ["Content-Type" => "application/json",
              "Mcp-Session-Id" => session_id,
              "Accept" => "*/*"],  # Wildcard accept
-            JSON3.write(Dict(
+            JSON.json(Dict(
                 "jsonrpc" => "2.0",
                 "method" => "tools/list",
                 "params" => Dict(),
@@ -464,7 +464,7 @@
         )
 
         @test response.status == 200
-        result = JSON3.read(String(response.body))
+        result = JSON.parse(String(response.body))
         @test result["id"] == 2
         @test length(result["result"]["tools"]) == 1
 
@@ -528,7 +528,7 @@
         server_task = @async start!(server)
         sleep(2)
 
-        init_body = JSON3.write(Dict(
+        init_body = JSON.json(Dict(
             "jsonrpc" => "2.0",
             "method" => "initialize",
             "params" => Dict(
@@ -562,14 +562,14 @@
         # RESPONSE gets 202 (not stranded on the request path), and a bare `{}`
         # (neither request, notification, nor response) gets 400.
         resp_202 = HTTP.post("http://127.0.0.1:$port/", base_headers,
-            JSON3.write(Dict("jsonrpc" => "2.0", "id" => 42, "result" => Dict()));
+            JSON.json(Dict("jsonrpc" => "2.0", "id" => 42, "result" => Dict()));
             status_exception = false)
         @test resp_202.status == 202
 
         resp_400 = HTTP.post("http://127.0.0.1:$port/", base_headers, "{}";
             status_exception = false)
         @test resp_400.status == 400
-        @test JSON3.read(String(resp_400.body))["error"]["code"] == -32600
+        @test JSON.parse(String(resp_400.body))["error"]["code"] == -32600
 
         # Clean up
         server.active = false

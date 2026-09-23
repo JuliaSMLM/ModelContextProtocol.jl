@@ -54,7 +54,7 @@
         raw = ModelContextProtocol.subscription_notification(
             "notifications/resources/updated",
             ModelContextProtocol.LittleDict{String,Any}("uri" => "test://x"), 7)
-        msg = JSON3.read(raw)
+        msg = JSON.parse(raw)
         @test msg["method"] == "notifications/resources/updated"
         @test msg["params"]["uri"] == "test://x"
         @test msg["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == 7
@@ -82,7 +82,7 @@
         sub = only(server.listen_subscriptions.subs)
         @test !sub.filter.tools_list_changed
         # ...and the acknowledgment reflects that empty subset on the wire
-        ack = JSON3.read(split(String(take!(server.transport.output)), '\n')[1])
+        ack = JSON.parse(split(String(take!(server.transport.output)), '\n')[1])
         @test ack["method"] == "notifications/subscriptions/acknowledged"
         @test isempty(ack["params"]["notifications"])
         @test ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == "s1"
@@ -95,7 +95,7 @@
         state = ServerState()
         mmeta = Dict("io.modelcontextprotocol/protocolVersion" => "2026-07-28",
                      "io.modelcontextprotocol/clientCapabilities" => Dict())
-        listen_req(id, params) = JSON3.read(process_message(server, state, JSON3.write(Dict(
+        listen_req(id, params) = JSON.parse(process_message(server, state, JSON.json(Dict(
             "jsonrpc" => "2.0", "id" => id, "method" => "subscriptions/listen",
             "params" => params))))
         base = Dict{String,Any}("_meta" => mmeta)
@@ -160,7 +160,7 @@
         @test length(server.listen_subscriptions.subs) == 1
 
         # The wire path: notifications/cancelled with the listen request's id
-        process_message(server, ServerState(), JSON3.write(Dict(
+        process_message(server, ServerState(), JSON.json(Dict(
             "jsonrpc" => "2.0", "method" => "notifications/cancelled",
             "params" => Dict("requestId" => 42))))
         @test isempty(server.listen_subscriptions.subs)
@@ -210,7 +210,7 @@
         server.transport = ModelContextProtocol.StdioTransport(input = IOBuffer(), output = IOBuffer())
         state = ServerState()
         server.active = false  # as after stop!
-        process_message(server, state, JSON3.write(Dict(
+        process_message(server, state, JSON.json(Dict(
             "jsonrpc" => "2.0", "method" => "notifications/initialized", "params" => Dict())))
         @test !server.active            # the loop-run flag belongs to start!/stop!
         @test state.initialized         # the session-lifecycle flag still records it
@@ -266,7 +266,7 @@
 
         # Subscribed type is delivered and tagged
         @test notify_list_changed(server, :tools) == 1
-        msg = JSON3.read(split(String(take!(out)), '\n')[1])
+        msg = JSON.parse(split(String(take!(out)), '\n')[1])
         @test msg["method"] == "notifications/tools/list_changed"
         @test msg["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == 1
 
@@ -283,7 +283,7 @@
         # Graceful closure answers the listen request with an empty complete result
         # that identifies the server like every other modern result
         ModelContextProtocol.close_subscriptions!(server)
-        closing = JSON3.read(split(String(take!(out)), '\n')[1])
+        closing = JSON.parse(split(String(take!(out)), '\n')[1])
         @test closing["id"] == 1
         @test closing["result"]["resultType"] == "complete"
         @test closing["result"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == 1
@@ -344,7 +344,7 @@
                 ModelContextProtocol.ToolCapability(list_changed = true),
                 ModelContextProtocol.ResourceCapability(list_changed = false, subscribe = true)])
         state = ServerState()
-        resp = JSON3.read(process_message(server, state, JSON3.write(Dict(
+        resp = JSON.parse(process_message(server, state, JSON.json(Dict(
             "jsonrpc" => "2.0", "id" => 1, "method" => "server/discover",
             "params" => Dict("_meta" => Dict(
                 "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
@@ -372,7 +372,7 @@ end
     end
 
     read_notifications(out) =
-        [JSON3.read(l) for l in split(String(take!(out)), '\n') if !isempty(strip(l))]
+        [JSON.parse(l) for l in split(String(take!(out)), '\n') if !isempty(strip(l))]
 
     @testset "resources/updated reaches the wire-subscribed session" begin
         server, state, out = legacy_server()
@@ -468,7 +468,7 @@ end
         server.legacy_state = state
         server, state, out
     end
-    read_msgs(out) = [JSON3.read(l) for l in split(String(take!(out)), '\n') if !isempty(strip(l))]
+    read_msgs(out) = [JSON.parse(l) for l in split(String(take!(out)), '\n') if !isempty(strip(l))]
 
     @testset "wire envelope: jsonrpc, no id, empty list_changed params" begin
         server, _, out = legacy_server2()
@@ -578,7 +578,7 @@ end
         @test Base.n_avail(route_ch) == 0
         # ...and the out-of-band GET notification queue got exactly the one message
         @test Base.n_avail(ht.notification_queue) == 1
-        msg = JSON3.read(take!(ht.notification_queue))
+        msg = JSON.parse(take!(ht.notification_queue))
         @test msg["method"] == "notifications/resources/updated"
         @test msg["params"]["uri"] == "test://http-route"
         # The ambient route survives for the request's own subsequent notifications

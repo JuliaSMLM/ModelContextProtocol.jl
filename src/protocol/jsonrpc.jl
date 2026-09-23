@@ -68,7 +68,7 @@ Parse a JSON-RPC message string into the appropriate typed message object.
 """
 function parse_message(json::String)::MCPMessage
     raw = try
-        JSON3.read(json)
+        JSON.parse(json)
     catch e
         return JSONRPCError(
             id = nothing,
@@ -80,7 +80,7 @@ function parse_message(json::String)::MCPMessage
     end
     
     # MCP protocol 2025-06-18 removes support for JSON-RPC batching
-    if raw isa Array || raw isa Vector
+    if raw isa AbstractVector
         return JSONRPCError(
             id = nothing,
             error = ErrorInfo(
@@ -91,7 +91,7 @@ function parse_message(json::String)::MCPMessage
     end
     
     # Ensure we have an object, not array
-    if !(raw isa JSON3.Object)
+    if !(raw isa JSON.Object)
         return JSONRPCError(
             id = nothing,
             error = ErrorInfo(
@@ -146,17 +146,17 @@ function parse_message(json::String)::MCPMessage
 end
 
 """
-    parse_request(raw::JSON3.Object) -> Request
+    parse_request(raw::JSON.Object) -> Request
 
 Parse a JSON-RPC request object into a typed Request struct.
 
 # Arguments
-- `raw::JSON3.Object`: The parsed JSON object representing a request
+- `raw::JSON.Object`: The parsed JSON object representing a request
 
 # Returns
 - `Request`: A JSONRPCRequest with properly typed parameters based on the method
 """
-function parse_request(raw::JSON3.Object)::Request
+function parse_request(raw::JSON.Object)::Request
     method = raw.method
 
     # Extract from params._meta: the optional progress token (see RequestContext /
@@ -172,9 +172,9 @@ function parse_request(raw::JSON3.Object)::Request
     client_info = nothing
     log_level = nothing
     has_log_level = false
-    if haskey(raw, :params) && raw.params isa JSON3.Object && haskey(raw.params, :_meta)
+    if haskey(raw, :params) && raw.params isa JSON.Object && haskey(raw.params, :_meta)
         meta = raw.params._meta
-        if meta isa JSON3.Object
+        if meta isa JSON.Object
             if haskey(meta, :progressToken)
                 progress_token = meta.progressToken
             end
@@ -184,11 +184,11 @@ function parse_request(raw::JSON3.Object)::Request
             end
             if haskey(meta, Symbol(META_CLIENT_CAPABILITIES))
                 caps = meta[Symbol(META_CLIENT_CAPABILITIES)]
-                caps isa JSON3.Object && (client_capabilities = caps)
+                caps isa JSON.Object && (client_capabilities = caps)
             end
             if haskey(meta, Symbol(META_CLIENT_INFO))
                 info = meta[Symbol(META_CLIENT_INFO)]
-                info isa JSON3.Object && (client_info = info)
+                info isa JSON.Object && (client_info = info)
             end
             if haskey(meta, Symbol(META_LOG_LEVEL))
                 has_log_level = true
@@ -208,10 +208,10 @@ function parse_request(raw::JSON3.Object)::Request
     has_request_state = false
     params_digest = nothing
     if protocol_version !== nothing && method in MRTR_METHODS &&
-       haskey(raw, :params) && raw.params isa JSON3.Object
+       haskey(raw, :params) && raw.params isa JSON.Object
         has_input_responses = haskey(raw.params, :inputResponses)
         ir = get(raw.params, :inputResponses, nothing)
-        if ir isa JSON3.Object
+        if ir isa JSON.Object
             input_responses = Dict{String,Any}(String(k) => v for (k, v) in pairs(ir))
         end
         has_request_state = haskey(raw.params, :requestState)
@@ -219,11 +219,11 @@ function parse_request(raw::JSON3.Object)::Request
         rs isa AbstractString && (request_state = String(rs))
         params_digest = canonical_json_digest(LittleDict{String,Any}(
             String(k) => v for (k, v) in pairs(raw.params)
-            if !(k in (:_meta, :inputResponses, :requestState))))
+            if !(k in ("_meta", "inputResponses", "requestState"))))
     end
 
     params_type = get_params_type(method)
-    typed_params = if !isnothing(params_type) && haskey(raw, :params) && raw.params isa JSON3.Object
+    typed_params = if !isnothing(params_type) && haskey(raw, :params) && raw.params isa JSON.Object
         if isempty(raw.params)
             # Construct default instance instead of nothing. A type with required
             # fields (e.g. UpdateTaskParams) has no zero-arg constructor — fall to
@@ -243,12 +243,12 @@ function parse_request(raw::JSON3.Object)::Request
             # (defaulting cursors etc.), so swallowing failures there would turn
             # malformed params into silent success
             try
-                StructTypes.constructfrom(params_type, raw.params)
+                JSON.parse(JSON.json(raw.params), params_type)
             catch
                 nothing
             end
         else
-            StructTypes.constructfrom(params_type, raw.params)
+            JSON.parse(JSON.json(raw.params), params_type)
         end
     else
         nothing
@@ -275,30 +275,24 @@ function parse_request(raw::JSON3.Object)::Request
 end
 
 """
-    parse_notification(raw::JSON3.Object) -> Notification
+    parse_notification(raw::JSON.Object) -> Notification
 
 Parse a JSON-RPC notification object into a typed Notification struct.
 
 # Arguments
-- `raw::JSON3.Object`: The parsed JSON object representing a notification
+- `raw::JSON.Object`: The parsed JSON object representing a notification
 
 # Returns
 - `Notification`: A JSONRPCNotification with properly typed parameters if possible
 """
-function parse_notification(raw::JSON3.Object)::Notification
+function parse_notification(raw::JSON.Object)::Notification
     method = raw.method
     params = if haskey(raw, :params)
         # Handle empty params object case
         if isempty(raw.params)
             Dict{String,Any}()
         else
-            # Convert JSON3.Object to Dict more carefully to avoid MethodError
-            try
-                Dict{String,Any}(raw.params)
-            catch e
-                # If conversion fails, convert manually to preserve all fields
-                Dict{String,Any}(string(k) => v for (k, v) in pairs(raw.params))
-            end
+            Dict{String,Any}(string(k) => v for (k, v) in pairs(raw.params))
         end
     else
         Dict{String,Any}() 
@@ -310,7 +304,7 @@ function parse_notification(raw::JSON3.Object)::Notification
         if params_type === nothing || isempty(params)
             params
         else
-            JSON3.read(JSON3.write(params), params_type)
+            JSON.parse(JSON.json(params), params_type)
         end
     catch e
         # Notifications can't return errors, so just use raw params
@@ -324,22 +318,22 @@ function parse_notification(raw::JSON3.Object)::Notification
 end
 
 """
-    parse_success_response(raw::JSON3.Object) -> Response
+    parse_success_response(raw::JSON.Object) -> Response
 
 Parse a successful JSON-RPC response object into a typed Response struct.
 
 # Arguments
-- `raw::JSON3.Object`: The parsed JSON object representing a successful response
+- `raw::JSON.Object`: The parsed JSON object representing a successful response
 
 # Returns
 - `Response`: A JSONRPCResponse with properly typed result if possible, or JSONRPCError if parsing fails
 """
-function parse_success_response(raw::JSON3.Object)::Response
+function parse_success_response(raw::JSON.Object)::Response
     result_type = get_result_type(raw.id)
     
     typed_result = if result_type !== nothing
         try
-            JSON3.read(JSON3.write(raw.result), result_type)
+            JSON.parse(JSON.json(raw.result), result_type)
         catch e
             return JSONRPCError(
                 id = raw.id,
@@ -360,20 +354,20 @@ function parse_success_response(raw::JSON3.Object)::Response
 end
 
 """
-    parse_error_response(raw::JSON3.Object) -> Response
+    parse_error_response(raw::JSON.Object) -> Response
 
 Parse a JSON-RPC error response object into a typed Response struct.
 
 # Arguments
-- `raw::JSON3.Object`: The parsed JSON object representing an error response
+- `raw::JSON.Object`: The parsed JSON object representing an error response
 
 # Returns
 - `Response`: A JSONRPCError with properly typed error information
 """
-function parse_error_response(raw::JSON3.Object)::Response
+function parse_error_response(raw::JSON.Object)::Response
     JSONRPCError(
         id = raw.id,
-        error = JSON3.read(JSON3.write(raw.error), ErrorInfo)
+        error = JSON.parse(JSON.json(raw.error), ErrorInfo)
     )
 end
 
@@ -413,17 +407,17 @@ function serialize_message(msg::MCPMessage)::String
             end
         end
         
-        return JSON3.write(dict)
+        return JSON.json(dict)
         
     elseif msg isa JSONRPCResponse
-        return JSON3.write(LittleDict{String,Any}(
+        return JSON.json(LittleDict{String,Any}(
             "jsonrpc" => "2.0",
             "id" => msg.id,
             "result" => msg.result
         ))
         
     elseif msg isa JSONRPCError
-        return JSON3.write(LittleDict{String,Any}(
+        return JSON.json(LittleDict{String,Any}(
             "jsonrpc" => "2.0",
             "id" => msg.id,
             "error" => msg.error
@@ -439,7 +433,7 @@ function serialize_message(msg::MCPMessage)::String
             dict["params"] = msg.params
         end
         
-        return JSON3.write(dict)
+        return JSON.json(dict)
     else
         throw(ArgumentError("Unknown message type: $(typeof(msg))"))
     end

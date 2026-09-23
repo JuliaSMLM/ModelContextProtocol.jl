@@ -206,7 +206,7 @@ function normalize_read_contents(data, fallback_uri::String, fallback_mime::Stri
     else
         [LittleDict{String,Any}(
             "uri" => fallback_uri,
-            "text" => data isa AbstractString ? String(data) : JSON3.write(data),
+            "text" => data isa AbstractString ? String(data) : JSON.json(data),
             "mimeType" => fallback_mime
         )]
     end
@@ -275,7 +275,7 @@ documented behavior holds for the default `return_type = Vector{Content}` too.
 function convert_to_content_type(result::Any)
     # Dict -> JSON string wrapped in TextContent
     if result isa AbstractDict
-        return TextContent(type = "text", text = JSON3.write(result))
+        return TextContent(type = "text", text = JSON.json(result))
     end
 
     # String -> TextContent
@@ -1130,7 +1130,7 @@ function validate_tool_headers(tool::MCPTool)::Vector{Tuple{Vector{String},Strin
         # subschema into a proper tree, so the context-aware walk sees exactly
         # what tools/list will emit.
         normalized = try
-            JSON3.read(JSON3.write(tool.input_schema))
+            JSON.parse(JSON.json(tool.input_schema))
         catch
             throw(ArgumentError(
                 "tool '$(tool.name)': input_schema is not JSON-serializable"))
@@ -1259,9 +1259,10 @@ function param_header_violation(annotated::Vector{Tuple{Vector{String},String}},
             return "Mcp-Param-$(sfx) header carries a malformed Base64 sentinel value"
         # SEP-2243 limits mirrored integers to the JavaScript-safe range — a
         # value JS clients cannot even represent has no faithful mirror. The
-        # check covers integral FLOATS too: JSON3 parses integer tokens beyond
-        # Int64 as Float64, which would otherwise slide into the approximate
-        # float comparison (where 9223372036854775808 and ...809 collapse)
+        # check covers integral FLOATS too (e.g. 1e30), which would otherwise slide
+        # into the approximate float comparison (where 9223372036854775808 and
+        # ...809 collapse); JSON.parse yields Int128/BigInt for integer tokens
+        # beyond Int64, which the Integer branch range-checks
         is_integral = (value isa Integer && !(value isa Bool)) ||
                       (value isa AbstractFloat && isinteger(value))
         if is_integral && !(-9007199254740991 <= value <= 9007199254740991)
@@ -1273,9 +1274,8 @@ function param_header_violation(annotated::Vector{Tuple{Vector{String},String}},
             decoded == string(value)
         elseif value isa Integer
             # EXACT integer comparison through the full JSON number grammar:
-            # JSON3 normalizes integral tokens like 42.0 and 1e3 to Int64, so
-            # the mirror may legitimately arrive in decimal or exponent form —
-            # but the comparison must stay exact (a Float64 round-trip would
+            # the mirror may legitimately arrive in decimal or exponent form
+            # (42.0, 1e3) — but the comparison must stay exact (a Float64 round-trip would
             # collapse distinct values, and tryparse(Float64, "0x10") accepts
             # hex). _json_integer_value evaluates the token exactly.
             parsed = _json_integer_value(decoded)

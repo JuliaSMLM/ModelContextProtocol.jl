@@ -3,7 +3,7 @@
 # Example demonstrating a tool that returns multiple content items
 
 using ModelContextProtocol
-using JSON3
+using JSON
 
 # Create a tool that returns mixed content types
 analysis_tool = MCPTool(
@@ -19,7 +19,7 @@ analysis_tool = MCPTool(
     ],
     handler = function (params)
         # Parse the input data
-        data = JSON3.read(params["data"])
+        data = JSON.parse(params["data"])
         
         # Create a text summary
         summary = TextContent(

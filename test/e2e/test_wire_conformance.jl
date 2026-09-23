@@ -7,7 +7,7 @@
 # non-spec {"type":"link","href":...}, or prompts/get leaking raw struct
 # fields) only show up here. Gated by RUN_E2E like the other e2e tests; no
 # `using` here by convention (runtests.jl provides Test, ModelContextProtocol,
-# JSON3, HTTP, Base64).
+# JSON, HTTP, Base64).
 
 const _WIRE_FIXTURE = joinpath(_E2E_REPO, "test", "e2e", "fixtures", "wire_demo_server.jl")
 
@@ -24,7 +24,7 @@ const _WIRE_REQUESTS = [
     """{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"demo://artifact/ab12"},"id":10}""",
 ]
 
-# Shared assertions on the ten responses (Dict id => parsed JSON3 object),
+# Shared assertions on the ten responses (Dict id => parsed JSON object),
 # used by both the stdio and HTTP passes.
 function _wire_assert(resp)
     # 1: initialize — negotiated version + serverInfo.description
@@ -104,7 +104,7 @@ end
         resp = Dict{Int,Any}()
         for line in split(out, '\n')
             startswith(line, "{") || continue
-            msg = JSON3.read(line)
+            msg = JSON.parse(line)
             haskey(msg, :id) && (resp[msg.id] = msg)
         end
         @test length(resp) == 10
@@ -129,7 +129,7 @@ end
         resp = Dict{Int,Any}()
         for line in split(out, '\n')
             startswith(line, "{") || continue
-            msg = JSON3.read(line)
+            msg = JSON.parse(line)
             haskey(msg, :id) && (resp[msg.id] = msg)
         end
         @test length(resp) == 5
@@ -180,7 +180,7 @@ end
         notifications = Any[]
         for line in split(out, '\n')
             startswith(line, "{") || continue
-            msg = JSON3.read(line)
+            msg = JSON.parse(line)
             if haskey(msg, :id)
                 resp[msg.id] = msg
             elseif haskey(msg, :method)
@@ -194,7 +194,7 @@ end
         # not printed to stderr. The lifecycle @debug lines enabled by setLevel must
         # therefore show up as real wire notifications.
         lifecycle = filter(n -> n.method == "notifications/message" &&
-                                occursin("request completed", JSON3.write(n)), notifications)
+                                occursin("request completed", JSON.json(n)), notifications)
         @test !isempty(lifecycle)
         @test !occursin("request completed", String(take!(errbuf)))  # no longer on stderr
     end
@@ -214,7 +214,7 @@ end
             notifications = Any[]
             for line in split(out, '\n')
                 startswith(line, "{") || continue
-                msg = JSON3.read(line)
+                msg = JSON.parse(line)
                 if haskey(msg, :id)
                     resp[msg.id] = msg
                 elseif haskey(msg, :method)
@@ -235,12 +235,12 @@ end
         @test resp[1].result.resultType == "complete"
         @test resp[2].result.resultType == "complete"
         @test resp[3].error.code == -32602
-        wire = JSON3.write(notifications)
+        wire = JSON.json(notifications)
         @test occursin("wire-log-warn", wire)
         @test !occursin("wire-log-info", wire)   # below the requested level
         # exactly one delivery: the no-opt-in call contributed nothing
         @test count(n -> n.method == "notifications/message" &&
-                         occursin("wire-log-warn", JSON3.write(n)), notifications) == 1
+                         occursin("wire-log-warn", JSON.json(n)), notifications) == 1
 
         # Run 2 — "debug" opt-in on a server whose operator level is Info: the
         # LogState re-scope must let per-request debug records through, including
@@ -249,7 +249,7 @@ end
             """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"log_emitter","arguments":{},"_meta":$(lvlmeta("debug"))},"id":1}""",
         ])
         @test resp[1].result.resultType == "complete"
-        wire = JSON3.write(notifications)
+        wire = JSON.json(notifications)
         @test occursin("wire-log-info", wire)
         @test occursin("wire-log-warn", wire)
         @test occursin("request completed", wire)
@@ -283,7 +283,7 @@ end
                         @test r.status == 200
                         push!(versions, HTTP.header(r, "MCP-Protocol-Version", ""))
                         isempty(session) && (session = HTTP.header(r, "Mcp-Session-Id", ""))
-                        msg = JSON3.read(String(r.body))
+                        msg = JSON.parse(String(r.body))
                         haskey(msg, :id) && (resp[msg.id] = msg)
                     end
                     # The response HEADER echoes the NEGOTIATED version on every
@@ -309,7 +309,7 @@ end
                     @test r.status == 200
                     @test HTTP.header(r, "MCP-Protocol-Version", "") == "2026-07-28"
                     @test HTTP.header(r, "Mcp-Session-Id", "") == ""  # no session on modern
-                    m = JSON3.read(String(r.body))
+                    m = JSON.parse(String(r.body))
                     @test m.result.resultType == "complete"
                     @test m.result.ttlMs >= 0
 
@@ -318,21 +318,21 @@ end
                         """{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_stats","arguments":{},"_meta":$mmeta},"id":102}""";
                         status_exception = false)
                     @test r.status == 200
-                    @test JSON3.read(String(r.body)).result.resultType == "complete"
+                    @test JSON.parse(String(r.body)).result.resultType == "complete"
 
                     # Header/body mismatch -> 400 + -32020 HeaderMismatch
                     r = HTTP.post(url, mhdrs("tools/call"),
                         """{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":$mmeta},"id":103}""";
                         status_exception = false)
                     @test r.status == 400
-                    @test JSON3.read(String(r.body)).error.code == -32020
+                    @test JSON.parse(String(r.body)).error.code == -32020
 
                     # Removed method -> 404 + -32601
                     r = HTTP.post(url, mhdrs("ping"),
                         """{"jsonrpc":"2.0","method":"ping","params":{"_meta":$mmeta},"id":104}""";
                         status_exception = false)
                     @test r.status == 404
-                    @test JSON3.read(String(r.body)).error.code == -32601
+                    @test JSON.parse(String(r.body)).error.code == -32601
 
                     # Unsupported version (header matches body) -> 400 + -32022
                     bad_meta = """{"io.modelcontextprotocol/protocolVersion":"1999-01-01","io.modelcontextprotocol/clientCapabilities":{}}"""
@@ -343,7 +343,7 @@ end
                         """{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":$bad_meta},"id":105}""";
                         status_exception = false)
                     @test r.status == 400
-                    @test JSON3.read(String(r.body)).error.code == -32022
+                    @test JSON.parse(String(r.body)).error.code == -32022
 
                     # Per-request logLevel: log records ride THIS request's SSE
                     # response stream (never the GET notification stream), before
@@ -355,11 +355,11 @@ end
                     @test r.status == 200
                     @test startswith(HTTP.header(r, "Content-Type", ""), "text/event-stream")
                     sse_body = String(r.body)
-                    events = [JSON3.read(line[6:end]) for line in split(sse_body, '\n')
+                    events = [JSON.parse(line[6:end]) for line in split(sse_body, '\n')
                               if startswith(line, "data: ")]
                     logs = filter(e -> get(e, :method, "") == "notifications/message", events)
-                    @test any(e -> occursin("wire-log-info", JSON3.write(e)), logs)
-                    @test any(e -> occursin("wire-log-warn", JSON3.write(e)), logs)
+                    @test any(e -> occursin("wire-log-info", JSON.json(e)), logs)
+                    @test any(e -> occursin("wire-log-warn", JSON.json(e)), logs)
                     finals = filter(e -> haskey(e, :id), events)
                     @test length(finals) == 1
                     @test finals[1].result.resultType == "complete"
@@ -372,14 +372,14 @@ end
                         status_exception = false)
                     @test r.status == 200
                     @test !startswith(HTTP.header(r, "Content-Type", ""), "text/event-stream")
-                    @test JSON3.read(String(r.body)).result.resultType == "complete"
+                    @test JSON.parse(String(r.body)).result.resultType == "complete"
 
                     # Legacy still works after the modern interleaving (dual-era)
                     r = HTTP.post(url, vcat(hdrs, ["Mcp-Session-Id" => session]),
                         """{"jsonrpc":"2.0","method":"tools/list","params":{},"id":106}""";
                         status_exception = false)
                     @test r.status == 200
-                    @test !haskey(JSON3.read(String(r.body)).result, :resultType)
+                    @test !haskey(JSON.parse(String(r.body)).result, :resultType)
                 end
             finally
                 kill(proc)
@@ -406,7 +406,7 @@ end
             while true
                 line = readline(proc)
                 startswith(line, "{") || continue
-                msg = JSON3.read(line)
+                msg = JSON.parse(line)
                 haskey(msg, :id) && msg.id == id && return msg
                 push!(notes, msg)
             end
@@ -488,7 +488,7 @@ end
                         r = HTTP.post(url, h, req; status_exception = false)
                         @test r.status == 200
                         isempty(session) && (session = HTTP.header(r, "Mcp-Session-Id", ""))
-                        (JSON3.read(String(r.body)), HTTP.header(r, "MCP-Protocol-Version", ""))
+                        (JSON.parse(String(r.body)), HTTP.header(r, "MCP-Protocol-Version", ""))
                     end
 
                     init, ver = post("""{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"tasks-e2e","version":"1.0"}},"id":1}""")

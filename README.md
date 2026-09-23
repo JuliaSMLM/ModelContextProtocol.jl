@@ -101,7 +101,7 @@ Here's a minimal example creating an MCP server with a single tool:
 
 ```julia
 using ModelContextProtocol
-using JSON3
+using JSON
 using Dates
 
 # Create a simple tool that returns the current time
@@ -117,7 +117,7 @@ time_tool = MCPTool(
         )
     ],
     handler = params -> TextContent(
-        text = JSON3.write(Dict(
+        text = JSON.json(Dict(
             "time" => Dates.format(now(), params["format"])
         ))
     )
