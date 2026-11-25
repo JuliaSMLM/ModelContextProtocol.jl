@@ -575,7 +575,23 @@ function process_template(text::String, arguments::AbstractDict{String,String})
     return result
 end
 
+"""
+    handle_get_prompt(ctx::RequestContext, params::GetPromptParams) -> HandlerResult
 
+Handle `prompts/get`: check the prompt's required arguments, then produce its
+messages, from the prompt's `handler` when it has one and from its `messages`
+templates otherwise. A handler may return `InputRequired` to ask the client for
+input first (2026-07-28 requests only).
+
+# Arguments
+- `ctx::RequestContext`: The current request context
+- `params::GetPromptParams`: The prompt name and its arguments
+
+# Returns
+- `HandlerResult`: The prompt's description and messages, an `InputRequired` for
+  the modern layer to convert, or an error (unknown prompt, missing required
+  arguments, a handler failure)
+"""
 function handle_get_prompt(ctx::RequestContext, params::GetPromptParams)::HandlerResult
     try
         # Find the prompt
@@ -695,6 +711,8 @@ prompt_messages(c::Union{TextContent,ImageContent,AudioContent,ResourceLink,Embe
     [PromptMessage(content = c)]
 prompt_messages(items::AbstractVector)::Vector{PromptMessage} =
     PromptMessage[m for item in items for m in prompt_messages(item)]
+prompt_messages(::InputRequired) = throw(ArgumentError(
+    "a prompt handler returns InputRequired on its own, not inside a vector of messages"))
 prompt_messages(other) = throw(ArgumentError(
     "a prompt handler must return PromptMessage(s), content, a string or InputRequired (got $(typeof(other)))"))
 

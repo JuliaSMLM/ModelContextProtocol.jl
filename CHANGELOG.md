@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dynamic prompts**: `MCPPrompt(handler = ...)` builds a prompt's messages on each
   `prompts/get`. The handler may take `(args, ctx)` and, on a 2026-07-28 request,
   return `InputRequired` to ask the client for input first.
-- `_meta` keyword on `elicit_request` and `elicit_url_request`.
+- `_meta` keyword on `elicit_request` and `elicit_url_request`. The 2026-07-28
+  schema omits `_meta` on elicitation params and the draft revision restores it; it
+  is sent only when given.
 - Resource-not-found errors name the missing URI in `error.data.uri` (SEP-2164).
 
 ### Fixed
@@ -28,7 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Elicitation capability checks are mode-aware. A URL-mode request previously counted
   as a form request: it was sent to a client that declared only form support, and
   refused for one that declared only URL support. The `-32021` error now names the
-  missing mode (`{"elicitation": {"url": {}}}`).
+  missing mode (`{"elicitation": {"url": {}}}`). `task_await_input` applies the same
+  check, so a URL request to a client without URL support now fails the task instead
+  of being sent. A hand-built input request is validated when constructed: its
+  params are a dictionary and a present elicitation mode is `"form"` or `"url"`.
 
 ### Changed
 - Conformance CI now runs the official suite at its 2026-11-10 revision and gates on

@@ -237,6 +237,11 @@
                      "http://localhost:3000/cb", "http://[::1]:8080/x", "https://a.b-c.example./")
             @test elicit_url_request("m", good).params["url"] == good
         end
+        # A message of any string type is taken
+        @test elicit_url_request(SubString("Open it now", 1, 7), "https://e.com/").params["message"] == "Open it"
+        @test elicit_request(SubString("Q? extra", 1, 2)).params["message"] == "Q?"
+        # An empty userinfo is still userinfo
+        @test_throws ArgumentError elicit_url_request("m", "https://@example.com/")
         # _meta is an object or absent
         @test_throws ArgumentError elicit_url_request("m", "https://e.com/"; _meta = 3)
         @test_throws ArgumentError elicit_request("Q?"; _meta = [1])
@@ -477,7 +482,9 @@
         end
 
         # Handler mistakes surface as errors, not throws
-        for name in ("broken", "throws")
+        register!(server, MCPPrompt(name = "mixed", handler = (args, ctx) ->
+            ["text", InputRequired(Dict("q" => elicit_request("Q?")))]))
+        for name in ("broken", "throws", "mixed")
             r = get_prompt(7, Dict("name" => name, "_meta" => mmeta(Dict())))
             @test r["error"]["code"] == -32603
         end

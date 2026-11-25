@@ -85,12 +85,15 @@ Form mode passes the answer through the client, so it MUST NOT ask for secrets
 - `message::String`: The message to present to the user
 - `requested_schema`: JSON schema (Dict) for the expected response content; must be
   an object schema. Defaults to `{"type": "object", "properties": {}}`
-- `_meta`: Optional `_meta` object (Dict) to send with the request
+- `_meta`: Optional `_meta` object (a dictionary) to send with the request. The
+  2026-07-28 schema omits `_meta` on elicitation params (the draft revision
+  restores it); it is sent only when given
 
 # Returns
 - `InputRequest`: The request for an `InputRequired` return
 """
-function elicit_request(message::String; requested_schema=nothing, _meta=nothing)::InputRequest
+function elicit_request(message::AbstractString; requested_schema=nothing, _meta=nothing)::InputRequest
+    message = String(message)
     schema = requested_schema === nothing ?
         LittleDict{String,Any}("type" => "object", "properties" => LittleDict{String,Any}()) :
         requested_schema
@@ -158,15 +161,19 @@ verifies who opened it before accepting anything. Use HTTPS outside development.
   userinfo. The spec requires a valid URL; limiting it to http(s) is this
   package's choice, since the client opens it in a browser. An internationalized
   host must be given in punycode
-- `_meta`: Optional `_meta` object (a dictionary) to send with the request
+- `_meta`: Optional `_meta` object (a dictionary) to send with the request; see
+  [`elicit_request`](@ref)
 
 # Returns
 - `InputRequest`: The request for an `InputRequired` return
 """
-function elicit_url_request(message::String, url::AbstractString; _meta=nothing)::InputRequest
+function elicit_url_request(message::AbstractString, url::AbstractString; _meta=nothing)::InputRequest
+    message = String(message)
     _valid_http_url(url) ||
         throw(ArgumentError("elicit_url_request needs a valid absolute http(s) URL (got $(repr(url)))"))
-    isempty(URI(String(url)).userinfo) ||
+    # No userinfo, not even an empty one ("https://@host/")
+    authority = match(r"^[A-Za-z][A-Za-z0-9+.-]*://([^/?#]*)", url)
+    (authority !== nothing && !occursin('@', authority.captures[1])) ||
         throw(ArgumentError("elicit_url_request URL must not carry credentials (userinfo)"))
     params = LittleDict{String,Any}(
         "mode" => "url",
