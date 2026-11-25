@@ -767,9 +767,17 @@ MCPPrompt(;
     title::Union{String,Nothing} = nothing,           # Optional display name
     icons::Union{Vector{MCPIcon},Nothing} = nothing,  # Optional icons (prompts/list)
     _meta::Union{Nothing,Dict{String,Any}} = nothing, # Protocol-extension metadata (prompts/list)
-    completions::Union{Nothing,Dict{String,Any}} = nothing  # completion/complete sources per argument
+    completions::Union{Nothing,Dict{String,Any}} = nothing, # completion/complete sources per argument
+    handler::Union{Function,Nothing} = nothing        # builds the messages per request, in place of `messages`
 )
 ```
+
+**Dynamic prompts**: `handler` is `args -> messages` or `(args, ctx) -> messages`,
+called on each `prompts/get` with the supplied arguments (`String` to `String`).
+It returns a string or content value (one user message each), a `PromptMessage`, or
+a vector mixing these. With the `ctx` form on a 2026-07-28 request it may return
+`InputRequired` to ask the client for input first (see MRTR below); it runs again
+on the retry. On a legacy session that return is an error (-32600).
 
 **Argument completion** (`completion/complete`, both eras): map an argument name
 to a `Vector{String}` (served filtered by prefix against the partial value) or a
@@ -1244,9 +1252,22 @@ InputRequired(requests::AbstractDict; state = nothing)
 # state:    JSON-serializable handler state carried to the retry inside the
 #           integrity-protected `requestState`. Signed, NOT encrypted — no secrets.
 
-elicit_request(message::String; requested_schema = nothing) -> ModelContextProtocol.InputRequest
-# `elicitation/create`. requested_schema must be an object schema; when omitted a
+elicit_request(message::String; requested_schema = nothing, _meta = nothing) -> ModelContextProtocol.InputRequest
+# `elicitation/create`, form mode. requested_schema must be an object schema; when omitted a
 # minimal {"type":"object","properties":{}} is synthesized (the wire field is required).
+# Form answers pass through the client: never ask for secrets this way.
+
+elicit_url_request(message::String, url::AbstractString; _meta = nothing) -> ModelContextProtocol.InputRequest
+# `elicitation/create`, URL mode: the client shows `url`, asks consent, and opens it in
+# the browser. For credentials, payments, third-party authorization. `url` must be an
+# absolute http(s) URL without userinfo (ArgumentError otherwise). The response has an
+# `action` (accept | decline | cancel) and no content; accept means "agreed to open",
+# not "finished there". Needs the client's `elicitation.url` capability.
+
+client_supports(ctx, request) -> Bool
+# Did this request's client declare what `request` needs? Check before returning an
+# InputRequired whose support varies (URL mode, sampling, roots): an undeclared request
+# is refused with -32021. Always false on a legacy-era request.
 
 sampling_request(params::AbstractDict) -> ModelContextProtocol.InputRequest
 # `sampling/createMessage`; params is the CreateMessageRequest params (messages, maxTokens, ...)

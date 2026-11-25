@@ -68,14 +68,56 @@ tool = MCPTool(
     end)
 ```
 
-Build requests with [`elicit_request`](@ref), [`sampling_request`](@ref), or
-[`roots_request`](@ref); read the retry's responses with
-[`input_responses`](@ref) and carried-over handler state with
+Build requests with [`elicit_request`](@ref), [`elicit_url_request`](@ref),
+[`sampling_request`](@ref), or [`roots_request`](@ref); read the retry's responses
+with [`input_responses`](@ref) and carried-over handler state with
 [`input_state`](@ref). A request whose input requests need capabilities the
 client did not declare is rejected with `-32021` naming them. The
 `requestState` token is HMAC-bound to the principal, a TTL, and a canonical
 digest of the original params — pass `mrtr_state_key` to `mcp_server` when
 running shared-key replicas.
+
+Prompts can ask for input the same way: give an `MCPPrompt` a `handler` and return
+`InputRequired` from it (see [MCP Prompts](prompts.md)).
+
+### Sending the user to a URL
+
+A form elicitation passes the answer through the client, so it must not ask for
+secrets. For a credential, a payment, or authorizing a third-party service, send
+the user to a page of your own with [`elicit_url_request`](@ref). The client
+shows the URL, asks for consent, and opens it in the browser:
+
+```julia
+tool = MCPTool(
+    name = "connect_calendar",
+    description = "Connect the user's calendar",
+    parameters = ToolParameter[],
+    handler = (args, ctx) -> begin
+        calendar_connected(ctx.authenticated_user) && return TextContent(text = "Connected.")
+        ask = elicit_url_request("Sign in to connect your calendar",
+                                 "https://mcp.example.com/connect/calendar")
+        client_supports(ctx, ask) || return TextContent(
+            text = "Open https://mcp.example.com/connect/calendar to connect your calendar.")
+        haskey(input_responses(ctx), "connect") && return TextContent(
+            text = "Not connected yet. Finish signing in, then try again.")
+        InputRequired(Dict("connect" => ask))
+    end)
+```
+
+`calendar_connected` stands for your own check of what the page recorded. The
+client's response carries only an `action` (`accept`, `decline` or `cancel`), and
+`accept` means the user agreed to open the page, not that they finished there.
+So the handler decides from its own state, not from the response.
+
+Not every client offers URL mode. [`client_supports`](@ref) tells a handler
+whether this request's client declared what an input request needs; returning a
+request the client did not declare is refused with `-32021`.
+
+The server's side of the security rules: the URL carries no credentials or
+personal data and is not pre-authenticated; the page verifies who opened it
+before accepting anything (compare the signed-in user against
+`ctx.authenticated_user`); tokens the page obtains stay on the server and are
+never returned to the client. Use HTTPS outside development.
 
 ## The tasks extension (`io.modelcontextprotocol/tasks`)
 

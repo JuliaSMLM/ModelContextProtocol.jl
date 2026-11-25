@@ -208,4 +208,222 @@
         @test result.error.code == -32600
         @test occursin("input_required", result.error.message)
     end
+
+    @testset "URL-mode elicitation: construction" begin
+        r = elicit_url_request("Connect your account", "https://example.com/connect?flow=1")
+        @test r.method == "elicitation/create"
+        @test r.params["mode"] == "url"
+        @test r.params["message"] == "Connect your account"
+        @test r.params["url"] == "https://example.com/connect?flow=1"
+        # The 2026-07-28 URL shape is mode + message + url: no schema, no elicitationId
+        @test sort(collect(keys(r.params))) == ["message", "mode", "url"]
+        @test elicit_url_request("m", "http://127.0.0.1:8080/x").params["url"] == "http://127.0.0.1:8080/x"
+        # _meta rides along on both modes when given, and is absent otherwise
+        @test elicit_url_request("m", "https://e.com/"; _meta = Dict("k" => 1)).params["_meta"]["k"] == 1
+        @test elicit_request("Q?"; _meta = Dict("k" => 2)).params["_meta"]["k"] == 2
+        @test !haskey(elicit_request("Q?").params, "_meta")
+        # Not an absolute http(s) URL, or one carrying credentials -> refused
+        for bad in ("not a url", "/relative/path", "ftp://example.com/x", "example.com",
+                    "https://", "https://user:secret@example.com/", "javascript:alert(1)")
+            @test_throws ArgumentError elicit_url_request("m", bad)
+        end
+    end
+
+    @testset "URL-mode elicitation: capability requirements" begin
+        sat = ModelContextProtocol.capability_satisfied
+        req = ModelContextProtocol.undeclared_capability_requirements
+        url = elicit_url_request("m", "https://example.com/x")
+        form = elicit_request("Q?")
+        # url needs its own declared key: the bare object implies form only
+        @test sat(Dict("elicitation" => Dict("url" => Dict())), url)
+        @test sat(Dict("elicitation" => Dict("form" => Dict(), "url" => Dict())), url)
+        @test !sat(Dict("elicitation" => Dict()), url)
+        @test !sat(Dict("elicitation" => Dict("form" => Dict())), url)
+        @test !sat(Dict("elicitation" => Dict("url" => nothing)), url)
+        @test !sat(Dict("elicitation" => Dict("url" => true)), url)
+        @test !sat(Dict(), url)
+        @test !sat(nothing, url)
+        # Symbol-keyed (parsed-JSON) capabilities behave the same
+        @test sat(Dict(:elicitation => Dict(:url => Dict())), url)
+        # The requirement names the missing mode, and merges when both are missing
+        only_url = InputRequired(Dict("u" => url))
+        @test req(only_url, Dict("elicitation" => Dict()))["elicitation"] ==
+              Dict("url" => Dict())
+        @test collect(keys(req(only_url, Dict("elicitation" => Dict("form" => Dict())))["elicitation"])) == ["url"]
+        @test isempty(req(only_url, Dict("elicitation" => Dict("url" => Dict()))))
+        both = InputRequired(Dict("u" => url, "f" => form))
+        @test sort(collect(keys(req(both, Dict())["elicitation"]))) == ["form", "url"]
+        @test collect(keys(req(both, Dict("elicitation" => Dict("url" => Dict())))["elicitation"])) == ["form"]
+        @test isempty(req(both, Dict("elicitation" => Dict("form" => Dict(), "url" => Dict()))))
+        # A hand-built request with an unknown or non-string mode matches nothing
+        future = ModelContextProtocol.InputRequest("elicitation/create",
+            Dict("mode" => "voice", "message" => "m"))
+        @test !sat(Dict("elicitation" => Dict("form" => Dict(), "url" => Dict())), future)
+        @test sat(Dict("elicitation" => Dict("voice" => Dict())), future)
+        odd = ModelContextProtocol.InputRequest("elicitation/create", Dict("mode" => 7))
+        @test !sat(Dict("elicitation" => Dict()), odd)
+        @test haskey(req(InputRequired(Dict("o" => odd)), Dict("elicitation" => Dict())), "elicitation")
+        # An explicit mode: "form" is still form
+        explicit = ModelContextProtocol.InputRequest("elicitation/create",
+            Dict("mode" => "form", "message" => "m",
+                 "requestedSchema" => Dict("type" => "object", "properties" => Dict())))
+        @test sat(Dict("elicitation" => Dict()), explicit)
+    end
+
+    @testset "URL-mode elicitation: wire flow and client_supports" begin
+        tool = MCPTool(name = "connect", description = "d", parameters = ToolParameter[],
+            handler = (args, ctx) -> begin
+                resp = get(input_responses(ctx), "connect", nothing)
+                resp === nothing && return InputRequired(Dict("connect" =>
+                    elicit_url_request("Connect your account", "https://example.com/connect")))
+                TextContent(text = "action=$(resp["action"]) content=$(haskey(resp, "content"))")
+            end)
+        # A handler that adapts to what the client declared
+        adaptive = MCPTool(name = "adaptive", description = "d", parameters = ToolParameter[],
+            handler = (args, ctx) -> begin
+                isempty(input_responses(ctx)) || return TextContent(text = "done")
+                url = elicit_url_request("Open the page", "https://example.com/p")
+                form = elicit_request("Type it here")
+                client_supports(ctx, url) && return InputRequired(Dict("via_url" => url))
+                client_supports(ctx, form) && return InputRequired(Dict("via_form" => form))
+                TextContent(text = "this client cannot be asked")
+            end)
+        server = mcp_server(name = "mrtr-url", version = "1.0.0", tools = [tool, adaptive])
+        state = ServerState()
+        call(id, params) = JSON3.read(process_message(server, state, JSON3.write(Dict(
+            "jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => params))))
+        form_only = Dict("elicitation" => Dict("form" => Dict()))
+        bare = Dict("elicitation" => Dict())
+        both = Dict("elicitation" => Dict("form" => Dict(), "url" => Dict()))
+
+        # A form-only (or bare) client is refused with the precise requirement
+        for caps in (form_only, bare, Dict())
+            r = call(1, Dict("name" => "connect", "arguments" => Dict(), "_meta" => mmeta(caps)))
+            @test r["error"]["code"] == -32021
+            @test haskey(r["error"]["data"]["requiredCapabilities"]["elicitation"], "url")
+            @test !haskey(r["error"]["data"]["requiredCapabilities"]["elicitation"], "form")
+        end
+
+        # A url-capable client gets the URL request, then completes on accept
+        r = call(2, Dict("name" => "connect", "arguments" => Dict(), "_meta" => mmeta(both)))
+        @test r["result"]["resultType"] == "input_required"
+        p = r["result"]["inputRequests"]["connect"]["params"]
+        @test p["mode"] == "url" && p["url"] == "https://example.com/connect"
+        @test p["message"] == "Connect your account"
+        @test !haskey(p, "requestedSchema")
+        r = call(3, Dict("name" => "connect", "arguments" => Dict(), "_meta" => mmeta(both),
+                         "inputResponses" => Dict("connect" => Dict("action" => "accept")),
+                         "requestState" => r["result"]["requestState"]))
+        @test r["result"]["resultType"] == "complete"
+        @test occursin("action=accept content=false", JSON3.write(r["result"]))
+
+        # client_supports lets the handler choose per client
+        r = call(4, Dict("name" => "adaptive", "arguments" => Dict(), "_meta" => mmeta(both)))
+        @test collect(keys(r["result"]["inputRequests"])) == [:via_url]
+        r = call(5, Dict("name" => "adaptive", "arguments" => Dict(), "_meta" => mmeta(form_only)))
+        @test collect(keys(r["result"]["inputRequests"])) == [:via_form]
+        r = call(6, Dict("name" => "adaptive", "arguments" => Dict(), "_meta" => mmeta(Dict())))
+        @test r["result"]["resultType"] == "complete"
+        @test occursin("cannot be asked", JSON3.write(r["result"]))
+
+        # On a legacy request nothing can be asked, whatever the session declared
+        ctx = RequestContext(server = server, request_id = 1)
+        @test !client_supports(ctx, elicit_request("Q?"))
+        @test !client_supports(ctx, elicit_url_request("m", "https://example.com/"))
+        task_local_storage(:mcp_suppress_log_notifications, false)
+    end
+
+    @testset "prompt handlers" begin
+        calls = Ref(0)
+        asking = MCPPrompt(name = "asking", description = "asks first",
+            handler = (args, ctx) -> begin
+                calls[] += 1
+                resp = get(input_responses(ctx), "topic", nothing)
+                resp === nothing && return InputRequired(
+                    Dict("topic" => elicit_request("Which topic?")); state = Dict("n" => 1))
+                "Write about $(resp["content"]["topic"]) for $(get(args, "who", "anyone")) (state $(input_state(ctx)["n"]))"
+            end,
+            arguments = [PromptArgument(name = "who")])
+        plain = MCPPrompt(name = "plain", description = "one-argument handler",
+            arguments = [PromptArgument(name = "x", required = true)],
+            messages = [PromptMessage(content = TextContent(text = "template is ignored"))],
+            handler = args -> [
+                PromptMessage(content = TextContent(text = "system-ish"), role = assistant),
+                "x is $(args["x"])",
+                ImageContent(data = UInt8[1, 2, 3], mime_type = "image/png")])
+        broken = MCPPrompt(name = "broken", handler = args -> 42)
+        throws = MCPPrompt(name = "throws", handler = args -> error("boom"))
+        server = mcp_server(name = "prompt-handlers", version = "1.0.0",
+                            prompts = [asking, plain, broken, throws])
+        state = ServerState()
+        get_prompt(id, params) = JSON3.read(process_message(server, state, JSON3.write(Dict(
+            "jsonrpc" => "2.0", "id" => id, "method" => "prompts/get", "params" => params))))
+        caps = Dict("elicitation" => Dict())
+
+        # Modern: InputRequired from prompts/get, then the retry completes
+        r = get_prompt(1, Dict("name" => "asking", "arguments" => Dict("who" => "Ada"),
+                               "_meta" => mmeta(caps)))
+        @test r["result"]["resultType"] == "input_required"
+        @test r["result"]["inputRequests"]["topic"]["method"] == "elicitation/create"
+        tok = r["result"]["requestState"]
+        r = get_prompt(2, Dict("name" => "asking", "arguments" => Dict("who" => "Ada"),
+                               "_meta" => mmeta(caps), "requestState" => tok,
+                               "inputResponses" => Dict("topic" => Dict(
+                                   "action" => "accept", "content" => Dict("topic" => "tides")))))
+        @test r["result"]["resultType"] == "complete"
+        @test length(r["result"]["messages"]) == 1
+        @test r["result"]["messages"][1]["role"] == "user"
+        @test r["result"]["messages"][1]["content"]["text"] == "Write about tides for Ada (state 1)"
+        @test calls[] == 2  # the handler ran once per round
+
+        # The requestState is bound to the original params, as for tools
+        r = get_prompt(3, Dict("name" => "asking", "arguments" => Dict("who" => "Eve"),
+                               "_meta" => mmeta(caps), "requestState" => tok,
+                               "inputResponses" => Dict("topic" => Dict("action" => "accept"))))
+        @test r["error"]["code"] == -32602  # changed arguments break the digest binding
+
+        # An undeclared capability is refused with -32021, as for tools
+        r = get_prompt(4, Dict("name" => "asking", "_meta" => mmeta(Dict())))
+        @test r["error"]["code"] == -32021
+
+        # A plain handler: mixed return values become messages; the template is unused
+        r = get_prompt(5, Dict("name" => "plain", "arguments" => Dict("x" => "7"),
+                               "_meta" => mmeta(Dict())))
+        msgs = r["result"]["messages"]
+        @test [m["role"] for m in msgs] == ["assistant", "user", "user"]
+        @test msgs[2]["content"]["text"] == "x is 7"
+        @test msgs[3]["content"]["type"] == "image" && msgs[3]["content"]["mimeType"] == "image/png"
+        @test !occursin("template is ignored", JSON3.write(r["result"]))
+        # ...required arguments are still checked before the handler runs
+        r = get_prompt(6, Dict("name" => "plain", "arguments" => Dict(), "_meta" => mmeta(Dict())))
+        @test r["error"]["code"] == -32602
+
+        # Handler mistakes surface as errors, not throws
+        for name in ("broken", "throws")
+            r = get_prompt(7, Dict("name" => name, "_meta" => mmeta(Dict())))
+            @test r["error"]["code"] == -32603
+        end
+
+        # Legacy: handlers work, but cannot ask for input
+        ctx = RequestContext(server = server, request_id = 1)
+        result = handle_get_prompt(ctx, GetPromptParams(name = "plain",
+                                                       arguments = Dict("x" => "9")))
+        @test result.error === nothing
+        @test result.response.result["messages"][2]["content"]["text"] == "x is 9"
+        result = handle_get_prompt(ctx, GetPromptParams(name = "asking"))
+        @test result.error !== nothing && result.error.code == -32600
+        @test occursin("input_required", result.error.message)
+
+        # prompts/list never exposes the handler
+        listed = JSON3.read(process_message(server, state, JSON3.write(Dict(
+            "jsonrpc" => "2.0", "id" => 9, "method" => "prompts/list",
+            "params" => Dict("_meta" => mmeta(Dict()))))))
+        @test all(!haskey(p, "handler") for p in listed["result"]["prompts"])
+
+        # The earlier positional shapes still construct (seven and eight fields)
+        p7 = MCPPrompt("n", "d", [], [], nothing, nothing, nothing)
+        p8 = MCPPrompt("n", "d", PromptArgument[], PromptMessage[], nothing, nothing, nothing, nothing)
+        @test p7.handler === nothing && p8.handler === nothing && p8.completions === nothing
+        task_local_storage(:mcp_suppress_log_notifications, false)
+    end
 end

@@ -111,10 +111,12 @@ task_cancelled
 ```@docs
 InputRequired
 elicit_request
+elicit_url_request
 sampling_request
 roots_request
 input_responses
 input_state
+client_supports
 ```
 
 ## Tasks Extension

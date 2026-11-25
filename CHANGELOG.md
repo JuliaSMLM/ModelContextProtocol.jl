@@ -7,13 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **URL-mode elicitation**: `elicit_url_request(message, url)` builds an
+  `elicitation/create` input request with `mode: "url"`, for interactions that must
+  not pass through the client (credentials, payments, third-party authorization).
+  Usable from `InputRequired` and from `task_await_input`.
+- **`client_supports(ctx, request)`**: lets a handler check whether this request's
+  client declared what an input request needs, and choose accordingly.
+- **Dynamic prompts**: `MCPPrompt(handler = ...)` builds a prompt's messages on each
+  `prompts/get`. The handler may take `(args, ctx)` and, on a 2026-07-28 request,
+  return `InputRequired` to ask the client for input first.
+- `_meta` keyword on `elicit_request` and `elicit_url_request`.
+- Resource-not-found errors name the missing URI in `error.data.uri` (SEP-2164).
+
+### Fixed
+- Elicitation capability checks are mode-aware. A URL-mode request previously counted
+  as a form request: it was sent to a client that declared only form support, and
+  refused for one that declared only URL support. The `-32021` error now names the
+  missing mode (`{"elicitation": {"url": {}}}`).
+
 ### Changed
 - Conformance CI now runs the official suite at its 2026-11-10 revision and gates on
-  the frozen `--requirements 2026-07-28` set. The fixture server gained the suite's
-  MRTR (`input-required-result-*`) and JSON Schema 2020-12 tools, so those scenarios
-  are measured for the first time: 13 of 14 MRTR scenarios pass. The remaining one
-  (`prompts/get` returning an `InputRequiredResult`) needs prompts that can ask for
-  input, which the package does not offer yet.
+  the frozen `--requirements 2026-07-28` set, which passes in full (196 checks). The
+  fixture server gained the suite's MRTR (`input-required-result-*`) and JSON Schema
+  2020-12 fixtures, so those scenarios are measured for the first time.
 
 ## [0.7.0] - 2026-08-09
 

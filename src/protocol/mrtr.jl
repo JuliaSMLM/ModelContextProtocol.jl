@@ -36,7 +36,7 @@ const MRTR_REQUEST_CAPABILITIES = Dict{String,String}(
 One entry of an `InputRequiredResult`'s `inputRequests` map: a request the client
 should fulfill and answer in its retry's `inputResponses`. Only the three
 spec-blessed request types are valid — construct via [`elicit_request`](@ref),
-[`sampling_request`](@ref), or [`roots_request`](@ref).
+[`elicit_url_request`](@ref), [`sampling_request`](@ref), or [`roots_request`](@ref).
 
 # Fields
 - `method::String`: The request method (`elicitation/create`, `sampling/createMessage`, `roots/list`)
@@ -54,7 +54,7 @@ struct InputRequest
 end
 
 """
-    elicit_request(message::String; requested_schema=nothing) -> InputRequest
+    elicit_request(message::String; requested_schema=nothing, _meta=nothing) -> InputRequest
 
 Build a form-mode elicitation input request (`elicitation/create`): ask the user a
 question, constraining the answer with a requested schema. The schema is REQUIRED
@@ -62,22 +62,70 @@ on the wire (`ElicitRequestFormParams.requestedSchema`, an object schema with
 `properties`), so when none is given a minimal empty-object schema is synthesized —
 a schema-validating client would reject the request otherwise.
 
+Form mode passes the answer through the client, so it MUST NOT ask for secrets
+(passwords, API keys); use [`elicit_url_request`](@ref) for those.
+
 # Arguments
 - `message::String`: The message to present to the user
 - `requested_schema`: JSON schema (Dict) for the expected response content; must be
   an object schema. Defaults to `{"type": "object", "properties": {}}`
+- `_meta`: Optional `_meta` object (Dict) to send with the request
 
 # Returns
 - `InputRequest`: The request for an `InputRequired` return
 """
-function elicit_request(message::String; requested_schema=nothing)::InputRequest
+function elicit_request(message::String; requested_schema=nothing, _meta=nothing)::InputRequest
     schema = requested_schema === nothing ?
         LittleDict{String,Any}("type" => "object", "properties" => LittleDict{String,Any}()) :
         requested_schema
-    InputRequest("elicitation/create", LittleDict{String,Any}(
+    params = LittleDict{String,Any}(
         "message" => message,
         "requestedSchema" => schema,
-    ))
+    )
+    _meta === nothing || (params["_meta"] = _meta)
+    InputRequest("elicitation/create", params)
+end
+
+"""
+    elicit_url_request(message::String, url::AbstractString; _meta=nothing) -> InputRequest
+
+Build a URL-mode elicitation input request (`elicitation/create` with
+`mode: "url"`): ask the user to open `url` in their browser for an interaction
+that must not pass through the client, such as entering a credential or
+authorizing a third-party service. The client shows the URL, asks for consent and
+opens it; its response carries an `action` (`accept`, `decline` or `cancel`) and
+no `content`. An `accept` means the user agreed to open the URL, not that the
+interaction there finished: the handler learns the outcome from its own side.
+
+The server's obligations (2026-07-28, "Safe URL Handling"): the URL carries no
+credentials or personal data and is not pre-authenticated, and the page it leads to
+verifies who opened it before accepting anything. Use HTTPS outside development.
+
+# Arguments
+- `message::String`: Why the user is being sent to the URL
+- `url::AbstractString`: An absolute `https` (or `http`) URL without userinfo
+- `_meta`: Optional `_meta` object (Dict) to send with the request
+
+# Returns
+- `InputRequest`: The request for an `InputRequired` return
+"""
+function elicit_url_request(message::String, url::AbstractString; _meta=nothing)::InputRequest
+    parsed = try
+        URI(String(url))
+    catch
+        nothing
+    end
+    (parsed !== nothing && lowercase(parsed.scheme) in ("https", "http") && !isempty(parsed.host)) ||
+        throw(ArgumentError("elicit_url_request needs an absolute http(s) URL (got $(repr(url)))"))
+    isempty(parsed.userinfo) ||
+        throw(ArgumentError("elicit_url_request URL must not carry credentials (userinfo)"))
+    params = LittleDict{String,Any}(
+        "mode" => "url",
+        "message" => message,
+        "url" => String(url),
+    )
+    _meta === nothing || (params["_meta"] = _meta)
+    InputRequest("elicitation/create", params)
 end
 
 """
@@ -115,7 +163,7 @@ input requests, and the client retries with responses under the same keys. On th
 retry the handler runs AGAIN from the top — read the responses with
 `input_responses(ctx)` and any carried-over state with `input_state(ctx)`.
 
-Only meaningful on modern-era `tools/call` (legacy sessions have no wire shape for
+Only meaningful on modern-era `tools/call` and `prompts/get` (legacy sessions have no wire shape for
 it and get an error). If a needed response is still missing on the retry, return
 another `InputRequired` — the spec says re-issue, not error.
 
@@ -167,6 +215,14 @@ _sampling_wants_tools(r::InputRequest)::Bool =
     (haskey(r.params, "tools") || haskey(r.params, :tools) ||
      haskey(r.params, "toolChoice") || haskey(r.params, :toolChoice))
 
+# The mode of an elicitation/create input request: `params.mode`, where an absent
+# mode means form (the spec default). A non-string mode is returned as-is and
+# matches no declared capability.
+function _elicitation_mode(r::InputRequest)
+    mode = _capability_value(r.params, "mode")
+    mode === nothing ? "form" : mode
+end
+
 """
     capability_satisfied(client_capabilities, r::InputRequest) -> Bool
 
@@ -178,6 +234,9 @@ declares no form support), and subfeatures are honored:
 - form-mode elicitation: `form` declared with an object value covers it, and ONLY
   the bare empty `elicitation` object implies it — any other declared mode set
   (`url`, or modes from a future revision) excludes form
+- URL-mode elicitation (`params.mode == "url"`): requires `elicitation.url`
+  declared as an object; the bare empty `elicitation` object does NOT imply it.
+  Any other mode likewise requires its own declared key
 - tool-enabled sampling (`params.tools` OR `params.toolChoice` present): requires
   `sampling.tools` declared as an object, not just `sampling`
 
@@ -192,6 +251,11 @@ function capability_satisfied(client_capabilities, r::InputRequest)::Bool
     if r.method == "elicitation/create"
         e = _capability_value(client_capabilities, "elicitation")
         e isa AbstractDict || return false
+        mode = _elicitation_mode(r)
+        if mode != "form"
+            # url (or a mode from a future revision) is never implied
+            return mode isa AbstractString && _capability_value(e, String(mode)) isa AbstractDict
+        end
         _capability_present(e, "form") && return _capability_value(e, "form") isa AbstractDict
         # Without an explicit form mode, ONLY the bare empty object implies form
         # support — any other declared mode set (url, or modes from a future
@@ -215,7 +279,8 @@ end
 The `requiredCapabilities` object for the capabilities `ir`'s input requests need
 but this request did not declare — a ClientCapabilities-shaped object precise to
 the subfeature: `{"elicitation": {"form": {}}}` for a form elicitation,
-`{"sampling": {}}` for plain sampling, `{"sampling": {"tools": {}}}` for
+`{"elicitation": {"url": {}}}` for a URL elicitation (both keys when both are
+missing), `{"sampling": {}}` for plain sampling, `{"sampling": {"tools": {}}}` for
 tool-enabled sampling. A server MUST NOT send inputRequests the client did not
 declare support for: a non-empty return means the request must be rejected with
 -32021 carrying this object as `error.data.requiredCapabilities`.
@@ -233,7 +298,10 @@ function undeclared_capability_requirements(ir::InputRequired,
     for (_, r) in ir.requests
         capability_satisfied(client_capabilities, r) && continue
         if r.method == "elicitation/create"
-            req["elicitation"] = LittleDict{String,Any}("form" => LittleDict{String,Any}())
+            # Merge: a form and a URL request that are both undeclared name both modes
+            entry = get!(req, "elicitation", LittleDict{String,Any}())
+            mode = _elicitation_mode(r)
+            entry[mode isa AbstractString ? String(mode) : "form"] = LittleDict{String,Any}()
         elseif r.method == "sampling/createMessage"
             # Merge: a tool-enabled request upgrades the requirement to
             # sampling.tools without a later plain one downgrading it
