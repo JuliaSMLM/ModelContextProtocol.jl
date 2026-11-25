@@ -50,23 +50,48 @@ struct InputRequest
         haskey(MRTR_REQUEST_CAPABILITIES, method) ||
             throw(ArgumentError("inputRequests entries may only be elicitation/create, sampling/createMessage, or roots/list (got $method)"))
         # The capability checks read params by key, so params are a dictionary (or
-        # absent) here, never another shape that would serialize to the same JSON
+        # absent), never another shape that would serialize to the same JSON
         # object but be invisible to those checks
         (params === nothing || params isa AbstractDict) || throw(ArgumentError(
             "$method params must be a dictionary or nothing (got $(typeof(params)))"))
+        params === nothing || (params = _own_request_params(method, params))
         if method == "elicitation/create"
-            params isa AbstractDict ||
+            params === nothing &&
                 throw(ArgumentError("elicitation/create needs params (a dictionary with a message)"))
+            get(params, "message", nothing) isa AbstractString ||
+                throw(ArgumentError("elicitation/create needs a string `message`"))
             # Only an ABSENT mode means form; a present one must be a mode this
             # revision defines
-            if haskey(params, "mode") || haskey(params, :mode)
-                mode = haskey(params, "mode") ? params["mode"] : params[:mode]
-                mode in ("form", "url") || throw(ArgumentError(
-                    "elicitation mode must be \"form\" or \"url\" (got $(repr(mode)))"))
+            mode = haskey(params, "mode") ? params["mode"] : "form"
+            mode in ("form", "url") || throw(ArgumentError(
+                "elicitation mode must be \"form\" or \"url\" (got $(repr(mode)))"))
+            if mode == "url"
+                get(params, "url", nothing) isa AbstractString ||
+                    throw(ArgumentError("a URL-mode elicitation needs a string `url`"))
+            else
+                get(params, "requestedSchema", nothing) isa AbstractDict ||
+                    throw(ArgumentError("a form-mode elicitation needs a `requestedSchema` object"))
             end
         end
         new(method, params)
     end
+end
+
+# The request's own copy of its top-level params, with String keys: what the
+# capability checks read is then exactly what is serialized, whatever the caller
+# does to its dictionary afterwards. Two keys that would become one JSON member
+# (a String and a Symbol of the same name) are refused.
+function _own_request_params(method::String, params::AbstractDict)::LittleDict{String,Any}
+    owned = LittleDict{String,Any}()
+    for (k, v) in params
+        (k isa AbstractString || k isa Symbol) ||
+            throw(ArgumentError("$method params keys must be strings (got $(typeof(k)))"))
+        key = String(k)
+        haskey(owned, key) &&
+            throw(ArgumentError("$method params name `$key` twice (as a String and as a Symbol)"))
+        owned[key] = v
+    end
+    owned
 end
 
 """
@@ -114,29 +139,60 @@ function _attach_request_meta!(params::AbstractDict, _meta)
     params
 end
 
-# Characters RFC 3986 allows nowhere in a URI: controls, space, non-ASCII, and
-# the "unwise" set. A URL holding one is not valid as written.
-const _URL_FORBIDDEN = r"[^\x21-\x7e]|[\"<>\\^`{|}]"
-const _URL_HOST = r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.?$"
-const _URL_IPV6_HOST = r"^\[?[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*\]?$"
+# RFC 3986 building blocks, for an http(s) URL written out in full
+const _URL_PCT = "%[0-9A-Fa-f]{2}"
+const _URL_UNRESERVED_SUBDELIMS = "[A-Za-z0-9._~!\\\$&'()*+,;=-]"
+const _URL_PCHAR = "(?:$(_URL_UNRESERVED_SUBDELIMS)|[:@]|$(_URL_PCT))"
+const _HTTP_URL = Regex(
+    "\\A[Hh][Tt][Tt][Pp][Ss]?://" *
+    "(?<host>\\[[^\\]\\[/?#@]*\\]|(?:$(_URL_UNRESERVED_SUBDELIMS)|$(_URL_PCT))+)" *
+    "(?::(?<port>[0-9]{1,5}))?" *
+    "(?:/$(_URL_PCHAR)*)*" *
+    "(?:\\?(?:$(_URL_PCHAR)|[/?])*)?" *
+    "(?:#(?:$(_URL_PCHAR)|[/?])*)?\\z")
 
-# Whether `url` is an absolute http(s) URL a client can open as written: no
-# forbidden characters, a DNS-style or bracketed-IPv6 host, a numeric port in
-# range, and no userinfo. Internationalized hosts must be given in punycode.
+# An IPv6 address as it may appear between brackets in a URL (RFC 3986
+# IPv6address): groups of 1-4 hexadecimal digits, at most one "::", an optional
+# dotted IPv4 in the last position, eight groups in all (fewer with "::")
+function _valid_ipv6_literal(s::AbstractString)::Bool
+    occursin(r"\A[0-9A-Fa-f:.]+\z", s) || return false
+    halves = split(s, "::"; keepempty=true)
+    length(halves) <= 2 || return false
+    groups = SubString{String}[]
+    for half in halves
+        isempty(half) || append!(groups, split(half, ':'; keepempty=true))
+    end
+    count = 0
+    for (i, g) in enumerate(groups)
+        if occursin('.', g)
+            (i == length(groups) && endswith(s, g) && occursin(
+                r"\A(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\z", g)) ||
+                return false
+            count += 2
+        else
+            occursin(r"\A[0-9A-Fa-f]{1,4}\z", g) || return false
+            count += 1
+        end
+    end
+    length(halves) == 2 ? count <= 7 : count == 8
+end
+
+# Whether `url` is an absolute http(s) URL that is valid as written under RFC
+# 3986: only characters the grammar allows in each component (so no spaces,
+# quotes, brackets outside an IP literal, non-ASCII, or malformed percent
+# escapes), a registered-name host with at least one letter or digit or a valid
+# bracketed IPv6 literal, a port in range, and no userinfo (the host part admits
+# no "@"). Internationalized hosts must be given in punycode.
 function _valid_http_url(url::AbstractString)::Bool
-    occursin(_URL_FORBIDDEN, url) && return false
-    parsed = try
-        URI(String(url))
-    catch
-        return false
+    m = match(_HTTP_URL, url)
+    m === nothing && return false
+    host = m[:host]
+    if startswith(host, '[')
+        _valid_ipv6_literal(host[2:end-1]) || return false
+    else
+        occursin(r"[A-Za-z0-9]", host) || return false
     end
-    lowercase(parsed.scheme) in ("https", "http") || return false
-    (occursin(_URL_HOST, parsed.host) || occursin(_URL_IPV6_HOST, parsed.host)) || return false
-    if !isempty(parsed.port)
-        all(isdigit, parsed.port) || return false
-        port = tryparse(Int, parsed.port)
-        (port !== nothing && port <= 65535) || return false
-    end
+    m[:port] === nothing || parse(Int, m[:port]) <= 65535 || return false
     true
 end
 
@@ -169,12 +225,8 @@ verifies who opened it before accepting anything. Use HTTPS outside development.
 """
 function elicit_url_request(message::AbstractString, url::AbstractString; _meta=nothing)::InputRequest
     message = String(message)
-    _valid_http_url(url) ||
-        throw(ArgumentError("elicit_url_request needs a valid absolute http(s) URL (got $(repr(url)))"))
-    # No userinfo, not even an empty one ("https://@host/")
-    authority = match(r"^[A-Za-z][A-Za-z0-9+.-]*://([^/?#]*)", url)
-    (authority !== nothing && !occursin('@', authority.captures[1])) ||
-        throw(ArgumentError("elicit_url_request URL must not carry credentials (userinfo)"))
+    _valid_http_url(url) || throw(ArgumentError(
+        "elicit_url_request needs a valid absolute http(s) URL without userinfo (got $(repr(url)))"))
     params = LittleDict{String,Any}(
         "mode" => "url",
         "message" => message,

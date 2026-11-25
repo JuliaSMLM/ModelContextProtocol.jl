@@ -222,26 +222,34 @@
         @test elicit_url_request("m", "https://e.com/"; _meta = Dict("k" => 1)).params["_meta"]["k"] == 1
         @test elicit_request("Q?"; _meta = Dict("k" => 2)).params["_meta"]["k"] == 2
         @test !haskey(elicit_request("Q?").params, "_meta")
-        # Not a valid absolute http(s) URL, or one carrying credentials -> refused
+        # Not a valid absolute http(s) URL, or one carrying credentials -> refused.
+        # Every string here fails RFC 3986 as written (or is not http(s)): spaces,
+        # quotes, brackets outside an IP literal, non-ASCII, bad percent escapes,
+        # bad ports, malformed IPv6, a second "#", userinfo
         for bad in ("not a url", "/relative/path", "ftp://example.com/x", "example.com",
-                    "https://", "https://user:secret@example.com/", "javascript:alert(1)",
-                    "https://bad host/path", "https://example.org:abc/x",
-                    "https://example.org:99999/", "https://exa_mple.org/",
-                    "https://example.org/a b", "https://example.org/\"x\"",
-                    "https://example.org/<x>", "https://example.org/\n", "https://ex\u00e4mple.org/",
-                    "https://-example.org/", "https://example..org/")
+                    "https://", "https://user:secret@example.com/", "https://@example.com/",
+                    "javascript:alert(1)", "https://bad host/path", "https://example.org:abc/x",
+                    "https://example.org:99999/", "https://example.org:/", "https://example.org/a b",
+                    "https://example.org/\"x\"", "https://example.org/<x>", "https://example.org/\n",
+                    "https://ex\u00e4mple.org/", "https://example.org/" * Char(0x202e),
+                    "https://[:::]/", "https://[zz]/", "https://[::1/", "https://[1:2:3:4:5:6:7]/",
+                    "https://[v7.fe80::1]/", "https://foo.example/%ZZ", "https://foo.example/%4",
+                    "https://example.org/a[b]", "https://example.org/#a#b", "https://example.org/{id}",
+                    "https://example.org/?q=a|b", "https://example.org\\x", "https://..", "https://-/")
             @test_throws ArgumentError elicit_url_request("m", bad)
         end
-        # ...while ordinary forms pass: ports, IPv6 literals, queries, fragments, encodings
+        # ...while ordinary forms pass unchanged: ports, IPv4 and IPv6 literals,
+        # queries, fragments, percent-encoding (in the host too), underscores
         for good in ("https://example.org", "https://example.org:8443/a/b?x=1&y=%20#frag",
-                     "http://localhost:3000/cb", "http://[::1]:8080/x", "https://a.b-c.example./")
+                     "http://localhost:3000/cb", "http://[::1]:8080/x", "https://[2001:db8::1]/",
+                     "https://[::ffff:192.168.1.1]/", "https://192.168.1.1/", "https://a.b-c.example./",
+                     "https://exa%6dple.org/", "https://exa_mple.org/", "https://example.org/@x:y",
+                     "HTTPS://Example.ORG/a;b=c/~d?q=a/b?c#f/g?h")
             @test elicit_url_request("m", good).params["url"] == good
         end
         # A message of any string type is taken
         @test elicit_url_request(SubString("Open it now", 1, 7), "https://e.com/").params["message"] == "Open it"
         @test elicit_request(SubString("Q? extra", 1, 2)).params["message"] == "Q?"
-        # An empty userinfo is still userinfo
-        @test_throws ArgumentError elicit_url_request("m", "https://@example.com/")
         # _meta is an object or absent
         @test_throws ArgumentError elicit_url_request("m", "https://e.com/"; _meta = 3)
         @test_throws ArgumentError elicit_request("Q?"; _meta = [1])
@@ -287,6 +295,24 @@
         @test_throws ArgumentError IR("elicitation/create", nothing)
         @test_throws ArgumentError IR("sampling/createMessage", (maxTokens = 4, tools = []))
         @test IR("roots/list", nothing).params === nothing
+        # A hand-built request is complete for its mode, and names each field once
+        @test_throws ArgumentError IR("elicitation/create", Dict("mode" => "url", "message" => "m"))
+        @test_throws ArgumentError IR("elicitation/create", Dict("mode" => "url", "url" => "https://e.org/"))
+        @test_throws ArgumentError IR("elicitation/create", Dict("message" => "m"))  # form without a schema
+        @test_throws ArgumentError IR("elicitation/create", Dict("mode" => "form", "message" => 7,
+                                                                "requestedSchema" => Dict()))
+        @test_throws ArgumentError IR("elicitation/create", LittleDict{Any,Any}(
+            "mode" => "form", :mode => "url", "message" => "m", "url" => "https://e.org/",
+            "requestedSchema" => Dict()))
+        @test_throws ArgumentError IR("sampling/createMessage", Dict(1 => 2))
+        # The request owns its params: changing the caller's dictionary afterwards
+        # changes neither what is checked nor what is sent
+        mine = Dict{String,Any}("message" => "m", "requestedSchema" => Dict("type" => "object", "properties" => Dict()))
+        built = IR("elicitation/create", mine)
+        mine["mode"] = "typo"; mine["message"] = "changed"
+        @test !haskey(built.params, "mode") && built.params["message"] == "m"
+        @test sat(Dict("elicitation" => Dict()), built)
+        @test all(k -> k isa String, keys(IR("sampling/createMessage", Dict(:maxTokens => 4, :messages => [])).params))
         # An explicit mode: "form" is form; a hand-built url request is url, with
         # String or Symbol keys
         explicit = IR("elicitation/create",

@@ -98,9 +98,10 @@ tool = MCPTool(
                                  "https://mcp.example.com/connect/calendar")
         client_supports(ctx, ask) || return TextContent(
             text = "Open https://mcp.example.com/connect/calendar to connect your calendar.")
-        haskey(input_responses(ctx), "connect") && return TextContent(
-            text = "Not connected yet. Finish signing in, then try again.")
-        InputRequired(Dict("connect" => ask))
+        resp = get(input_responses(ctx), "connect", nothing)
+        resp === nothing && return InputRequired(Dict("connect" => ask))
+        resp["action"] == "accept" || return TextContent(text = "Calendar not connected.")
+        TextContent(text = "Not connected yet. Finish signing in, then try again.")
     end)
 ```
 
