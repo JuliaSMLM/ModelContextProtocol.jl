@@ -26,9 +26,13 @@ jobs:
         with:
           version: '1'
       - uses: julia-actions/cache@v3
+      # Node 24: the version the totals below were measured with. On Node 22 the
+      # suite's dns-rebinding scenario fails inside the requirement-set run,
+      # because the server's early 403 leaves the connection unusable without
+      # saying `Connection: close` and Node 22 reuses it (a server fix is queued).
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Build the conformance suite
         run: |
