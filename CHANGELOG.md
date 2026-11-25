@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resource-not-found errors name the missing URI in `error.data.uri` (SEP-2164).
 
 ### Fixed
+- **HTTP transport: a rejected request no longer breaks its connection.** The 403,
+  404, 405, 415 and 401 answers were sent without reading the request body, so the
+  server then dropped the connection, and a client that reuses connections lost the
+  request it sent next. The body is now read and discarded first (up to 1 MiB; a
+  larger one gets `Connection: close`).
 - `prompts/get` checks required arguments when `arguments` is omitted, as it already
   did when `arguments` was an empty object. A request that names a prompt with
   required arguments and sends none now gets `-32602` in both cases; before, the

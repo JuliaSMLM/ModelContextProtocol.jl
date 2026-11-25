@@ -484,8 +484,10 @@ accepted, not-outstanding keys ignored, pending-empty → back to `working`;
 cancel unblocks the waiter via the exported `TaskCancelledException`;
 undeclared-capability requests refuse at the await, failing the task). The
 conformance `tasks-*` scenarios — including `tasks-mrtr-input` and
-`tasks-mrtr-composition` — pass every check (the suite's former wire-schema gap
-for the extension's CreateTaskResult shape is fixed upstream at the current pin).
+`tasks-mrtr-composition` — pass every check the suite runs (its former
+wire-schema gap for the extension's CreateTaskResult shape is fixed upstream at
+the current pin; `tasks-status-notifications` is skipped by the suite, so
+notification delivery is covered by the package's own tests only).
 The draft `server-stateless` conformance scenario passes 30/30, and
 `completion/complete` is served in both eras (prompt arguments + template
 variables from per-component `completions` sources; `CompletionCapability`

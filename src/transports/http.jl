@@ -719,6 +719,40 @@ function modern_error_http_status(payload::String)::Int
     return 200
 end
 
+# How much of a rejected request's body is read and discarded to keep its
+# connection usable; a larger body gets `Connection: close` instead
+const REJECTED_BODY_DRAIN_LIMIT = 1024 * 1024
+
+"""
+    reject_early!(stream::HTTP.Stream)
+
+Prepare a response that is sent without the request having been processed (403,
+404, 405, 415, 401): read and discard the request body, so the connection is left
+in a clean state for the client's next request. Without this the unread body makes
+the server drop the connection, and a client that pools connections loses the
+request it sends next.
+
+A body over `REJECTED_BODY_DRAIN_LIMIT` is not read to the end; the response then
+carries `Connection: close`, telling the client not to reuse the connection.
+
+Call it before the response headers are written.
+
+# Arguments
+- `stream::HTTP.Stream`: The request/response stream
+"""
+function reject_early!(stream::HTTP.Stream)
+    drained = 0
+    try
+        while !eof(stream) && drained <= REJECTED_BODY_DRAIN_LIMIT
+            drained += length(readavailable(stream))
+        end
+    catch
+        drained = REJECTED_BODY_DRAIN_LIMIT + 1
+    end
+    drained > REJECTED_BODY_DRAIN_LIMIT && HTTP.setheader(stream, "Connection" => "close")
+    nothing
+end
+
 """
     handle_request(transport::HttpTransport, stream::HTTP.Stream)
 
@@ -752,6 +786,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             write(stream, body)
         else
             HTTP.setstatus(stream, 404)
+            reject_early!(stream)
             HTTP.setheader(stream, "Content-Type" => "text/plain")
             HTTP.setheader(stream, "Content-Length" => "9")
             HTTP.startwrite(stream)
@@ -763,6 +798,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     # Handle both POST and GET requests to our endpoint
     if path != transport.endpoint
         HTTP.setstatus(stream, 404)
+        reject_early!(stream)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         write(stream, "Not Found")
         return nothing
@@ -794,6 +830,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         if !isnothing(violation)
             @debug "Rejected potential DNS-rebinding request" violation=violation
             HTTP.setstatus(stream, 403)
+            reject_early!(stream)
             HTTP.setheader(stream, "Content-Type" => "text/plain")
             error_msg = "Forbidden: $violation"
             HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
@@ -825,6 +862,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 resource_metadata_url=resource_metadata_url
             )
             HTTP.setstatus(stream, status)
+            reject_early!(stream)
             for (k, v) in headers
                 HTTP.setheader(stream, k => v)
             end
@@ -843,6 +881,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         get_version = strip(HTTP.header(request, "MCP-Protocol-Version", ""))
         if get_version in MODERN_PROTOCOL_VERSIONS
             HTTP.setstatus(stream, 405)
+            reject_early!(stream)
             HTTP.setheader(stream, "Content-Type" => "text/plain")
             error_msg = "Method Not Allowed"
             HTTP.setheader(stream, "Content-Length" => string(ncodeunits(error_msg)))
@@ -878,6 +917,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     # Handle POST requests
     if method != "POST"
         HTTP.setstatus(stream, 405)
+        reject_early!(stream)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         error_msg = "Method Not Allowed"
         HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
@@ -902,6 +942,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         if !isempty(origin) && !(origin in transport.allowed_origins)
             @debug "Rejected request from unauthorized origin" origin=origin
             HTTP.setstatus(stream, 403)
+            reject_early!(stream)
             HTTP.setheader(stream, "Content-Type" => "text/plain")
             error_msg = "Forbidden: Invalid Origin"
             HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
@@ -915,6 +956,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     content_type = HTTP.header(request, "Content-Type", "")
     if !startswith(content_type, "application/json")
         HTTP.setstatus(stream, 415)
+        reject_early!(stream)
         HTTP.setheader(stream, "Content-Type" => "text/plain")
         error_msg = "Unsupported Media Type"
         HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
