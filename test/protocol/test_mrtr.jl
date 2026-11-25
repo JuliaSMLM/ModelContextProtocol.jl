@@ -222,11 +222,24 @@
         @test elicit_url_request("m", "https://e.com/"; _meta = Dict("k" => 1)).params["_meta"]["k"] == 1
         @test elicit_request("Q?"; _meta = Dict("k" => 2)).params["_meta"]["k"] == 2
         @test !haskey(elicit_request("Q?").params, "_meta")
-        # Not an absolute http(s) URL, or one carrying credentials -> refused
+        # Not a valid absolute http(s) URL, or one carrying credentials -> refused
         for bad in ("not a url", "/relative/path", "ftp://example.com/x", "example.com",
-                    "https://", "https://user:secret@example.com/", "javascript:alert(1)")
+                    "https://", "https://user:secret@example.com/", "javascript:alert(1)",
+                    "https://bad host/path", "https://example.org:abc/x",
+                    "https://example.org:99999/", "https://exa_mple.org/",
+                    "https://example.org/a b", "https://example.org/\"x\"",
+                    "https://example.org/<x>", "https://example.org/\n", "https://ex\u00e4mple.org/",
+                    "https://-example.org/", "https://example..org/")
             @test_throws ArgumentError elicit_url_request("m", bad)
         end
+        # ...while ordinary forms pass: ports, IPv6 literals, queries, fragments, encodings
+        for good in ("https://example.org", "https://example.org:8443/a/b?x=1&y=%20#frag",
+                     "http://localhost:3000/cb", "http://[::1]:8080/x", "https://a.b-c.example./")
+            @test elicit_url_request("m", good).params["url"] == good
+        end
+        # _meta is an object or absent
+        @test_throws ArgumentError elicit_url_request("m", "https://e.com/"; _meta = 3)
+        @test_throws ArgumentError elicit_request("Q?"; _meta = [1])
     end
 
     @testset "URL-mode elicitation: capability requirements" begin
@@ -255,19 +268,32 @@
         @test sort(collect(keys(req(both, Dict())["elicitation"]))) == ["form", "url"]
         @test collect(keys(req(both, Dict("elicitation" => Dict("url" => Dict())))["elicitation"])) == ["form"]
         @test isempty(req(both, Dict("elicitation" => Dict("form" => Dict(), "url" => Dict()))))
-        # A hand-built request with an unknown or non-string mode matches nothing
-        future = ModelContextProtocol.InputRequest("elicitation/create",
-            Dict("mode" => "voice", "message" => "m"))
-        @test !sat(Dict("elicitation" => Dict("form" => Dict(), "url" => Dict())), future)
-        @test sat(Dict("elicitation" => Dict("voice" => Dict())), future)
-        odd = ModelContextProtocol.InputRequest("elicitation/create", Dict("mode" => 7))
-        @test !sat(Dict("elicitation" => Dict()), odd)
-        @test haskey(req(InputRequired(Dict("o" => odd)), Dict("elicitation" => Dict())), "elicitation")
-        # An explicit mode: "form" is still form
-        explicit = ModelContextProtocol.InputRequest("elicitation/create",
+        # A hand-built request is validated once, at construction: only an ABSENT
+        # mode means form, and a present one must be "form" or "url"
+        IR = ModelContextProtocol.InputRequest
+        for bad_mode in ("voice", 7, nothing, "URL", ["url"])
+            @test_throws ArgumentError IR("elicitation/create", Dict("mode" => bad_mode, "message" => "m"))
+            @test_throws ArgumentError IR("elicitation/create", Dict(:mode => bad_mode, :message => "m"))
+        end
+        # Params are a dictionary (or absent), never a shape the key lookups cannot
+        # see: a NamedTuple would serialize as URL mode but be checked as form
+        @test_throws ArgumentError IR("elicitation/create",
+            (mode = "url", message = "Open", url = "https://example.org/"))
+        @test_throws ArgumentError IR("elicitation/create", nothing)
+        @test_throws ArgumentError IR("sampling/createMessage", (maxTokens = 4, tools = []))
+        @test IR("roots/list", nothing).params === nothing
+        # An explicit mode: "form" is form; a hand-built url request is url, with
+        # String or Symbol keys
+        explicit = IR("elicitation/create",
             Dict("mode" => "form", "message" => "m",
                  "requestedSchema" => Dict("type" => "object", "properties" => Dict())))
         @test sat(Dict("elicitation" => Dict()), explicit)
+        for hand in (IR("elicitation/create", Dict("mode" => "url", "message" => "m", "url" => "https://e.org/")),
+                     IR("elicitation/create", Dict(:mode => "url", :message => "m", :url => "https://e.org/")))
+            @test sat(Dict("elicitation" => Dict("url" => Dict())), hand)
+            @test !sat(Dict("elicitation" => Dict("form" => Dict())), hand)
+            @test collect(keys(req(InputRequired(Dict("h" => hand)), Dict("elicitation" => Dict()))["elicitation"])) == ["url"]
+        end
     end
 
     @testset "URL-mode elicitation: wire flow and client_supports" begin
@@ -315,7 +341,7 @@
                          "inputResponses" => Dict("connect" => Dict("action" => "accept")),
                          "requestState" => r["result"]["requestState"]))
         @test r["result"]["resultType"] == "complete"
-        @test occursin("action=accept content=false", JSON3.write(r["result"]))
+        @test occursin("action=accept", JSON3.write(r["result"]))
 
         # client_supports lets the handler choose per client
         r = call(4, Dict("name" => "adaptive", "arguments" => Dict(), "_meta" => mmeta(both)))
@@ -326,10 +352,19 @@
         @test r["result"]["resultType"] == "complete"
         @test occursin("cannot be asked", JSON3.write(r["result"]))
 
-        # On a legacy request nothing can be asked, whatever the session declared
-        ctx = RequestContext(server = server, request_id = 1)
-        @test !client_supports(ctx, elicit_request("Q?"))
-        @test !client_supports(ctx, elicit_url_request("m", "https://example.com/"))
+        # On a legacy request nothing can be asked, even with capabilities that
+        # would suffice on a modern one (the same capabilities do, with a version)
+        legacy = RequestContext(server = server, request_id = 1, client_capabilities = both)
+        modern = RequestContext(server = server, request_id = 1, client_capabilities = both,
+                                protocol_version = "2026-07-28")
+        for ask in (elicit_request("Q?"), elicit_url_request("m", "https://example.com/"))
+            @test !client_supports(legacy, ask)
+            @test client_supports(modern, ask)
+        end
+
+        # URL mode also works from a detached task's mid-task input
+        @test ModelContextProtocol.capability_satisfied(both,
+            ModelContextProtocol._frozen_input_request(elicit_url_request("m", "https://example.com/")))
         task_local_storage(:mcp_suppress_log_notifications, false)
     end
 
@@ -394,9 +429,52 @@
         @test msgs[2]["content"]["text"] == "x is 7"
         @test msgs[3]["content"]["type"] == "image" && msgs[3]["content"]["mimeType"] == "image/png"
         @test !occursin("template is ignored", JSON3.write(r["result"]))
-        # ...required arguments are still checked before the handler runs
-        r = get_prompt(6, Dict("name" => "plain", "arguments" => Dict(), "_meta" => mmeta(Dict())))
-        @test r["error"]["code"] == -32602
+        # ...required arguments are checked before the handler runs, whether
+        # `arguments` is empty or omitted
+        ran = Ref(0)
+        strict = MCPPrompt(name = "strict", arguments = [PromptArgument(name = "x", required = true)],
+                           handler = args -> (ran[] += 1; "x is $(args["x"])"))
+        # A handler typed on Dict{String,String} gets that type in both cases
+        typed = MCPPrompt(name = "typed", handler = (args::Dict{String,String}) -> "n=$(length(args))")
+        register!(server, strict); register!(server, typed)
+        for params in (Dict("name" => "strict", "arguments" => Dict(), "_meta" => mmeta(Dict())),
+                       Dict("name" => "strict", "_meta" => mmeta(Dict())))
+            r = get_prompt(6, params)
+            @test r["error"]["code"] == -32602
+            @test occursin("x", r["error"]["message"])
+        end
+        @test ran[] == 0
+        for params in (Dict("name" => "typed", "arguments" => Dict(), "_meta" => mmeta(Dict())),
+                       Dict("name" => "typed", "_meta" => mmeta(Dict())))
+            r = get_prompt(6, params)
+            @test r["result"]["messages"][1]["content"]["text"] == "n=0"
+        end
+        # The same rule holds for a static prompt and on a legacy request
+        static = MCPPrompt(name = "static", arguments = [PromptArgument(name = "x", required = true)],
+                           messages = [PromptMessage(content = TextContent(text = "x={x}"))])
+        register!(server, static)
+        legacy_ctx = RequestContext(server = server, request_id = 1)
+        @test handle_get_prompt(legacy_ctx, GetPromptParams(name = "static")).error.code == -32602
+        @test handle_get_prompt(legacy_ctx, GetPromptParams(name = "static",
+            arguments = Dict{String,String}())).error.code == -32602
+        ok = handle_get_prompt(legacy_ctx, GetPromptParams(name = "static", arguments = Dict("x" => "1")))
+        @test ok.response.result["messages"][1]["content"]["text"] == "x=1"
+
+        # A declined or cancelled elicitation reaches the handler as a response
+        # without content; the handler decides what the prompt is then
+        polite = MCPPrompt(name = "polite", handler = (args, ctx) -> begin
+            resp = get(input_responses(ctx), "q", nothing)
+            resp === nothing && return InputRequired(Dict("q" => elicit_request("Q?")))
+            resp["action"] == "accept" ? "accepted" : "not accepted: $(resp["action"])"
+        end)
+        register!(server, polite)
+        first_round = get_prompt(20, Dict("name" => "polite", "_meta" => mmeta(caps)))
+        for action in ("decline", "cancel")
+            r = get_prompt(21, Dict("name" => "polite", "_meta" => mmeta(caps),
+                                    "requestState" => first_round["result"]["requestState"],
+                                    "inputResponses" => Dict("q" => Dict("action" => action))))
+            @test r["result"]["messages"][1]["content"]["text"] == "not accepted: $action"
+        end
 
         # Handler mistakes surface as errors, not throws
         for name in ("broken", "throws")
@@ -419,6 +497,15 @@
             "jsonrpc" => "2.0", "id" => 9, "method" => "prompts/list",
             "params" => Dict("_meta" => mmeta(Dict()))))))
         @test all(!haskey(p, "handler") for p in listed["result"]["prompts"])
+        # ...and a prompt's direct JSON form has no handler either: a static
+        # prompt serializes exactly as before the field existed, and a handler
+        # that captures state does not break serialization
+        static_json = JSON3.read(JSON3.write(static))
+        @test sort(String.(collect(keys(static_json)))) ==
+              ["_meta", "arguments", "completions", "description", "icons", "messages", "name", "title"]
+        captured = "state"
+        capturing = MCPPrompt(name = "capturing", handler = args -> captured)
+        @test !haskey(JSON3.read(JSON3.write(capturing)), "handler")
 
         # The earlier positional shapes still construct (seven and eight fields)
         p7 = MCPPrompt("n", "d", [], [], nothing, nothing, nothing)

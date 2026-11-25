@@ -23,6 +23,10 @@ StructTypes.StructType(::Type{ListResourcesParams}) = StructTypes.Struct()
 StructTypes.StructType(::Type{ListPromptsParams}) = StructTypes.Struct()
 StructTypes.StructType(::Type{GetPromptParams}) = StructTypes.Struct()
 StructTypes.StructType(::Type{PromptMessage}) = StructTypes.Struct()
+# A prompt's handler is code, not data: it stays out of the JSON form, which is
+# then the same for a static prompt as before the field existed
+StructTypes.StructType(::Type{MCPPrompt}) = StructTypes.Struct()
+StructTypes.excludes(::Type{MCPPrompt}) = (:handler,)
 StructTypes.StructType(::Type{T}) where {T<:RequestParams} = StructTypes.Struct()
 StructTypes.StructType(::Type{T}) where {T<:ResponseResult} = StructTypes.Struct()
 

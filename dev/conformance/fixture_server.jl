@@ -535,6 +535,11 @@ prompts = [
         description = "MRTR: asks for context by elicitation, then builds the prompt",
         arguments = PromptArgument[],
         handler = (args, ctx) -> begin
+            resp = get(input_responses(ctx), "user_context", nothing)
+            # Ask when there is no usable response; a declined or cancelled
+            # question still produces a prompt, without the context
+            action = _val(resp, "action")
+            action in ("decline", "cancel") && return "No context was given."
             context = _accepted(input_responses(ctx), "user_context", "context")
             context === nothing && return InputRequired(Dict("user_context" => elicit_request(
                 "What context should the prompt use?";

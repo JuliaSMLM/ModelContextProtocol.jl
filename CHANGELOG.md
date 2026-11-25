@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resource-not-found errors name the missing URI in `error.data.uri` (SEP-2164).
 
 ### Fixed
+- `prompts/get` checks required arguments when `arguments` is omitted, as it already
+  did when `arguments` was an empty object. A request that names a prompt with
+  required arguments and sends none now gets `-32602` in both cases; before, the
+  omitted form returned the template with its placeholders unfilled.
 - Elicitation capability checks are mode-aware. A URL-mode request previously counted
   as a form request: it was sent to a client that declared only form support, and
   refused for one that declared only URL support. The `-32021` error now names the

@@ -592,23 +592,21 @@ function handle_get_prompt(ctx::RequestContext, params::GetPromptParams)::Handle
 
         prompt = ctx.server.prompts[prompt_idx]
 
+        # One argument dictionary for validation and for the template or handler:
+        # an omitted `arguments` is the same as an empty one
+        args = params.arguments isa Nothing ? Dict{String,String}() :
+               Dict{String,String}(params.arguments)
+
         # Validate required arguments
-        if !isnothing(params.arguments)
-            missing_args = filter(arg -> arg.required && !haskey(params.arguments, arg.name),
-                prompt.arguments)
-
-            if !isempty(missing_args)
-                return HandlerResult(
-                    error=ErrorInfo(
-                        code=ErrorCodes.INVALID_PARAMS,
-                        message="Missing required arguments: $(join(map(a -> a.name, missing_args), ", "))"
-                    )
+        missing_args = filter(arg -> arg.required && !haskey(args, arg.name), prompt.arguments)
+        if !isempty(missing_args)
+            return HandlerResult(
+                error=ErrorInfo(
+                    code=ErrorCodes.INVALID_PARAMS,
+                    message="Missing required arguments: $(join(map(a -> a.name, missing_args), ", "))"
                 )
-            end
+            )
         end
-
-        # Get the arguments (empty dict if none provided)
-        args = params.arguments isa Nothing ? LittleDict{String,String}() : params.arguments
 
         processed_messages = if prompt.handler !== nothing
             # A prompt handler builds the messages itself. Like tool handlers it may

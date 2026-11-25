@@ -268,10 +268,15 @@ review_prompt = MCPPrompt(
                 "type" => "object",
                 "properties" => Dict("focus" => Dict("type" => "string")),
                 "required" => ["focus"]))))
+        # The user may decline or cancel: only an accepted response has content
+        resp["action"] == "accept" || return "Review this change."
         "Review this change with a focus on $(resp["content"]["focus"])."
     end
 )
 ```
+
+Every elicitation response has an `action`: `accept`, `decline` or `cancel`. Decide
+what the prompt should be in each case, and read `content` only after `accept`.
 
 A legacy-era session has no way to carry input requests, so there a handler that
 returns `InputRequired` produces an error. See

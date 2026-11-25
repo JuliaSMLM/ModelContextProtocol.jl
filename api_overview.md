@@ -1310,10 +1310,11 @@ confirm_tool = MCPTool(
 ```
 
 **Semantics:**
-- Returned from **tool handlers**, on modern-era requests. A legacy session has no wire
-  shape for `InputRequired`, so returning one there is an error. (The retry fields
-  `inputResponses`/`requestState` are parsed on all three MRTR methods — `tools/call`,
-  `resources/read`, `prompts/get` — but only tool handlers produce `InputRequired`.)
+- Returned from **tool handlers** and **prompt handlers** (`MCPPrompt(handler = ...)`),
+  on modern-era requests. A legacy session has no wire shape for `InputRequired`, so
+  returning one there is an error. (The retry fields `inputResponses`/`requestState`
+  are parsed on all three MRTR methods — `tools/call`, `resources/read`, `prompts/get`
+  — but resource providers cannot produce `InputRequired`.)
 - Inside a **legacy** task-augmented execution `InputRequired` is not representable and
   fails the task; the modern equivalent after detaching is `task_await_input`
 - Each request type needs the matching client capability declared in the request's
