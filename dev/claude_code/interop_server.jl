@@ -73,7 +73,9 @@ tools = [
         name = "confirm_job",
         description = "Start a background task that pauses to ask the user a yes/no question",
         parameters = ToolParameter[],
-        task_support = :optional,
+        # Required: the question can only be asked from a task, so a client
+        # without the tasks extension is told so instead of getting an error
+        task_support = :required,
         handler = (args, ctx) -> begin
             task_detach(ctx)
             resp = task_await_input(ctx, elicit_request(

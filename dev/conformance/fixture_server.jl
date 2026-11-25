@@ -119,9 +119,15 @@ mrtr_tools = [
         parameters = ToolParameter[],
         handler = (args, ctx) -> begin
             responses = input_responses(ctx)
-            if all(k -> haskey(responses, k), ("user_name", "greeting", "client_roots")) &&
+            # Complete only when every reply carries its value: the name from the
+            # elicitation, the text from the sampling and the roots list
+            name = _accepted(responses, "user_name", "name")
+            greeting = _val(_val(get(responses, "greeting", nothing), "content"), "text")
+            roots = _val(get(responses, "client_roots", nothing), "roots")
+            if name !== nothing && greeting !== nothing && roots isa AbstractVector &&
                _val(input_state(ctx), "issued") == "all"
-                return TextContent(text = "All inputs received")
+                return TextContent(
+                    text = "$(greeting) $(name), with $(length(roots)) root(s)")
             end
             InputRequired(Dict(
                     "user_name" => elicit_request(
