@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Conformance CI now runs the official suite at its 2026-11-10 revision and gates on
+  the frozen `--requirements 2026-07-28` set. The fixture server gained the suite's
+  MRTR (`input-required-result-*`) and JSON Schema 2020-12 tools, so those scenarios
+  are measured for the first time: 13 of 14 MRTR scenarios pass. The remaining one
+  (`prompts/get` returning an `InputRequiredResult`) needs prompts that can ask for
+  input, which the package does not offer yet.
+
 ## [0.7.0] - 2026-08-09
 
 **Full server-side support for the MCP 2026-07-28 specification.** This

@@ -482,13 +482,16 @@ accepted, not-outstanding keys ignored, pending-empty → back to `working`;
 cancel unblocks the waiter via the exported `TaskCancelledException`;
 undeclared-capability requests refuse at the await, failing the task). The
 conformance `tasks-*` scenarios — including `tasks-mrtr-input` and
-`tasks-mrtr-composition` — pass all substantive checks (the suite's wire-schema
-validator lacks the extension's CreateTaskResult shape — upstream harness gap).
+`tasks-mrtr-composition` — pass every check (the suite's former wire-schema gap
+for the extension's CreateTaskResult shape is fixed upstream at the current pin).
 The draft `server-stateless` conformance scenario passes 30/30, and
 `completion/complete` is served in both eras (prompt arguments + template
 variables from per-component `completions` sources; `CompletionCapability`
 advertised in initialize and `server/discover`) — the modern-dated suite passes
-40/40. `notifications/tasks` is in: `subscriptions/listen` accepts a `taskIds`
+41/41, and the frozen `--requirements 2026-07-28` set passes 193 of 194 checks
+(13 of the 14 MRTR `input-required-result-*` scenarios; the one failure,
+`non-tool-request`, needs a prompt that returns `InputRequired`, which prompts
+cannot do yet). `notifications/tasks` is in: `subscriptions/listen` accepts a `taskIds`
 filter (-32021 without the declared extension; ack echoes only the ids the
 requestor could `tasks/get`), and every extension-era status transition pushes
 the complete DetailedTask to subscribed streams. `x-mcp-header` parameter

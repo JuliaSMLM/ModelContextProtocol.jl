@@ -36,9 +36,10 @@ server = mcp_server(
 - **Dual-era protocol support**: the 2026-07-28 modern era (stateless, per-request `_meta`,
   `server/discover`, `subscriptions/listen`) plus legacy `initialize` negotiation across
   `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`
-- **Conformance**: passes every substantive check of the official MCP conformance suite
-  (modern-dated 40/40, `server-stateless` 30/30, header validation 14/14, custom headers
-  10/10), run in CI on every PR
+- **Conformance**: measured against the official MCP conformance suite in CI on every PR
+  (modern-dated 41/41, `server-stateless` 30/30, header validation 14/14, custom headers
+  10/10, the tasks-extension scenarios, and 13 of the 14 MRTR input-request scenarios; the
+  remaining one needs a prompt that asks for input, which the package does not offer yet)
 - **Transports**: stdio (default) and Streamable HTTP with SSE — session management for
   legacy sessions, stateless per-request handling in the modern era
 - **Content types**: text, image, audio, embedded resources, and `resource_link` references
