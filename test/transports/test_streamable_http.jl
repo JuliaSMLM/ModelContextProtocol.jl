@@ -1089,4 +1089,88 @@
         end
         Base.close(timer)
     end
+
+    @testset "A request rejected before processing leaves its connection usable" begin
+        # The 403/404/405/415 answers are sent without the request being processed.
+        # Its body must still be read, or the server drops the connection and a
+        # client that pools connections loses its next request ("other side closed").
+        port = 19090 + rand(1001:2000)
+        transport = HttpTransport(port = port)
+        server = mcp_server(name = "reject-early", version = "1.0.0")
+        server.transport = transport
+        ModelContextProtocol.connect(transport)
+        server_task = @async start!(server)
+        sleep(2)
+
+        body = """{"jsonrpc":"2.0","id":1,"method":"ping"}"""
+        host = "127.0.0.1:$port"
+        request(method, path, headers, payload) =
+            "$method $path HTTP/1.1\r\n" * join(("$k: $v\r\n" for (k, v) in headers)) *
+            "Content-Length: $(ncodeunits(payload))\r\n\r\n" * payload
+        good = request("POST", "/", ["Host" => host, "Content-Type" => "application/json",
+                                     "Accept" => "application/json, text/event-stream"], body)
+        # Send `first` and then `good` on ONE connection; return everything received
+        # until both responses are in (or 5 s pass)
+        function two_requests(first)
+            sock = HTTP.Sockets.connect("127.0.0.1", port)
+            received = IOBuffer()
+            reader = @async try
+                while !eof(sock)
+                    write(received, readavailable(sock))
+                end
+            catch
+            end
+            write(sock, first)
+            sleep(0.3)
+            try
+                write(sock, good)
+            catch
+            end
+            timer = Timer(5)
+            while isopen(timer) && count("HTTP/1.1 ", String(copy(received.data[1:received.size]))) < 2 &&
+                  !istaskdone(reader)
+                sleep(0.05)
+            end
+            Base.close(timer); Base.close(sock)
+            String(take!(received))
+        end
+        rejected = [
+            ("415", request("POST", "/", ["Host" => host, "Content-Type" => "text/plain"], body)),
+            ("404", request("POST", "/elsewhere", ["Host" => host, "Content-Type" => "application/json"], body)),
+            ("405", request("PUT", "/", ["Host" => host, "Content-Type" => "application/json"], body)),
+            ("403", request("POST", "/", ["Host" => "evil.example", "Content-Type" => "application/json"], body)),
+        ]
+        for (status, first) in rejected
+            responses = two_requests(first)
+            @test startswith(responses, "HTTP/1.1 $status")
+            # ...and the request that followed on the same connection was answered
+            @test occursin("HTTP/1.1 200", responses)
+            @test occursin("\"id\":1", responses)
+        end
+
+        # A rejected request with a very large body is not read to the end: the
+        # response says the connection will close
+        huge = "x"^(2 * 1024 * 1024)
+        r = HTTP.post("http://127.0.0.1:$port/", ["Content-Type" => "text/plain"], huge;
+                      status_exception = false, retry = false)
+        @test r.status == 415
+        @test lowercase(HTTP.header(r, "Connection", "")) == "close"
+
+        # A pooling client: rejected and good requests alternating
+        url = "http://127.0.0.1:$port/"
+        ok_headers = ["Content-Type" => "application/json", "Accept" => "application/json, text/event-stream"]
+        for _ in 1:20
+            @test HTTP.post(url, ["Content-Type" => "text/plain"], body;
+                            status_exception = false, retry = false).status == 415
+            @test HTTP.post(url, ok_headers, body; status_exception = false, retry = false).status == 200
+        end
+
+        server.active = false
+        ModelContextProtocol.close(transport)
+        timer = Timer(2)
+        while !istaskdone(server_task) && isopen(timer)
+            sleep(0.1)
+        end
+        Base.close(timer)
+    end
 end

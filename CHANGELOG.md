@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **HTTP transport: a rejected request no longer breaks its connection.** The 403,
+  404, 405, 415 and 401 answers were sent without reading the request body, so the
+  server then dropped the connection, and a client that reuses connections lost the
+  request it sent next. The body is now read and discarded first (up to 1 MiB; a
+  larger one gets `Connection: close`).
+
 ### Changed
 - Conformance CI now runs the official suite at its 2026-11-10 revision and gates on
   the frozen `--requirements 2026-07-28` set. The fixture server gained the suite's
