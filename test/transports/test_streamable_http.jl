@@ -1164,8 +1164,11 @@
             ("415", head("POST", "/", vcat(text_plain, ["Transfer-Encoding" => "chunked"])) *
                     "5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n"),
             ("415", head("POST", "/", vcat(text_plain, ["Transfer-Encoding" => "chunked"])) * "0\r\n\r\n"),
-            # a body of exactly the most that is read
+            # a body of exactly the most that is read, with a declared length and
+            # chunked (where the terminating chunk comes after the last byte allowed)
             ("415", request("POST", "/", text_plain, "x"^(1024 * 1024))),
+            ("415", head("POST", "/", vcat(text_plain, ["Transfer-Encoding" => "chunked"])) *
+                    "80000\r\n" * "x"^(512 * 1024) * "\r\n80000\r\n" * "y"^(512 * 1024) * "\r\n0\r\n\r\n"),
         ]
         for (status, first) in early
             responses, closed, _ = exchange(first, 0.3, good)
@@ -1194,6 +1197,13 @@
         @test occursin(r"(?i)\r\nconnection: close\r\n", responses)
         @test closed
         @test elapsed < 4
+        # A chunked body one byte over the limit is given up on in the same way
+        chunked_over = head("POST", "/", vcat(text_plain, ["Transfer-Encoding" => "chunked"])) *
+                       "100001\r\n" * "x"^(1024 * 1024 + 1) * "\r\n0\r\n\r\n"
+        responses, closed, _ = exchange(chunked_over, good; want = 2, wait = 4)
+        @test statuses(responses) == ["415"]
+        @test occursin(r"(?i)\r\nconnection: close\r\n", responses)
+        @test closed
         # ...and an ordinary client sees that as a normal 415
         r = HTTP.post("http://127.0.0.1:$port/", ["Content-Type" => "text/plain"], "x"^(2 * 1024 * 1024);
                       status_exception = false, retry = false)

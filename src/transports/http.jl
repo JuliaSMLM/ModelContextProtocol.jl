@@ -765,12 +765,21 @@ function drain_request_body(stream::HTTP.Stream; max_bytes::Int=EARLY_RESPONSE_D
     @async put!(outcome, try
         remaining = max_bytes
         complete = false
+        probed = false
         while true
             if eof(stream)
                 complete = true
                 break
             end
-            remaining > 0 || break
+            if remaining <= 0
+                # The allowance is used up. A chunked body may end exactly here,
+                # with only its terminating chunk left: one read of zero bytes
+                # lets that framing be consumed without taking more of the body
+                probed && break
+                probed = true
+                readavailable(stream, 0)
+                continue
+            end
             remaining -= length(readavailable(stream, remaining))
         end
         complete
