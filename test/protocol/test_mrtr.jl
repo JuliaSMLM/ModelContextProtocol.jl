@@ -315,7 +315,9 @@
         @test_throws ArgumentError IR("sampling/createMessage", Dict(1 => 2))
         # A form's schema is an object schema with properties
         for schema in (Dict("type" => "string"), Dict("type" => 5, "properties" => Dict()),
-                       Dict("type" => "object", "properties" => [1]), Dict("properties" => Dict()), [1])
+                       Dict("type" => "object", "properties" => [1]), Dict("properties" => Dict()), [1],
+                       Dict("type" => "object", "properties" => nothing),
+                       Dict(:type => "object", :properties => nothing))
             @test_throws ArgumentError elicit_request("m"; requested_schema = schema)
         end
         @test elicit_request("m"; requested_schema = Dict(:type => "object", :properties => Dict(
@@ -389,6 +391,7 @@
                 ("unserializable", r -> (r.params["requestedSchema"] = Dict(
                     "type" => "object", "properties" => Dict("x" => Dict("default" => Inf))))),
                 ("schema-type", r -> (r.params["requestedSchema"]["type"] = 5)),
+                ("schema-properties", r -> (r.params["requestedSchema"]["properties"] = nothing)),
                 ("no-schema", r -> delete!(r.params, "requestedSchema")))
             register!(server, MCPTool(name = "tampered-$name", description = "t", parameters = [],
                 handler = (args, ctx) -> begin

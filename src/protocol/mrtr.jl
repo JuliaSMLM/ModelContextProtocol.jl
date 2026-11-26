@@ -87,8 +87,9 @@ function _valid_form_schema(schema)::Bool
     field(name) = haskey(schema, name) ? schema[name] : get(schema, Symbol(name), nothing)
     kind = field("type")
     (kind isa Union{AbstractString,Symbol} && string(kind) == "object") || return false
-    properties = field("properties")
-    properties === nothing || properties isa Union{AbstractDict,NamedTuple}
+    # absent is allowed; present, it is a dictionary (an explicit null is not)
+    (haskey(schema, "properties") || haskey(schema, :properties)) || return true
+    field("properties") isa Union{AbstractDict,NamedTuple}
 end
 
 # The request's own copy of its top-level params, with String keys: what the
