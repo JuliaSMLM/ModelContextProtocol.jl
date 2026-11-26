@@ -147,7 +147,7 @@ const _URL_PCHAR = "(?:$(_URL_UNRESERVED_SUBDELIMS)|[:@]|$(_URL_PCT))"
 const _HTTP_URL = Regex(
     "\\A[Hh][Tt][Tt][Pp][Ss]?://" *
     "(?<host>\\[[0-9A-Fa-f:.]*\\]|(?:$(_URL_UNRESERVED_SUBDELIMS)|$(_URL_PCT))+)" *
-    "(?::(?<port>[0-9]+))?" *
+    "(?::(?<port>[0-9]*))?" *
     "(?:/$(_URL_PCHAR)*)*" *
     "(?:\\?(?:$(_URL_PCHAR)|[/?])*)?" *
     "(?:#(?:$(_URL_PCHAR)|[/?])*)?\\z")
@@ -238,7 +238,9 @@ verifies who opened it before accepting anything. Use HTTPS outside development.
 - `url::AbstractString`: A valid absolute `https` (or `http`) URL without
   userinfo. The spec requires a valid URL; limiting it to http(s) is this
   package's choice, since the client opens it in a browser. An internationalized
-  host must be given in punycode
+  host must be given in punycode, and characters the URI grammar does not allow
+  as written must be percent-encoded: a query such as `filter[status]=open` goes
+  in as `filter%5Bstatus%5D=open`
 - `_meta`: Optional `_meta` object (a dictionary) to send with the request; see
   [`elicit_request`](@ref)
 
@@ -247,8 +249,8 @@ verifies who opened it before accepting anything. Use HTTPS outside development.
 """
 function elicit_url_request(message::AbstractString, url::AbstractString; _meta=nothing)::InputRequest
     message = String(message)
-    _valid_http_url(url) || throw(ArgumentError(
-        "elicit_url_request needs a valid absolute http(s) URL without userinfo (got $(repr(url)))"))
+    # The request's constructor checks the URL: one place decides what a valid URL
+    # request is, for this helper, a hand-built request and a task's snapshot
     params = LittleDict{String,Any}(
         "mode" => "url",
         "message" => message,

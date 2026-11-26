@@ -229,7 +229,7 @@
         for bad in ("not a url", "/relative/path", "ftp://example.com/x", "example.com",
                     "https://", "https://user:secret@example.com/", "https://@example.com/",
                     "javascript:alert(1)", "https://bad host/path", "https://example.org:abc/x",
-                    "https://example.org:99999/", "https://example.org:/", "https://example.org/a b",
+                    "https://example.org:99999/", "https://example.org/a b",
                     "https://example.org/\"x\"", "https://example.org/<x>", "https://example.org/\n",
                     "https://ex\u00e4mple.org/", "https://example.org/" * Char(0x202e),
                     "https://[:::]/", "https://[zz]/", "https://[::1/", "https://[1:2:3:4:5:6:7]/",
@@ -241,7 +241,7 @@
                     # host, and a numeric host that is not an IPv4 address
                     "https://[\u00e9]/", "https://example.org:065536/", "https://bad%2fhost.example/",
                     "https://ex%C3%A4mple.org/", "https://999.999.999.999/", "https://1.2.3/",
-                    "https://example.0x10/")
+                    "https://example.0x10/", "https://example.org/?filter[status]=open")
             @test_throws ArgumentError elicit_url_request("m", bad)
         end
         # ...while ordinary forms pass unchanged: ports, IPv4 and IPv6 literals,
@@ -251,7 +251,8 @@
                      "https://[::ffff:192.168.1.1]/", "https://192.168.1.1/", "https://a.b-c.example./",
                      "https://exa%6dple.org/", "https://exa_mple.org/", "https://example.org/@x:y",
                      "HTTPS://Example.ORG/a;b=c/~d?q=a/b?c#f/g?h",
-                     "https://example.org:000443/cb", "https://127.0.0.1./", "https://a1.example/")
+                     "https://example.org:000443/cb", "https://127.0.0.1./", "https://a1.example/",
+                     "https://example.org:/", "https://example.org/?filter%5Bstatus%5D=open")
             @test elicit_url_request("m", good).params["url"] == good
         end
         # A message of any string type is taken
