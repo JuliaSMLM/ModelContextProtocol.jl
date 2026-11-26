@@ -138,6 +138,28 @@ first request.
 input_state(ctx::RequestContext) = ctx.input_state
 
 """
+    client_supports(ctx, request::InputRequest) -> Bool
+
+Whether the client that sent this request declared the capability an input
+request needs, so a handler can choose what to ask for: for example a URL-mode
+elicitation where the client offers it and a form (or an explanation) where it
+does not. Returning an `InputRequired` with a request the client did not declare
+is rejected with error -32021, so check first when support may vary.
+
+Always `false` on a legacy-era request, which cannot carry input requests.
+
+# Arguments
+- `ctx`: The request context passed to a ctx-aware handler
+- `request::InputRequest`: A request built with `elicit_request`,
+  `elicit_url_request`, `sampling_request` or `roots_request`
+
+# Returns
+- `Bool`: true when `request` may be sent to this client
+"""
+client_supports(ctx::RequestContext, request::InputRequest)::Bool =
+    ctx.protocol_version !== nothing && capability_satisfied(ctx.client_capabilities, request)
+
+"""
     HandlerResult(; response::Union{Response,Nothing}=nothing,
                 error::Union{ErrorInfo,Nothing}=nothing)
 
@@ -553,7 +575,23 @@ function process_template(text::String, arguments::AbstractDict{String,String})
     return result
 end
 
+"""
+    handle_get_prompt(ctx::RequestContext, params::GetPromptParams) -> HandlerResult
 
+Handle `prompts/get`: check the prompt's required arguments, then produce its
+messages, from the prompt's `handler` when it has one and from its `messages`
+templates otherwise. A handler may return `InputRequired` to ask the client for
+input first (2026-07-28 requests only).
+
+# Arguments
+- `ctx::RequestContext`: The current request context
+- `params::GetPromptParams`: The prompt name and its arguments
+
+# Returns
+- `HandlerResult`: The prompt's description and messages, an `InputRequired` for
+  the modern layer to convert, or an error (unknown prompt, missing required
+  arguments, a handler failure)
+"""
 function handle_get_prompt(ctx::RequestContext, params::GetPromptParams)::HandlerResult
     try
         # Find the prompt
@@ -570,38 +608,58 @@ function handle_get_prompt(ctx::RequestContext, params::GetPromptParams)::Handle
 
         prompt = ctx.server.prompts[prompt_idx]
 
-        # Validate required arguments
-        if !isnothing(params.arguments)
-            missing_args = filter(arg -> arg.required && !haskey(params.arguments, arg.name),
-                prompt.arguments)
+        # One argument dictionary for validation and for the template or handler:
+        # an omitted `arguments` is the same as an empty one
+        args = params.arguments isa Nothing ? Dict{String,String}() :
+               Dict{String,String}(params.arguments)
 
-            if !isempty(missing_args)
-                return HandlerResult(
-                    error=ErrorInfo(
-                        code=ErrorCodes.INVALID_PARAMS,
-                        message="Missing required arguments: $(join(map(a -> a.name, missing_args), ", "))"
-                    )
+        # Validate required arguments
+        missing_args = filter(arg -> arg.required && !haskey(args, arg.name), prompt.arguments)
+        if !isempty(missing_args)
+            return HandlerResult(
+                error=ErrorInfo(
+                    code=ErrorCodes.INVALID_PARAMS,
+                    message="Missing required arguments: $(join(map(a -> a.name, missing_args), ", "))"
                 )
-            end
+            )
         end
 
-        # Get the arguments (empty dict if none provided)
-        args = params.arguments isa Nothing ? LittleDict{String,String}() : params.arguments
-
-        # Process messages with template processor
-        processed_messages = map(prompt.messages) do msg
-            if msg.content isa TextContent
-                # Create new message with processed text
-                PromptMessage(
-                    role = msg.role,
-                    content = TextContent(
-                        type = "text",
-                        text = process_template(msg.content.text, args)
+        processed_messages = if prompt.handler !== nothing
+            # A prompt handler builds the messages itself. Like tool handlers it may
+            # take `(args, ctx)`, dispatched by applicability, and may ask for client
+            # input by returning InputRequired (MRTR), which re-runs it on the retry
+            produced = applicable(prompt.handler, args, ctx) ?
+                prompt.handler(args, ctx) : prompt.handler(args)
+            if produced isa InputRequired
+                # Legacy sessions have no wire shape for input_required; the modern
+                # layer converts the value
+                ctx.protocol_version === nothing && return HandlerResult(
+                    error=ErrorInfo(
+                        code=ErrorCodes.INVALID_REQUEST,
+                        message="Prompt requires additional client input (input_required), which needs protocol 2026-07-28 or later"
                     )
                 )
-            else
-                # Pass through non-text messages unchanged
-                msg
+                return HandlerResult(
+                    response=JSONRPCResponse(id=ctx.request_id, result=produced)
+                )
+            end
+            prompt_messages(produced)
+        else
+            # Process messages with template processor
+            map(prompt.messages) do msg
+                if msg.content isa TextContent
+                    # Create new message with processed text
+                    PromptMessage(
+                        role = msg.role,
+                        content = TextContent(
+                            type = "text",
+                            text = process_template(msg.content.text, args)
+                        )
+                    )
+                else
+                    # Pass through non-text messages unchanged
+                    msg
+                end
             end
         end
 
@@ -632,6 +690,31 @@ function handle_get_prompt(ctx::RequestContext, params::GetPromptParams)::Handle
         )
     end
 end
+
+"""
+    prompt_messages(produced) -> Vector{PromptMessage}
+
+Normalize what a prompt handler returned into the prompt's messages: a
+`PromptMessage`, a content value or a string (each becomes one user message), or a
+vector of any of these.
+
+# Arguments
+- `produced`: The handler's return value
+
+# Returns
+- `Vector{PromptMessage}`: The messages for the `prompts/get` result
+"""
+prompt_messages(m::PromptMessage)::Vector{PromptMessage} = [m]
+prompt_messages(text::AbstractString)::Vector{PromptMessage} =
+    [PromptMessage(content = TextContent(text = String(text)))]
+prompt_messages(c::Union{TextContent,ImageContent,AudioContent,ResourceLink,EmbeddedResource})::Vector{PromptMessage} =
+    [PromptMessage(content = c)]
+prompt_messages(items::AbstractVector)::Vector{PromptMessage} =
+    PromptMessage[m for item in items for m in prompt_messages(item)]
+prompt_messages(::InputRequired) = throw(ArgumentError(
+    "a prompt handler returns InputRequired on its own, not inside a vector of messages"))
+prompt_messages(other) = throw(ArgumentError(
+    "a prompt handler must return PromptMessage(s), content, a string or InputRequired (got $(typeof(other)))"))
 
 # The spec caps completion suggestions at 100 per response
 const COMPLETION_MAX_VALUES = 100
@@ -881,7 +964,9 @@ function handle_read_resource(ctx::RequestContext, params::ReadResourceParams)::
         return HandlerResult(
             error=ErrorInfo(
                 code=ErrorCodes.RESOURCE_NOT_FOUND,
-                message="Resource not found: $(params.uri)"
+                message="Resource not found: $(params.uri)",
+                # SEP-2164: name the URI that was not found (SHOULD)
+                data=Dict{String,Any}("uri" => params.uri)
             )
         )
     end

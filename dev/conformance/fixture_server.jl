@@ -191,9 +191,7 @@ mrtr_tools = [
                     "What is your name?"; requested_schema = _object_schema("name", "string")),
                 "greeting" => sampling_request(_SAMPLE_GREETING),
                 "client_roots" => roots_request())
-            usable = filter(
-                p -> ModelContextProtocol.capability_satisfied(ctx.client_capabilities, p.second),
-                wanted)
+            usable = filter(p -> client_supports(ctx, p.second), wanted)
             isempty(usable) && return TextContent(text = "client declared no input capability")
             InputRequired(usable)
         end),
@@ -531,6 +529,23 @@ prompts = [
             "uri" => "test://example-resource",
             "mimeType" => "text/plain",
             "text" => "Embedded resource content for testing.")))]),
+    # MRTR on a non-tool request (input-required-result-non-tool-request)
+    MCPPrompt(
+        name = "test_input_required_result_prompt",
+        description = "MRTR: asks for context by elicitation, then builds the prompt",
+        arguments = PromptArgument[],
+        handler = (args, ctx) -> begin
+            resp = get(input_responses(ctx), "user_context", nothing)
+            # Ask when there is no usable response; a declined or cancelled
+            # question still produces a prompt, without the context
+            action = _val(resp, "action")
+            action in ("decline", "cancel") && return "No context was given."
+            context = _accepted(input_responses(ctx), "user_context", "context")
+            context === nothing && return InputRequired(Dict("user_context" => elicit_request(
+                "What context should the prompt use?";
+                requested_schema = _object_schema("context", "string"))))
+            "Use this context: $(context)"
+        end),
     MCPPrompt(
         name = "test_prompt_with_image",
         description = "Prompt containing an image and a text message",

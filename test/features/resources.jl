@@ -171,6 +171,8 @@
         # non-matching URIs still 404
         r = handle_read_resource(ctx, ReadResourceParams(uri = "test://nope/1"))
         @test r.error.code == Int(ModelContextProtocol.ErrorCodes.RESOURCE_NOT_FOUND)
+        # ...and name the URI that was not found in the error data (SEP-2164)
+        @test r.error.data == Dict{String,Any}("uri" => "test://nope/1")
 
         # provider errors surface as internal errors, not throws
         boom = ResourceTemplate(name = "boom", uri_template = "test://boom/{x}",

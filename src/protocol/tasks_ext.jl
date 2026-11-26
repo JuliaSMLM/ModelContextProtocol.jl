@@ -317,10 +317,17 @@ function _frozen_json(x)
         out
     elseif x isa Union{AbstractVector,Tuple,AbstractSet}
         Any[_frozen_json(v) for v in x]
+    elseif x isa Union{Content,ResourceContents,Role,Dates.TimeType,Base.UUID}
+        # The package's own wire types (a TextContent inside a sampling message,
+        # a role constant), and dates and UUIDs, which are written as strings:
+        # take their JSON form, as plain data. The set stays closed: these are
+        # values whose JSON form is fixed and that hold no shared mutable state
+        # a later change could reach
+        _frozen_json(JSON3.read(JSON3.write(x)))
     else
         throw(ArgumentError(
             "input request params must be plain JSON data (dicts, vectors, " *
-            "strings, numbers, booleans); got $(typeof(x))"))
+            "strings, numbers, booleans, dates, UUIDs) or this package's content types; got $(typeof(x))"))
     end
 end
 
@@ -337,6 +344,12 @@ function _frozen_input_request(r::InputRequest)::InputRequest
     r.params === nothing && return r
     InputRequest(r.method, _frozen_json(r.params))
 end
+
+# An InputRequired whose requests are all frozen snapshots (see above): what the
+# MRTR path checks against the client's capabilities and then serializes
+frozen_input_required(ir::InputRequired)::InputRequired =
+    InputRequired(LittleDict{String,InputRequest}(
+        k => _frozen_input_request(r) for (k, r) in ir.requests); state = ir.state)
 
 function task_await_input(ctx::RequestContext,
                           requests::AbstractVector{InputRequest})::Vector{Any}

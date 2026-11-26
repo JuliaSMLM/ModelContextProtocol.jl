@@ -452,10 +452,12 @@ mirroring the body, -32020), status mapping (404/-32601, 400/-32022), session-ig
 and 405 on GET. `subscriptions/listen` replaces the GET stream and
 `resources/subscribe` (ack-first, `subscriptionId`-tagged, filtered; announce changes
 with the exported `notify_list_changed` / `notify_resource_updated`). MRTR
-(SEP-2322) is in: tool handlers return `InputRequired` (built from
-`elicit_request`/`sampling_request`/`roots_request`) and re-run on the client's
-retry with `input_responses(ctx)`/`input_state(ctx)`; undeclared capabilities →
--32021 with `requiredCapabilities`; `requestState` is HMAC-bound to principal +
+(SEP-2322) is in: tool handlers and prompt handlers (`MCPPrompt(handler=...)`)
+return `InputRequired` (built from `elicit_request`/`elicit_url_request`/
+`sampling_request`/`roots_request`) and re-run on the client's retry with
+`input_responses(ctx)`/`input_state(ctx)`; elicitation is mode-aware (form and
+URL mode; `client_supports(ctx, request)` lets a handler check first);
+undeclared capabilities → -32021 with `requiredCapabilities`; `requestState` is HMAC-bound to principal +
 TTL + original-params digest. Per-request `logLevel` (SEP-2575) is in: a request
 whose `_meta` sets `io.modelcontextprotocol/logLevel` receives
 `notifications/message` at-or-above that level on its OWN response stream only
@@ -490,10 +492,9 @@ The draft `server-stateless` conformance scenario passes 30/30, and
 `completion/complete` is served in both eras (prompt arguments + template
 variables from per-component `completions` sources; `CompletionCapability`
 advertised in initialize and `server/discover`) — the modern-dated suite passes
-41/41, and the frozen `--requirements 2026-07-28` set passes 193 of 194 checks
-(13 of the 14 MRTR `input-required-result-*` scenarios; the one failure,
-`non-tool-request`, needs a prompt that returns `InputRequired`, which prompts
-cannot do yet). `notifications/tasks` is in: `subscriptions/listen` accepts a `taskIds`
+41/41, and the frozen `--requirements 2026-07-28` set passes 196/196 (all 14
+MRTR `input-required-result-*` scenarios). `resources/read` providers cannot
+return `InputRequired` yet; no scenario covers that. `notifications/tasks` is in: `subscriptions/listen` accepts a `taskIds`
 filter (-32021 without the declared extension; ack echoes only the ids the
 requestor could `tasks/get`), and every extension-era status transition pushes
 the complete DetailedTask to subscribed streams. `x-mcp-header` parameter
@@ -501,7 +502,9 @@ mirroring is in too (`ToolParameter(header=...)` or raw-schema `x-mcp-header`;
 `Mcp-Param-<suffix>` validated against the body with strict Base64 sentinel
 handling, -32020/400 on violation; conformance
 `http-custom-header-server-validation` 10/10) — **the modern-era surface is
-complete: nothing on the 2026-07-28 spec's server side remains unimplemented.**
+complete: every MUST of the 2026-07-28 spec's server side is implemented.** One
+optional piece is not: `resources/read` providers cannot return `InputRequired`
+(the spec permits MRTR there; tools and prompts can).
 
 ### ✅ Implemented
 
@@ -561,6 +564,8 @@ complete: nothing on the 2026-07-28 spec's server side remains unimplemented.**
 - **Legacy-era elicitation/sampling** (server-initiated requests; the modern era
   covers these via MRTR `input_required` instead — the four remaining legacy
   conformance failures are exactly this surface, a documented non-goal)
+- **MRTR from `resources/read`** (a resource provider asking the client for input;
+  optional in the spec, offered for tools and prompts only)
 - **Stream resumption** (Last-Event-ID); **concurrent SYNC request handling** (Tasks give
   long calls background execution, but plain requests still go through the single serialized
   server loop today)

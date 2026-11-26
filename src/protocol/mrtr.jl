@@ -36,7 +36,7 @@ const MRTR_REQUEST_CAPABILITIES = Dict{String,String}(
 One entry of an `InputRequiredResult`'s `inputRequests` map: a request the client
 should fulfill and answer in its retry's `inputResponses`. Only the three
 spec-blessed request types are valid — construct via [`elicit_request`](@ref),
-[`sampling_request`](@ref), or [`roots_request`](@ref).
+[`elicit_url_request`](@ref), [`sampling_request`](@ref), or [`roots_request`](@ref).
 
 # Fields
 - `method::String`: The request method (`elicitation/create`, `sampling/createMessage`, `roots/list`)
@@ -49,12 +49,68 @@ struct InputRequest
     function InputRequest(method::String, params)
         haskey(MRTR_REQUEST_CAPABILITIES, method) ||
             throw(ArgumentError("inputRequests entries may only be elicitation/create, sampling/createMessage, or roots/list (got $method)"))
+        # The capability checks read params by key, so params are a dictionary (or
+        # absent), never another shape that would serialize to the same JSON
+        # object but be invisible to those checks
+        (params === nothing || params isa AbstractDict) || throw(ArgumentError(
+            "$method params must be a dictionary or nothing (got $(typeof(params)))"))
+        params === nothing || (params = _own_request_params(method, params))
+        if method == "elicitation/create"
+            params === nothing &&
+                throw(ArgumentError("elicitation/create needs params (a dictionary with a message)"))
+            get(params, "message", nothing) isa AbstractString ||
+                throw(ArgumentError("elicitation/create needs a string `message`"))
+            # Only an ABSENT mode means form; a present one must be a mode this
+            # revision defines
+            mode = haskey(params, "mode") ? params["mode"] : "form"
+            mode in ("form", "url") || throw(ArgumentError(
+                "elicitation mode must be \"form\" or \"url\" (got $(repr(mode)))"))
+            if mode == "url"
+                url = get(params, "url", nothing)
+                (url isa AbstractString && _valid_http_url(url)) || throw(ArgumentError(
+                    "a URL-mode elicitation needs a valid absolute http(s) `url` without userinfo (got $(repr(url)))"))
+            else
+                _valid_form_schema(get(params, "requestedSchema", nothing)) || throw(ArgumentError(
+                    "a form-mode elicitation needs a `requestedSchema` that is an object schema: " *
+                    "a dictionary with \"type\" => \"object\" (and \"properties\", a dictionary)"))
+            end
+        end
         new(method, params)
     end
 end
 
+# The wire type of a form's requestedSchema is an object schema: its type is
+# "object" and its properties, when given, are a dictionary. Keys may be Strings
+# or Symbols here (a frozen snapshot has Strings only)
+function _valid_form_schema(schema)::Bool
+    schema isa AbstractDict || return false
+    field(name) = haskey(schema, name) ? schema[name] : get(schema, Symbol(name), nothing)
+    kind = field("type")
+    (kind isa Union{AbstractString,Symbol} && string(kind) == "object") || return false
+    # absent is allowed; present, it is a dictionary (an explicit null is not)
+    (haskey(schema, "properties") || haskey(schema, :properties)) || return true
+    field("properties") isa Union{AbstractDict,NamedTuple}
+end
+
+# The request's own copy of its top-level params, with String keys: what the
+# capability checks read is then exactly what is serialized, whatever the caller
+# does to its dictionary afterwards. Two keys that would become one JSON member
+# (a String and a Symbol of the same name) are refused.
+function _own_request_params(method::String, params::AbstractDict)::LittleDict{String,Any}
+    owned = LittleDict{String,Any}()
+    for (k, v) in params
+        (k isa AbstractString || k isa Symbol) ||
+            throw(ArgumentError("$method params keys must be strings (got $(typeof(k)))"))
+        key = String(k)
+        haskey(owned, key) &&
+            throw(ArgumentError("$method params name `$key` twice (as a String and as a Symbol)"))
+        owned[key] = v
+    end
+    owned
+end
+
 """
-    elicit_request(message::String; requested_schema=nothing) -> InputRequest
+    elicit_request(message::String; requested_schema=nothing, _meta=nothing) -> InputRequest
 
 Build a form-mode elicitation input request (`elicitation/create`): ask the user a
 question, constraining the answer with a requested schema. The schema is REQUIRED
@@ -62,22 +118,160 @@ on the wire (`ElicitRequestFormParams.requestedSchema`, an object schema with
 `properties`), so when none is given a minimal empty-object schema is synthesized —
 a schema-validating client would reject the request otherwise.
 
+Form mode passes the answer through the client, so it MUST NOT ask for secrets
+(passwords, API keys); use [`elicit_url_request`](@ref) for those.
+
 # Arguments
 - `message::String`: The message to present to the user
 - `requested_schema`: JSON schema (Dict) for the expected response content; must be
   an object schema. Defaults to `{"type": "object", "properties": {}}`
+- `_meta`: Optional `_meta` object (a dictionary) to send with the request. The
+  2026-07-28 schema omits `_meta` on elicitation params (the draft revision
+  restores it); it is sent only when given
 
 # Returns
 - `InputRequest`: The request for an `InputRequired` return
 """
-function elicit_request(message::String; requested_schema=nothing)::InputRequest
+function elicit_request(message::AbstractString; requested_schema=nothing, _meta=nothing)::InputRequest
+    message = String(message)
     schema = requested_schema === nothing ?
         LittleDict{String,Any}("type" => "object", "properties" => LittleDict{String,Any}()) :
         requested_schema
-    InputRequest("elicitation/create", LittleDict{String,Any}(
+    params = LittleDict{String,Any}(
         "message" => message,
         "requestedSchema" => schema,
-    ))
+    )
+    _attach_request_meta!(params, _meta)
+    InputRequest("elicitation/create", params)
+end
+
+# `_meta` is an object on the wire; refuse anything else at construction
+function _attach_request_meta!(params::AbstractDict, _meta)
+    _meta === nothing && return params
+    _meta isa AbstractDict ||
+        throw(ArgumentError("_meta must be a dictionary (got $(typeof(_meta)))"))
+    params["_meta"] = _meta
+    params
+end
+
+# RFC 3986 building blocks, for an http(s) URL written out in full
+const _URL_PCT = "%[0-9A-Fa-f]{2}"
+const _URL_UNRESERVED_SUBDELIMS = "[A-Za-z0-9._~!\\\$&'()*+,;=-]"
+const _URL_PCHAR = "(?:$(_URL_UNRESERVED_SUBDELIMS)|[:@]|$(_URL_PCT))"
+const _HTTP_URL = Regex(
+    "\\A[Hh][Tt][Tt][Pp][Ss]?://" *
+    "(?<host>\\[[0-9A-Fa-f:.]*\\]|(?:$(_URL_UNRESERVED_SUBDELIMS)|$(_URL_PCT))+)" *
+    "(?::(?<port>[0-9]*))?" *
+    "(?:/$(_URL_PCHAR)*)*" *
+    "(?:\\?(?:$(_URL_PCHAR)|[/?])*)?" *
+    "(?:#(?:$(_URL_PCHAR)|[/?])*)?\\z")
+
+# An IPv6 address as it may appear between brackets in a URL (RFC 3986
+# IPv6address): groups of 1-4 hexadecimal digits, at most one "::", an optional
+# dotted IPv4 in the last position, eight groups in all (fewer with "::")
+function _valid_ipv6_literal(s::AbstractString)::Bool
+    occursin(r"\A[0-9A-Fa-f:.]+\z", s) || return false
+    halves = split(s, "::"; keepempty=true)
+    length(halves) <= 2 || return false
+    groups = SubString{String}[]
+    for half in halves
+        isempty(half) || append!(groups, split(half, ':'; keepempty=true))
+    end
+    count = 0
+    for (i, g) in enumerate(groups)
+        if occursin('.', g)
+            (i == length(groups) && endswith(s, g) && occursin(
+                _IPV4_DOTTED, g)) ||
+                return false
+            count += 2
+        else
+            occursin(r"\A[0-9A-Fa-f]{1,4}\z", g) || return false
+            count += 1
+        end
+    end
+    length(halves) == 2 ? count <= 7 : count == 8
+end
+
+const _IPV4_DOTTED = r"\A(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\z"
+
+# A registered-name host, as written (percent escapes allowed). Decoded, it must
+# be ASCII made of the characters a host may contain (so no escaped "/", "@" or
+# space, and no escaped non-ASCII: internationalized names go in punycode), with
+# at least one letter or digit. A name whose last label is a number is an IPv4
+# address to a browser, so it must be a valid dotted one.
+function _valid_registered_host(host::AbstractString)::Bool
+    decoded = replace(host, r"%[0-9A-Fa-f]{2}" => s -> Char(parse(UInt8, s[2:3]; base=16)))
+    (isascii(decoded) && occursin(r"\A[A-Za-z0-9._~!$&'()*+,;=-]+\z", decoded) &&
+     occursin(r"[A-Za-z0-9]", decoded)) || return false
+    name = endswith(decoded, '.') ? chop(decoded) : decoded   # one trailing dot is the root
+    if occursin(r"\A(?:[0-9]+|0[xX][0-9A-Fa-f]*)\z", last(split(name, '.')))
+        occursin(_IPV4_DOTTED, name) || return false
+    end
+    true
+end
+
+# Whether `url` is an absolute http(s) URL that is valid as written under RFC
+# 3986 and that a browser can open: only characters the grammar allows in each
+# component (so no spaces, quotes, brackets outside an IP literal, non-ASCII, or
+# malformed percent escapes), a host that is a valid registered name or a valid
+# bracketed IPv6 literal, a port up to 65535, and no userinfo (the host part
+# admits no "@").
+function _valid_http_url(url::AbstractString)::Bool
+    m = match(_HTTP_URL, url)
+    m === nothing && return false
+    host = m[:host]
+    if startswith(host, '[')
+        _valid_ipv6_literal(SubString(host, 2, lastindex(host) - 1)) || return false
+    else
+        _valid_registered_host(host) || return false
+    end
+    if m[:port] !== nothing
+        digits = lstrip(m[:port], '0')
+        (length(digits) <= 5 && (isempty(digits) || parse(Int, digits) <= 65535)) || return false
+    end
+    true
+end
+
+"""
+    elicit_url_request(message::String, url::AbstractString; _meta=nothing) -> InputRequest
+
+Build a URL-mode elicitation input request (`elicitation/create` with
+`mode: "url"`): ask the user to open `url` in their browser for an interaction
+that must not pass through the client, such as entering a credential or
+authorizing a third-party service. The client shows the URL, asks for consent and
+opens it; its response carries an `action` (`accept`, `decline` or `cancel`) and
+no `content`. An `accept` means the user agreed to open the URL, not that the
+interaction there finished: the handler learns the outcome from its own side.
+
+The server's obligations (2026-07-28, "Safe URL Handling"): the URL carries no
+credentials or personal data and is not pre-authenticated, and the page it leads to
+verifies who opened it before accepting anything. Use HTTPS outside development.
+
+# Arguments
+- `message::String`: Why the user is being sent to the URL
+- `url::AbstractString`: A valid absolute `https` (or `http`) URL without
+  userinfo. The spec requires a valid URL; limiting it to http(s) is this
+  package's choice, since the client opens it in a browser. An internationalized
+  host must be given in punycode, and characters the URI grammar does not allow
+  as written must be percent-encoded: a query such as `filter[status]=open` goes
+  in as `filter%5Bstatus%5D=open`
+- `_meta`: Optional `_meta` object (a dictionary) to send with the request; see
+  [`elicit_request`](@ref)
+
+# Returns
+- `InputRequest`: The request for an `InputRequired` return
+"""
+function elicit_url_request(message::AbstractString, url::AbstractString; _meta=nothing)::InputRequest
+    message = String(message)
+    # The request's constructor checks the URL: one place decides what a valid URL
+    # request is, for this helper, a hand-built request and a task's snapshot
+    params = LittleDict{String,Any}(
+        "mode" => "url",
+        "message" => message,
+        "url" => String(url),
+    )
+    _attach_request_meta!(params, _meta)
+    InputRequest("elicitation/create", params)
 end
 
 """
@@ -115,7 +309,7 @@ input requests, and the client retries with responses under the same keys. On th
 retry the handler runs AGAIN from the top — read the responses with
 `input_responses(ctx)` and any carried-over state with `input_state(ctx)`.
 
-Only meaningful on modern-era `tools/call` (legacy sessions have no wire shape for
+Only meaningful on modern-era `tools/call` and `prompts/get` (legacy sessions have no wire shape for
 it and get an error). If a needed response is still missing on the retry, return
 another `InputRequired` — the spec says re-issue, not error.
 
@@ -167,6 +361,13 @@ _sampling_wants_tools(r::InputRequest)::Bool =
     (haskey(r.params, "tools") || haskey(r.params, :tools) ||
      haskey(r.params, "toolChoice") || haskey(r.params, :toolChoice))
 
+# The mode of an elicitation/create input request: "form" or "url". An absent
+# `params.mode` means form (the spec default); the InputRequest constructor has
+# already refused any other present value.
+function _elicitation_mode(r::InputRequest)::String
+    _capability_present(r.params, "mode") ? String(_capability_value(r.params, "mode")) : "form"
+end
+
 """
     capability_satisfied(client_capabilities, r::InputRequest) -> Bool
 
@@ -178,6 +379,8 @@ declares no form support), and subfeatures are honored:
 - form-mode elicitation: `form` declared with an object value covers it, and ONLY
   the bare empty `elicitation` object implies it — any other declared mode set
   (`url`, or modes from a future revision) excludes form
+- URL-mode elicitation (`params.mode == "url"`): requires `elicitation.url`
+  declared as an object; the bare empty `elicitation` object does NOT imply it
 - tool-enabled sampling (`params.tools` OR `params.toolChoice` present): requires
   `sampling.tools` declared as an object, not just `sampling`
 
@@ -192,6 +395,8 @@ function capability_satisfied(client_capabilities, r::InputRequest)::Bool
     if r.method == "elicitation/create"
         e = _capability_value(client_capabilities, "elicitation")
         e isa AbstractDict || return false
+        # url is never implied: it needs its own declared key
+        _elicitation_mode(r) == "url" && return _capability_value(e, "url") isa AbstractDict
         _capability_present(e, "form") && return _capability_value(e, "form") isa AbstractDict
         # Without an explicit form mode, ONLY the bare empty object implies form
         # support — any other declared mode set (url, or modes from a future
@@ -215,7 +420,8 @@ end
 The `requiredCapabilities` object for the capabilities `ir`'s input requests need
 but this request did not declare — a ClientCapabilities-shaped object precise to
 the subfeature: `{"elicitation": {"form": {}}}` for a form elicitation,
-`{"sampling": {}}` for plain sampling, `{"sampling": {"tools": {}}}` for
+`{"elicitation": {"url": {}}}` for a URL elicitation (both keys when both are
+missing), `{"sampling": {}}` for plain sampling, `{"sampling": {"tools": {}}}` for
 tool-enabled sampling. A server MUST NOT send inputRequests the client did not
 declare support for: a non-empty return means the request must be rejected with
 -32021 carrying this object as `error.data.requiredCapabilities`.
@@ -233,7 +439,9 @@ function undeclared_capability_requirements(ir::InputRequired,
     for (_, r) in ir.requests
         capability_satisfied(client_capabilities, r) && continue
         if r.method == "elicitation/create"
-            req["elicitation"] = LittleDict{String,Any}("form" => LittleDict{String,Any}())
+            # Merge: a form and a URL request that are both undeclared name both modes
+            entry = get!(req, "elicitation", LittleDict{String,Any}())
+            entry[_elicitation_mode(r)] = LittleDict{String,Any}()
         elseif r.method == "sampling/createMessage"
             # Merge: a tool-enabled request upgrades the requirement to
             # sampling.tools without a later plain one downgrading it

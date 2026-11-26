@@ -85,20 +85,13 @@ jobs:
           # The frozen 2026-07-28 requirement set: the core scenarios, the 14
           # MRTR input-required-result-* scenarios, and (run but not scored)
           # the tasks-* extension, JSON Schema 2020-12 and header scenarios.
-          # One scenario is expected to fail until prompts can ask for input:
-          # input-required-result-non-tool-request (prompts/get returning an
-          # InputRequiredResult), so the runner is expected to exit 1 with
-          # exactly that scenario failing. When it passes, re-measure the total
-          # (the scenario then runs a further check) and expect exit 0.
           # Note: tasks-status-notifications is SKIPPED by the suite at this
           # pin, so "0 failing" says nothing about notification delivery; the
           # package's own tests cover that.
           echo "::group::requirements (2026-07-28)"
-          run 1 --requirements 2026-07-28
-          want_line "Total: 193 passed, 1 failed" "requirement set changed"
+          run 0 --requirements 2026-07-28
+          want_line "Total: 196 passed, 0 failed" "requirement set regressed"
           want_line "Not scored for 2026-07-28: 13 scenario(s) run, 0 failing. These do not affect conformance." "a not-scored scenario (tasks-*, json-schema, headers) is failing or the set changed"
-          failing=$(grep -E "^✗ " out.txt | sed -E 's/^✗ ([^:]+):.*/\1/' | sort | tr '\n' ' ' || true)
-          [ "$failing" = "input-required-result-non-tool-request " ] || { echo "::error::unexpected failing scenarios: $failing"; fail=1; }
           echo "::endgroup::"
 
           # Per-scenario floors for the suites the totals above could mask if

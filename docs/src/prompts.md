@@ -15,6 +15,8 @@ Every prompt in ModelContextProtocol.jl is represented by the `MCPPrompt` struct
 - `_meta`: Optional metadata for protocol extensions, emitted verbatim in `prompts/list`
 - `completions`: Optional `completion/complete` suggestion sources per argument name
   (see Argument Completion below)
+- `handler`: Optional function that builds the messages on each request, in place of
+  the `messages` templates (see Dynamic Prompts below)
 
 ## Creating Prompts
 
@@ -226,3 +228,56 @@ visual_prompt = MCPPrompt(
     ]
 )
 ```
+
+## Dynamic Prompts
+
+A template covers a prompt whose text is fixed apart from its arguments. When the
+messages depend on something else (a file, a database, the time), give the prompt a
+`handler`. It is called on every `prompts/get` with the supplied arguments, a
+dictionary of strings, and returns the messages:
+
+```julia
+status_prompt = MCPPrompt(
+    name = "summarize_status",
+    description = "Summarize the current build status",
+    arguments = [PromptArgument(name = "branch", description = "Branch to report on")],
+    handler = args -> begin
+        branch = get(args, "branch", "main")
+        "Summarize this build log for $(branch):\n\n$(read_build_log(branch))"
+    end
+)
+```
+
+A handler may return a string or a content value (each becomes one user message),
+a `PromptMessage`, or a vector mixing these. When `handler` is set, `messages` is
+not used. Required arguments are checked before the handler runs.
+
+Like a tool handler, a prompt handler may take a second argument, the request
+context. On a 2026-07-28 request it can then ask the client for input first, by
+returning `InputRequired`; it runs again when the client retries with the answer:
+
+```julia
+review_prompt = MCPPrompt(
+    name = "review",
+    description = "Review a change, asking which aspect to focus on",
+    handler = (args, ctx) -> begin
+        resp = get(input_responses(ctx), "focus", nothing)
+        resp === nothing && return InputRequired(Dict("focus" => elicit_request(
+            "What should the review focus on?";
+            requested_schema = Dict(
+                "type" => "object",
+                "properties" => Dict("focus" => Dict("type" => "string")),
+                "required" => ["focus"]))))
+        # The user may decline or cancel: only an accepted response has content
+        resp["action"] == "accept" || return "Review this change."
+        "Review this change with a focus on $(resp["content"]["focus"])."
+    end
+)
+```
+
+Every elicitation response has an `action`: `accept`, `decline` or `cancel`. Decide
+what the prompt should be in each case, and read `content` only after `accept`.
+
+A legacy-era session has no way to carry input requests, so there a handler that
+returns `InputRequired` produces an error. See
+[The Modern Era](modern.md) for the input-request helpers.
