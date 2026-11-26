@@ -317,15 +317,17 @@ function _frozen_json(x)
         out
     elseif x isa Union{AbstractVector,Tuple,AbstractSet}
         Any[_frozen_json(v) for v in x]
-    elseif x isa Union{Content,ResourceContents,Role}
+    elseif x isa Union{Content,ResourceContents,Role,Dates.TimeType,Base.UUID}
         # The package's own wire types (a TextContent inside a sampling message,
-        # a role constant): take their JSON form, as plain data. The set stays
-        # closed: these are immutable values whose JSON form this package defines
+        # a role constant), and dates and UUIDs, which are written as strings:
+        # take their JSON form, as plain data. The set stays closed: these are
+        # values whose JSON form is fixed and that hold no shared mutable state
+        # a later change could reach
         _frozen_json(JSON3.read(JSON3.write(x)))
     else
         throw(ArgumentError(
             "input request params must be plain JSON data (dicts, vectors, " *
-            "strings, numbers, booleans) or this package's content types; got $(typeof(x))"))
+            "strings, numbers, booleans, dates, UUIDs) or this package's content types; got $(typeof(x))"))
     end
 end
 

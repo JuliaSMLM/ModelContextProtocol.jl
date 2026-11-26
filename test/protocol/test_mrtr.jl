@@ -410,6 +410,12 @@
         sent = r["result"]["inputRequests"]["s"]["params"]["messages"][1]["content"]
         @test sent["type"] == "text" && sent["text"] == "hello"
         @test JSON3.write(sent) == JSON3.write(TextContent(text = "hello"))
+        # Dates and UUIDs are sent as the strings they always were
+        stamp = DateTime(2026, 1, 2, 3, 4, 5); id = Base.UUID("123e4567-e89b-12d3-a456-426614174000")
+        frozen = ModelContextProtocol._frozen_input_request(elicit_request("m"; requested_schema = Dict(
+            "type" => "object", "properties" => Dict("when" => Dict("default" => stamp, "id" => id)))))
+        @test frozen.params["requestedSchema"]["properties"]["when"] ==
+              Dict("default" => JSON3.read(JSON3.write(stamp)), "id" => "123e4567-e89b-12d3-a456-426614174000")
         # ...while a request switched to URL mode properly is judged as a URL request
         register!(server, MCPTool(name = "switched", description = "t", parameters = [],
             handler = (args, ctx) -> begin
