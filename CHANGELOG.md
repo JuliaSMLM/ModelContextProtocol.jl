@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **HTTP transport: a rejected request no longer breaks its connection.** The 403,
+  404, 405, 415 and 401 answers were sent without reading the request body, so the
+  server then dropped the connection, and a client that reuses connections lost the
+  request it sent next. The body is now read and discarded first, within bounds
+  (1 MiB, 5 seconds); past either, the response says `Connection: close` and the
+  server closes the connection after it. The health check and the well-known
+  metadata endpoint do the same for a request that carries a body.
+- A request with `Expect: 100-continue` to a path the server does not serve got
+  `Not Found` with no status line or headers. Every such response is now framed
+  in full.
+
+### Changed
+- Conformance CI now runs the official suite at its 2026-11-10 revision and gates on
+  the frozen `--requirements 2026-07-28` set. The fixture server gained the suite's
+  MRTR (`input-required-result-*`) and JSON Schema 2020-12 tools, so those scenarios
+  are measured for the first time: 13 of 14 MRTR scenarios pass. The remaining one
+  (`prompts/get` returning an `InputRequiredResult`) needs prompts that can ask for
+  input, which the package does not offer yet.
+
 ## [0.7.0] - 2026-08-09
 
 **Full server-side support for the MCP 2026-07-28 specification.** This

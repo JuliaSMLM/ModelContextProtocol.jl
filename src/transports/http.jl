@@ -3,7 +3,7 @@
 using HTTP
 using JSON3
 using UUIDs: uuid4
-using Sockets: IPv4, IPv6
+using Sockets: IPv4, IPv6, TCPSocket
 using Base64: base64decode
 
 """
@@ -719,6 +719,157 @@ function modern_error_http_status(payload::String)::Int
     return 200
 end
 
+# A response sent before the request body was read (a rejection, a health
+# check). The unread body is read and discarded within these bounds; beyond
+# either, the connection is closed after the response instead.
+const EARLY_RESPONSE_DRAIN_BYTES = 1024 * 1024
+const EARLY_RESPONSE_DRAIN_SECONDS = 5.0
+# After such a close, how long the server keeps discarding what the client is
+# still sending, so that the response is not lost to a connection reset
+const EARLY_RESPONSE_LINGER_SECONDS = 1.0
+
+"""
+    drain_request_body(stream::HTTP.Stream; max_bytes::Int=EARLY_RESPONSE_DRAIN_BYTES,
+                       max_seconds::Real=EARLY_RESPONSE_DRAIN_SECONDS) -> Bool
+
+Read and discard the body of a request that will not be processed, so that its
+connection can serve the client's next request. Bounded in bytes and in time: a
+declared length over `max_bytes` is not read at all, no read takes more than the
+bytes still allowed, and a body that has not fully arrived after `max_seconds`
+is given up on.
+
+# Arguments
+- `stream::HTTP.Stream`: The request stream
+- `max_bytes::Int`: The most body bytes to read
+- `max_seconds::Real`: The longest to wait for the body
+
+# Returns
+- `Bool`: `true` when the whole body was read (or there was none) and the
+  connection is reusable; `false` when the connection must be closed
+"""
+function drain_request_body(stream::HTTP.Stream; max_bytes::Int=EARLY_RESPONSE_DRAIN_BYTES,
+                            max_seconds::Real=EARLY_RESPONSE_DRAIN_SECONDS)::Bool
+    request = stream.message
+    chunked = any(((k, v),) -> lowercase(String(k)) == "transfer-encoding" &&
+                               occursin("chunked", lowercase(String(v))), HTTP.headers(request))
+    if !chunked
+        declared = tryparse(Int, strip(HTTP.header(request, "Content-Length", "0")))
+        declared === nothing && return false   # unreadable length: do not guess
+        declared == 0 && return true
+        declared > max_bytes && return false
+    end
+    # The reads block until data arrives, so they run in their own task and this
+    # one waits for whichever comes first: the end of the body, or the deadline.
+    # (Both may report; the channel holds both without blocking either.)
+    outcome = Channel{Bool}(2)
+    @async put!(outcome, try
+        remaining = max_bytes
+        complete = false
+        probed = false
+        while true
+            if eof(stream)
+                complete = true
+                break
+            end
+            if remaining <= 0
+                # The allowance is used up. A chunked body may end exactly here,
+                # with only its terminating chunk left: one read of zero bytes
+                # lets that framing be consumed without taking more of the body
+                probed && break
+                probed = true
+                readavailable(stream, 0)
+                continue
+            end
+            remaining -= length(readavailable(stream, remaining))
+        end
+        complete
+    catch
+        false
+    end)
+    deadline = Timer(_ -> put!(outcome, false), max_seconds)
+    complete = take!(outcome)
+    Base.close(deadline)
+    complete
+end
+
+"""
+    close_after_response(stream::HTTP.Stream)
+
+Close a connection whose request body was not read to the end, after the response
+has been written. The response is flushed and the sending side shut down first,
+and what the client is still sending is discarded for a short while
+(`EARLY_RESPONSE_LINGER_SECONDS`): closing at once, with request data unread,
+resets the connection and can destroy the response before the client reads it.
+
+# Arguments
+- `stream::HTTP.Stream`: The stream, with its response already written
+"""
+function close_after_response(stream::HTTP.Stream)
+    connection = stream.stream
+    io = connection.io
+    try
+        io isa TCPSocket && closewrite(io)
+        give_up = Timer(_ -> Base.close(io), EARLY_RESPONSE_LINGER_SECONDS)
+        try
+            discarded = 0
+            while discarded <= EARLY_RESPONSE_DRAIN_BYTES && !eof(io)
+                discarded += length(readavailable(io))
+            end
+        finally
+            Base.close(give_up)
+        end
+    catch
+        # the client went away first: nothing left to protect
+    end
+    try
+        Base.close(io)
+    catch
+    end
+    nothing
+end
+
+"""
+    respond_early!(stream::HTTP.Stream, status::Integer, body::AbstractString;
+                   content_type::Union{String,Nothing}="text/plain", headers=()) -> Nothing
+
+Send a complete response for a request whose body has not been read: a rejection
+(401, 403, 404, 405, 415) or a body-less endpoint (the health check, the
+well-known metadata). The request body is read and discarded first, within
+bounds, so the connection stays usable for the client's next request; without
+that the server drops the connection and a client that pools connections loses
+the request it sends next. When the body cannot be discarded within the bounds,
+the response says `Connection: close` and the connection is closed after it.
+
+The response is always framed explicitly (status line, `Content-Length`): after
+`Expect: 100-continue` the connection is already writable, and a bare `write`
+would send the body with no status line.
+
+# Arguments
+- `stream::HTTP.Stream`: The request/response stream; nothing written yet
+- `status::Integer`: The response status
+- `body::AbstractString`: The response body
+- `content_type`: The `Content-Type`, or `nothing` when `headers` carries it
+- `headers`: Further response headers, as pairs
+
+# Returns
+- `Nothing`
+"""
+function respond_early!(stream::HTTP.Stream, status::Integer, body::AbstractString;
+                        content_type::Union{String,Nothing}="text/plain", headers=())
+    reusable = drain_request_body(stream)
+    HTTP.setstatus(stream, status)
+    for (k, v) in headers
+        HTTP.setheader(stream, String(k) => String(v))
+    end
+    content_type === nothing || HTTP.setheader(stream, "Content-Type" => content_type)
+    HTTP.setheader(stream, "Content-Length" => string(ncodeunits(body)))
+    reusable || HTTP.setheader(stream, "Connection" => "close")
+    HTTP.startwrite(stream)
+    write(stream, body)
+    reusable || close_after_response(stream)
+    nothing
+end
+
 """
     handle_request(transport::HttpTransport, stream::HTTP.Stream)
 
@@ -743,28 +894,16 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     if method == "GET" && path == WELL_KNOWN_PATH
         if !isnothing(transport.resource_metadata)
             status, body, headers = handle_well_known_request(transport.resource_metadata)
-            HTTP.setstatus(stream, status)
-            for (k, v) in headers
-                HTTP.setheader(stream, k => v)
-            end
-            HTTP.setheader(stream, "Content-Length" => string(length(body)))
-            HTTP.startwrite(stream)
-            write(stream, body)
+            respond_early!(stream, status, body; content_type=nothing, headers=headers)
         else
-            HTTP.setstatus(stream, 404)
-            HTTP.setheader(stream, "Content-Type" => "text/plain")
-            HTTP.setheader(stream, "Content-Length" => "9")
-            HTTP.startwrite(stream)
-            write(stream, "Not Found")
+            respond_early!(stream, 404, "Not Found")
         end
         return nothing
     end
 
     # Handle both POST and GET requests to our endpoint
     if path != transport.endpoint
-        HTTP.setstatus(stream, 404)
-        HTTP.setheader(stream, "Content-Type" => "text/plain")
-        write(stream, "Not Found")
+        respond_early!(stream, 404, "Not Found")
         return nothing
     end
 
@@ -793,12 +932,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         end
         if !isnothing(violation)
             @debug "Rejected potential DNS-rebinding request" violation=violation
-            HTTP.setstatus(stream, 403)
-            HTTP.setheader(stream, "Content-Type" => "text/plain")
-            error_msg = "Forbidden: $violation"
-            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
-            HTTP.startwrite(stream)
-            write(stream, error_msg)
+            respond_early!(stream, 403, "Forbidden: $violation")
             return nothing
         end
     end
@@ -824,13 +958,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
                 auth_result.error;
                 resource_metadata_url=resource_metadata_url
             )
-            HTTP.setstatus(stream, status)
-            for (k, v) in headers
-                HTTP.setheader(stream, k => v)
-            end
-            HTTP.setheader(stream, "Content-Length" => string(length(body)))
-            HTTP.startwrite(stream)
-            write(stream, body)
+            respond_early!(stream, status, body; content_type=nothing, headers=headers)
             return nothing
         end
         authenticated_user = auth_result.user
@@ -842,12 +970,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         # MCP-Protocol-Version gets 405, never the legacy SSE stream or health body
         get_version = strip(HTTP.header(request, "MCP-Protocol-Version", ""))
         if get_version in MODERN_PROTOCOL_VERSIONS
-            HTTP.setstatus(stream, 405)
-            HTTP.setheader(stream, "Content-Type" => "text/plain")
-            error_msg = "Method Not Allowed"
-            HTTP.setheader(stream, "Content-Length" => string(ncodeunits(error_msg)))
-            HTTP.startwrite(stream)
-            write(stream, error_msg)
+            respond_early!(stream, 405, "Method Not Allowed")
             return nothing
         end
         accept_header = HTTP.header(request, "Accept", "")
@@ -862,27 +985,18 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
             # text/event-stream); allows clients like Claude Code to health-check.
             # The session ID is deliberately NOT included — it authenticates the
             # legacy session and must not be readable by an unauthenticated GET.
-            HTTP.setstatus(stream, 200)
-            HTTP.setheader(stream, "Content-Type" => "application/json")
             health_response = JSON3.write(Dict(
                 "status" => "ok",
                 "protocol_version" => transport.protocol_version
             ))
-            HTTP.setheader(stream, "Content-Length" => string(ncodeunits(health_response)))
-            HTTP.startwrite(stream)
-            write(stream, health_response)
+            respond_early!(stream, 200, health_response; content_type="application/json")
         end
         return nothing
     end
     
     # Handle POST requests
     if method != "POST"
-        HTTP.setstatus(stream, 405)
-        HTTP.setheader(stream, "Content-Type" => "text/plain")
-        error_msg = "Method Not Allowed"
-        HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
-        HTTP.startwrite(stream)
-        write(stream, error_msg)
+        respond_early!(stream, 405, "Method Not Allowed")
         return nothing
     end
     
@@ -901,12 +1015,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
         origin = HTTP.header(request, "Origin", "")
         if !isempty(origin) && !(origin in transport.allowed_origins)
             @debug "Rejected request from unauthorized origin" origin=origin
-            HTTP.setstatus(stream, 403)
-            HTTP.setheader(stream, "Content-Type" => "text/plain")
-            error_msg = "Forbidden: Invalid Origin"
-            HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
-            HTTP.startwrite(stream)  # Ensure headers are sent
-            write(stream, error_msg)
+            respond_early!(stream, 403, "Forbidden: Invalid Origin")
             return nothing
         end
     end
@@ -914,12 +1023,7 @@ function handle_request(transport::HttpTransport, stream::HTTP.Stream)
     # Check Content-Type first
     content_type = HTTP.header(request, "Content-Type", "")
     if !startswith(content_type, "application/json")
-        HTTP.setstatus(stream, 415)
-        HTTP.setheader(stream, "Content-Type" => "text/plain")
-        error_msg = "Unsupported Media Type"
-        HTTP.setheader(stream, "Content-Length" => string(length(error_msg)))
-        HTTP.startwrite(stream)
-        write(stream, error_msg)
+        respond_early!(stream, 415, "Unsupported Media Type")
         return nothing
     end
     

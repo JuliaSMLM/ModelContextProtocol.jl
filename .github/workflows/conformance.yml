@@ -1,7 +1,7 @@
 # Official MCP conformance suite against the fixture server — the client-side
 # gate for the 2026-07-28 modern era (the Inspector workflow covers the legacy
-# era; no production client speaks the modern era yet, so this suite is the
-# reference client for it).
+# era). Production clients now speak the modern era too; this suite stays the
+# reference client that CI can run.
 name: Conformance
 
 on:
@@ -13,7 +13,7 @@ on:
 # calibrated against and bump deliberately (scores are ratios — new scenarios
 # move the denominator).
 env:
-  CONFORMANCE_REF: 81eb1c3edaed87d7fd585d7b80186da7a2960660
+  CONFORMANCE_REF: 96a6f9478b7f2e125cf0360a213383cf57533893
 
 jobs:
   conformance:
@@ -58,53 +58,65 @@ jobs:
       - name: Run the conformance suites
         run: |
           set -eo pipefail
-          # The runner exits nonzero when scenarios fail (expected for the
-          # tolerated harness gap), so captures neutralize the exit status and
-          # every classification below REQUIRES the runner's final summary
-          # line — a crashed run that printed no summary can never go green.
-          run() { node /tmp/conformance/dist/index.js server "$@" --url http://127.0.0.1:8791/ 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true; }
+          # Each run writes the runner's output to a file and checks two things:
+          # the runner's exit status is the expected one, and its summary line
+          # matches IN FULL. So a crash after a good summary, a run that printed
+          # nothing, and a summary that merely contains the expected text all
+          # fail the job. Assertions read the file, never a pipe from `echo`
+          # (under pipefail a matcher that exits early would fail the producer).
           fail=0
+          run() {  # run <expected exit status> <runner arguments...>
+            local want=$1; shift
+            local got=0
+            node /tmp/conformance/dist/index.js server "$@" --url http://127.0.0.1:8791/ > raw.txt 2>&1 || got=$?
+            sed 's/\x1b\[[0-9;]*m//g' raw.txt > out.txt
+            cat out.txt
+            [ "$got" = "$want" ] || { echo "::error::conformance runner exited $got (want $want)"; fail=1; }
+          }
+          want_line() {  # want_line <exact line> <what regressed>
+            grep -qxF -- "$1" out.txt || { echo "::error::$2 (want the line: $1)"; fail=1; }
+          }
 
           echo "::group::modern-dated (2026-07-28)"
-          out=$(run --spec-version 2026-07-28); echo "$out"
-          echo "$out" | grep -q "Total: 40 passed, 0 failed" || { echo "::error::modern-dated regressed (want 40/40)"; fail=1; }
+          run 0 --spec-version 2026-07-28
+          want_line "Total: 41 passed, 0 failed" "modern-dated regressed"
           echo "::endgroup::"
 
+          # The frozen 2026-07-28 requirement set: the core scenarios, the 14
+          # MRTR input-required-result-* scenarios, and (run but not scored)
+          # the tasks-* extension, JSON Schema 2020-12 and header scenarios.
+          # One scenario is expected to fail until prompts can ask for input:
+          # input-required-result-non-tool-request (prompts/get returning an
+          # InputRequiredResult), so the runner is expected to exit 1 with
+          # exactly that scenario failing. When it passes, re-measure the total
+          # (the scenario then runs a further check) and expect exit 0.
+          # Note: tasks-status-notifications is SKIPPED by the suite at this
+          # pin, so "0 failing" says nothing about notification delivery; the
+          # package's own tests cover that.
+          echo "::group::requirements (2026-07-28)"
+          run 1 --requirements 2026-07-28
+          want_line "Total: 193 passed, 1 failed" "requirement set changed"
+          want_line "Not scored for 2026-07-28: 13 scenario(s) run, 0 failing. These do not affect conformance." "a not-scored scenario (tasks-*, json-schema, headers) is failing or the set changed"
+          failing=$(grep -E "^✗ " out.txt | sed -E 's/^✗ ([^:]+):.*/\1/' | sort | tr '\n' ' ' || true)
+          [ "$failing" = "input-required-result-non-tool-request " ] || { echo "::error::unexpected failing scenarios: $failing"; fail=1; }
+          echo "::endgroup::"
+
+          # Per-scenario floors for the suites the totals above could mask if
+          # the requirement set is ever re-cut upstream.
           echo "::group::server-stateless"
-          out=$(run --suite draft --scenario server-stateless); echo "$out"
-          echo "$out" | grep -q "Passed: 30/30" || { echo "::error::server-stateless regressed (want 30/30)"; fail=1; }
+          run 0 --suite draft --scenario server-stateless
+          want_line "Passed: 30/30, 0 failed, 0 warnings" "server-stateless regressed"
           echo "::endgroup::"
 
           echo "::group::http-header-validation"
-          out=$(run --suite draft --scenario http-header-validation); echo "$out"
-          echo "$out" | grep -q "Passed: 14/14" || { echo "::error::header-validation regressed (want 14/14)"; fail=1; }
+          run 0 --suite draft --scenario http-header-validation
+          want_line "Passed: 14/14, 0 failed, 0 warnings" "header-validation regressed"
           echo "::endgroup::"
 
           echo "::group::http-custom-header-server-validation"
-          out=$(run --suite draft --scenario http-custom-header-server-validation); echo "$out"
-          echo "$out" | grep -q "Passed: 10/10" || { echo "::error::custom-header validation regressed (want 10/10)"; fail=1; }
+          run 0 --suite draft --scenario http-custom-header-server-validation
+          want_line "Passed: 10/10, 0 failed, 0 warnings" "custom-header validation regressed"
           echo "::endgroup::"
-
-          # Tasks-extension scenarios: every substantive check passes; the only
-          # tolerated failure per scenario is the suite's wire-schema-valid
-          # check, whose vendored core schema lacks the extension's
-          # CreateTaskResult shape (upstream harness gap).
-          for s in tasks-lifecycle tasks-capability-negotiation tasks-wire-fields \
-                   tasks-request-state-removal tasks-mrtr-input tasks-request-headers \
-                   tasks-dispatch-and-envelope tasks-required-task-error tasks-mrtr-composition; do
-            echo "::group::$s"
-            out=$(run --scenario "$s"); echo "$out"
-            if echo "$out" | grep -qE "Passed: [0-9]+/[0-9]+, 0 failed"; then
-              :
-            elif echo "$out" | grep -qE "Passed: [0-9]+/[0-9]+, 1 failed" \
-                 && [ "$(echo "$out" | grep -c FAILURE)" = "1" ] \
-                 && echo "$out" | grep -q "wire-schema-valid.*FAILURE"; then
-              :  # the known harness gap, alone, in a COMPLETED run
-            else
-              echo "::error::$s has substantive failures (or the run did not complete)"; fail=1
-            fi
-            echo "::endgroup::"
-          done
 
           exit $fail
 

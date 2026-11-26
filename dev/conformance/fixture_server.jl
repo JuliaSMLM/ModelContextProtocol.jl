@@ -39,6 +39,197 @@ const SERVER_REF = Ref{Any}(nothing)
 _val(d, k) = d isa AbstractDict ?
     (haskey(d, k) ? d[k] : (haskey(d, Symbol(k)) ? d[Symbol(k)] : nothing)) : nothing
 
+# ---- MRTR (SEP-2322) fixtures: the input-required-result-* scenario contract ----
+
+# A single-string-property object schema, as the scenarios' elicitations use.
+_object_schema(prop::String, type::String) = Dict{String,Any}(
+    "type" => "object",
+    "properties" => Dict{String,Any}(prop => Dict{String,Any}("type" => type)),
+    "required" => [prop])
+
+# An accepted elicitation response's content value, or `nothing` when the response
+# is absent or is not an accepted ElicitResult (the handler then asks again).
+function _accepted(responses, key::String, prop::String)
+    resp = get(responses, key, nothing)
+    _val(resp, "action") == "accept" || return nothing
+    _val(_val(resp, "content"), prop)
+end
+
+const _SAMPLE_CAPITAL = Dict{String,Any}(
+    "messages" => [Dict{String,Any}(
+        "role" => "user",
+        "content" => Dict{String,Any}("type" => "text",
+                                      "text" => "What is the capital of France?"))],
+    "maxTokens" => 100)
+
+const _SAMPLE_GREETING = Dict{String,Any}(
+    "messages" => [Dict{String,Any}(
+        "role" => "user",
+        "content" => Dict{String,Any}("type" => "text", "text" => "Generate a greeting"))],
+    "maxTokens" => 50)
+
+mrtr_tools = [
+    MCPTool(
+        name = "test_input_required_result_elicitation",
+        description = "MRTR: asks for a name by elicitation, then greets",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            name = _accepted(input_responses(ctx), "user_name", "name")
+            name === nothing && return InputRequired(Dict("user_name" => elicit_request(
+                "What is your name?"; requested_schema = _object_schema("name", "string"))))
+            TextContent(text = "Hello, $(name)!")
+        end),
+    MCPTool(
+        name = "test_input_required_result_sampling",
+        description = "MRTR: asks the client's model a question, then returns its answer",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            resp = get(input_responses(ctx), "capital_question", nothing)
+            text = _val(_val(resp, "content"), "text")
+            text === nothing && return InputRequired(
+                Dict("capital_question" => sampling_request(_SAMPLE_CAPITAL)))
+            TextContent(text = "Sampling answer: $(text)")
+        end),
+    MCPTool(
+        name = "test_input_required_result_list_roots",
+        description = "MRTR: asks for the client's roots, then lists them",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            roots = _val(get(input_responses(ctx), "client_roots", nothing), "roots")
+            roots === nothing && return InputRequired(Dict("client_roots" => roots_request()))
+            uris = [string(something(_val(r, "uri"), "?")) for r in roots]
+            TextContent(text = "Client roots: $(join(uris, ", "))")
+        end),
+    MCPTool(
+        name = "test_input_required_result_request_state",
+        description = "MRTR: carries handler state through requestState",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            ok = _accepted(input_responses(ctx), "confirm", "ok")
+            state = input_state(ctx)
+            (ok === nothing || _val(state, "issued") != "confirm") && return InputRequired(
+                Dict("confirm" => elicit_request(
+                    "Please confirm"; requested_schema = _object_schema("ok", "boolean")));
+                state = Dict{String,Any}("issued" => "confirm"))
+            TextContent(text = "state-ok: confirmation was $(ok)")
+        end),
+    MCPTool(
+        name = "test_input_required_result_multiple_inputs",
+        description = "MRTR: one round with elicitation, sampling and roots requests",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            responses = input_responses(ctx)
+            # Complete only when every reply carries its value: the name from the
+            # elicitation, the text from the sampling and the roots list
+            name = _accepted(responses, "user_name", "name")
+            greeting = _val(_val(get(responses, "greeting", nothing), "content"), "text")
+            roots = _val(get(responses, "client_roots", nothing), "roots")
+            if name !== nothing && greeting !== nothing && roots isa AbstractVector &&
+               _val(input_state(ctx), "issued") == "all"
+                return TextContent(
+                    text = "$(greeting) $(name), with $(length(roots)) root(s)")
+            end
+            InputRequired(Dict(
+                    "user_name" => elicit_request(
+                        "What is your name?";
+                        requested_schema = _object_schema("name", "string")),
+                    "greeting" => sampling_request(_SAMPLE_GREETING),
+                    "client_roots" => roots_request());
+                state = Dict{String,Any}("issued" => "all"))
+        end),
+    MCPTool(
+        name = "test_input_required_result_multi_round",
+        description = "MRTR: two elicitation rounds with evolving requestState",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            responses = input_responses(ctx)
+            state = input_state(ctx)
+            round = something(_val(state, "round"), 0)
+            if round == 1
+                name = _accepted(responses, "step1", "name")
+                name !== nothing && return InputRequired(
+                    Dict("step2" => elicit_request(
+                        "Step 2: What is your favorite color?";
+                        requested_schema = _object_schema("color", "string")));
+                    state = Dict{String,Any}("round" => 2, "name" => name))
+            elseif round == 2
+                color = _accepted(responses, "step2", "color")
+                color !== nothing && return TextContent(
+                    text = "$(_val(state, "name")) likes $(color)")
+                return InputRequired(
+                    Dict("step2" => elicit_request(
+                        "Step 2: What is your favorite color?";
+                        requested_schema = _object_schema("color", "string")));
+                    state = state)
+            end
+            InputRequired(
+                Dict("step1" => elicit_request(
+                    "Step 1: What is your name?";
+                    requested_schema = _object_schema("name", "string")));
+                state = Dict{String,Any}("round" => 1))
+        end),
+    MCPTool(
+        name = "test_input_required_result_tampered_state",
+        description = "MRTR: issues integrity-protected requestState (the server rejects a tampered one)",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            ok = _accepted(input_responses(ctx), "confirm", "ok")
+            ok === nothing && return InputRequired(
+                Dict("confirm" => elicit_request(
+                    "Please confirm"; requested_schema = _object_schema("ok", "boolean")));
+                state = Dict{String,Any}("issued" => "confirm"))
+            TextContent(text = "confirmed: $(ok)")
+        end),
+    MCPTool(
+        name = "test_input_required_result_capabilities",
+        description = "MRTR: asks only for the input kinds this request's client declared",
+        parameters = ToolParameter[],
+        handler = (args, ctx) -> begin
+            isempty(input_responses(ctx)) || return TextContent(text = "inputs received")
+            wanted = Dict(
+                "user_name" => elicit_request(
+                    "What is your name?"; requested_schema = _object_schema("name", "string")),
+                "greeting" => sampling_request(_SAMPLE_GREETING),
+                "client_roots" => roots_request())
+            usable = filter(
+                p -> ModelContextProtocol.capability_satisfied(ctx.client_capabilities, p.second),
+                wanted)
+            isempty(usable) && return TextContent(text = "client declared no input capability")
+            InputRequired(usable)
+        end),
+    # SEP-1613 / SEP-2106: the schema must reach tools/list with every keyword intact
+    MCPTool(
+        name = "json_schema_2020_12_tool",
+        description = "Tool with JSON Schema 2020-12 features",
+        input_schema = Dict{String,Any}(
+            "\$schema" => "https://json-schema.org/draft/2020-12/schema",
+            "type" => "object",
+            "\$defs" => Dict{String,Any}("address" => Dict{String,Any}(
+                "\$anchor" => "addressDef",
+                "type" => "object",
+                "properties" => Dict{String,Any}(
+                    "street" => Dict{String,Any}("type" => "string"),
+                    "city" => Dict{String,Any}("type" => "string")))),
+            "properties" => Dict{String,Any}(
+                "name" => Dict{String,Any}("type" => "string"),
+                "address" => Dict{String,Any}("\$ref" => "#/\$defs/address"),
+                "contactMethod" => Dict{String,Any}("type" => "string",
+                                                    "enum" => ["phone", "email"]),
+                "phone" => Dict{String,Any}("type" => "string"),
+                "email" => Dict{String,Any}("type" => "string")),
+            "allOf" => [Dict{String,Any}("anyOf" => [
+                Dict{String,Any}("required" => ["phone"]),
+                Dict{String,Any}("required" => ["email"])])],
+            "if" => Dict{String,Any}(
+                "properties" => Dict{String,Any}(
+                    "contactMethod" => Dict{String,Any}("const" => "phone")),
+                "required" => ["contactMethod"]),
+            "then" => Dict{String,Any}("required" => ["phone"]),
+            "else" => Dict{String,Any}("required" => ["email"]),
+            "additionalProperties" => false),
+        handler = args -> TextContent(text = "json_schema_2020_12_tool called")),
+]
+
 tools = [
     MCPTool(
         name = "test_simple_text",
@@ -361,7 +552,7 @@ server = mcp_server(
     name = "conformance-fixture-server",
     version = "0.1.0",
     description = "Fixture server for the official MCP conformance suite",
-    tools = tools,
+    tools = vcat(tools, mrtr_tools),
     resources = resources,
     resource_templates = templates,
     prompts = prompts,
