@@ -66,8 +66,9 @@ struct InputRequest
             mode in ("form", "url") || throw(ArgumentError(
                 "elicitation mode must be \"form\" or \"url\" (got $(repr(mode)))"))
             if mode == "url"
-                get(params, "url", nothing) isa AbstractString ||
-                    throw(ArgumentError("a URL-mode elicitation needs a string `url`"))
+                url = get(params, "url", nothing)
+                (url isa AbstractString && _valid_http_url(url)) || throw(ArgumentError(
+                    "a URL-mode elicitation needs a valid absolute http(s) `url` without userinfo (got $(repr(url)))"))
             else
                 get(params, "requestedSchema", nothing) isa AbstractDict ||
                     throw(ArgumentError("a form-mode elicitation needs a `requestedSchema` object"))
@@ -145,8 +146,8 @@ const _URL_UNRESERVED_SUBDELIMS = "[A-Za-z0-9._~!\\\$&'()*+,;=-]"
 const _URL_PCHAR = "(?:$(_URL_UNRESERVED_SUBDELIMS)|[:@]|$(_URL_PCT))"
 const _HTTP_URL = Regex(
     "\\A[Hh][Tt][Tt][Pp][Ss]?://" *
-    "(?<host>\\[[^\\]\\[/?#@]*\\]|(?:$(_URL_UNRESERVED_SUBDELIMS)|$(_URL_PCT))+)" *
-    "(?::(?<port>[0-9]{1,5}))?" *
+    "(?<host>\\[[0-9A-Fa-f:.]*\\]|(?:$(_URL_UNRESERVED_SUBDELIMS)|$(_URL_PCT))+)" *
+    "(?::(?<port>[0-9]+))?" *
     "(?:/$(_URL_PCHAR)*)*" *
     "(?:\\?(?:$(_URL_PCHAR)|[/?])*)?" *
     "(?:#(?:$(_URL_PCHAR)|[/?])*)?\\z")
@@ -166,7 +167,7 @@ function _valid_ipv6_literal(s::AbstractString)::Bool
     for (i, g) in enumerate(groups)
         if occursin('.', g)
             (i == length(groups) && endswith(s, g) && occursin(
-                r"\A(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\z", g)) ||
+                _IPV4_DOTTED, g)) ||
                 return false
             count += 2
         else
@@ -177,22 +178,43 @@ function _valid_ipv6_literal(s::AbstractString)::Bool
     length(halves) == 2 ? count <= 7 : count == 8
 end
 
+const _IPV4_DOTTED = r"\A(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\z"
+
+# A registered-name host, as written (percent escapes allowed). Decoded, it must
+# be ASCII made of the characters a host may contain (so no escaped "/", "@" or
+# space, and no escaped non-ASCII: internationalized names go in punycode), with
+# at least one letter or digit. A name whose last label is a number is an IPv4
+# address to a browser, so it must be a valid dotted one.
+function _valid_registered_host(host::AbstractString)::Bool
+    decoded = replace(host, r"%[0-9A-Fa-f]{2}" => s -> Char(parse(UInt8, s[2:3]; base=16)))
+    (isascii(decoded) && occursin(r"\A[A-Za-z0-9._~!$&'()*+,;=-]+\z", decoded) &&
+     occursin(r"[A-Za-z0-9]", decoded)) || return false
+    name = endswith(decoded, '.') ? chop(decoded) : decoded   # one trailing dot is the root
+    if occursin(r"\A(?:[0-9]+|0[xX][0-9A-Fa-f]*)\z", last(split(name, '.')))
+        occursin(_IPV4_DOTTED, name) || return false
+    end
+    true
+end
+
 # Whether `url` is an absolute http(s) URL that is valid as written under RFC
-# 3986: only characters the grammar allows in each component (so no spaces,
-# quotes, brackets outside an IP literal, non-ASCII, or malformed percent
-# escapes), a registered-name host with at least one letter or digit or a valid
-# bracketed IPv6 literal, a port in range, and no userinfo (the host part admits
-# no "@"). Internationalized hosts must be given in punycode.
+# 3986 and that a browser can open: only characters the grammar allows in each
+# component (so no spaces, quotes, brackets outside an IP literal, non-ASCII, or
+# malformed percent escapes), a host that is a valid registered name or a valid
+# bracketed IPv6 literal, a port up to 65535, and no userinfo (the host part
+# admits no "@").
 function _valid_http_url(url::AbstractString)::Bool
     m = match(_HTTP_URL, url)
     m === nothing && return false
     host = m[:host]
     if startswith(host, '[')
-        _valid_ipv6_literal(host[2:end-1]) || return false
+        _valid_ipv6_literal(SubString(host, 2, lastindex(host) - 1)) || return false
     else
-        occursin(r"[A-Za-z0-9]", host) || return false
+        _valid_registered_host(host) || return false
     end
-    m[:port] === nothing || parse(Int, m[:port]) <= 65535 || return false
+    if m[:port] !== nothing
+        digits = lstrip(m[:port], '0')
+        (length(digits) <= 5 && (isempty(digits) || parse(Int, digits) <= 65535)) || return false
+    end
     true
 end
 

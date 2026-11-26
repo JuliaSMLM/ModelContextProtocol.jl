@@ -601,6 +601,21 @@ build byte-identical responses.
 function modern_input_required_response(server::Server, ir::InputRequired, id,
                                         method::String, client_capabilities,
                                         params_digest, principal::String)::Response
+    # One validated, owned snapshot of every request: the capability check and the
+    # wire form both read it, whatever the handler did (or still does) to the
+    # values it returned. A request that no longer validates is the handler's bug
+    ir = try
+        frozen_input_required(ir)
+    catch e
+        e isa ArgumentError || rethrow()
+        return JSONRPCError(
+            id = id,
+            error = ErrorInfo(
+                code = ErrorCodes.INTERNAL_ERROR,
+                message = "The handler returned an invalid input request: $(e.msg)"
+            )
+        )
+    end
     required = undeclared_capability_requirements(ir, client_capabilities)
     if !isempty(required)
         JSONRPCError(

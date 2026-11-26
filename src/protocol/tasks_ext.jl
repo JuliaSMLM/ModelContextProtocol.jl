@@ -338,6 +338,12 @@ function _frozen_input_request(r::InputRequest)::InputRequest
     InputRequest(r.method, _frozen_json(r.params))
 end
 
+# An InputRequired whose requests are all frozen snapshots (see above): what the
+# MRTR path checks against the client's capabilities and then serializes
+frozen_input_required(ir::InputRequired)::InputRequired =
+    InputRequired(LittleDict{String,InputRequest}(
+        k => _frozen_input_request(r) for (k, r) in ir.requests); state = ir.state)
+
 function task_await_input(ctx::RequestContext,
                           requests::AbstractVector{InputRequest})::Vector{Any}
     record = ctx.task

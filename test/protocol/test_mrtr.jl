@@ -235,7 +235,13 @@
                     "https://[:::]/", "https://[zz]/", "https://[::1/", "https://[1:2:3:4:5:6:7]/",
                     "https://[v7.fe80::1]/", "https://foo.example/%ZZ", "https://foo.example/%4",
                     "https://example.org/a[b]", "https://example.org/#a#b", "https://example.org/{id}",
-                    "https://example.org/?q=a|b", "https://example.org\\x", "https://..", "https://-/")
+                    "https://example.org/?q=a|b", "https://example.org\\x", "https://..", "https://-/",
+                    # a multibyte character inside brackets, a port out of range
+                    # however it is spelled, an escaped "/" or non-ASCII in the
+                    # host, and a numeric host that is not an IPv4 address
+                    "https://[\u00e9]/", "https://example.org:065536/", "https://bad%2fhost.example/",
+                    "https://ex%C3%A4mple.org/", "https://999.999.999.999/", "https://1.2.3/",
+                    "https://example.0x10/")
             @test_throws ArgumentError elicit_url_request("m", bad)
         end
         # ...while ordinary forms pass unchanged: ports, IPv4 and IPv6 literals,
@@ -244,7 +250,8 @@
                      "http://localhost:3000/cb", "http://[::1]:8080/x", "https://[2001:db8::1]/",
                      "https://[::ffff:192.168.1.1]/", "https://192.168.1.1/", "https://a.b-c.example./",
                      "https://exa%6dple.org/", "https://exa_mple.org/", "https://example.org/@x:y",
-                     "HTTPS://Example.ORG/a;b=c/~d?q=a/b?c#f/g?h")
+                     "HTTPS://Example.ORG/a;b=c/~d?q=a/b?c#f/g?h",
+                     "https://example.org:000443/cb", "https://127.0.0.1./", "https://a1.example/")
             @test elicit_url_request("m", good).params["url"] == good
         end
         # A message of any string type is taken
@@ -305,6 +312,11 @@
             "mode" => "form", :mode => "url", "message" => "m", "url" => "https://e.org/",
             "requestedSchema" => Dict()))
         @test_throws ArgumentError IR("sampling/createMessage", Dict(1 => 2))
+        # A hand-built URL request passes the same URL check as the helper
+        @test_throws ArgumentError IR("elicitation/create",
+            Dict("mode" => "url", "message" => "m", "url" => "not a url"))
+        @test_throws ArgumentError IR("elicitation/create",
+            Dict("mode" => "url", "message" => "m", "url" => "https://user:pw@e.org/"))
         # The request owns its params: changing the caller's dictionary afterwards
         # changes neither what is checked nor what is sent
         mine = Dict{String,Any}("message" => "m", "requestedSchema" => Dict("type" => "object", "properties" => Dict()))
@@ -360,6 +372,36 @@
             @test haskey(r["error"]["data"]["requiredCapabilities"]["elicitation"], "url")
             @test !haskey(r["error"]["data"]["requiredCapabilities"]["elicitation"], "form")
         end
+
+        # A request changed after it was built is checked and sent as ONE snapshot:
+        # a mode the client was never asked about cannot reach the wire
+        for (name, tamper) in (
+                ("voice", r -> (r.params["mode"] = "voice")),
+                ("bad-url", r -> (r.params["mode"] = "url"; r.params["url"] = "not a url")),
+                ("unserializable", r -> (r.params["requestedSchema"] = Dict("x" => Inf))))
+            register!(server, MCPTool(name = "tampered-$name", description = "t", parameters = [],
+                handler = (args, ctx) -> begin
+                    r = elicit_request("q")
+                    tamper(r)
+                    InputRequired(Dict("q" => r))
+                end))
+            r = call(7, Dict("name" => "tampered-$name", "arguments" => Dict(), "_meta" => mmeta(form_only)))
+            @test r["error"]["code"] == -32603
+            @test occursin("invalid input request", r["error"]["message"])
+        end
+        # ...while a request switched to URL mode properly is judged as a URL request
+        register!(server, MCPTool(name = "switched", description = "t", parameters = [],
+            handler = (args, ctx) -> begin
+                r = elicit_request("q")
+                delete!(r.params, "requestedSchema")
+                r.params["mode"] = "url"; r.params["url"] = "https://example.com/x"
+                InputRequired(Dict("q" => r))
+            end))
+        r = call(8, Dict("name" => "switched", "arguments" => Dict(), "_meta" => mmeta(form_only)))
+        @test r["error"]["code"] == -32021
+        @test haskey(r["error"]["data"]["requiredCapabilities"]["elicitation"], "url")
+        r = call(9, Dict("name" => "switched", "arguments" => Dict(), "_meta" => mmeta(both)))
+        @test r["result"]["inputRequests"]["q"]["params"]["mode"] == "url"
 
         # A url-capable client gets the URL request, then completes on accept
         r = call(2, Dict("name" => "connect", "arguments" => Dict(), "_meta" => mmeta(both)))

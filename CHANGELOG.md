@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check, so a URL request to a client without URL support now fails the task instead
   of being sent. A hand-built input request is validated when constructed: its
   params are a dictionary and a present elicitation mode is `"form"` or `"url"`.
+  What a handler returns is checked and sent as one snapshot of plain JSON data,
+  so the capability check and the wire form cannot differ.
 
 ### Changed
 - Conformance CI now runs the official suite at its 2026-11-10 revision and gates on
