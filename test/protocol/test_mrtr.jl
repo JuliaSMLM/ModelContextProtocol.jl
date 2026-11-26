@@ -313,6 +313,13 @@
             "mode" => "form", :mode => "url", "message" => "m", "url" => "https://e.org/",
             "requestedSchema" => Dict()))
         @test_throws ArgumentError IR("sampling/createMessage", Dict(1 => 2))
+        # A form's schema is an object schema with properties
+        for schema in (Dict("type" => "string"), Dict("type" => 5, "properties" => Dict()),
+                       Dict("type" => "object", "properties" => [1]), Dict("properties" => Dict()), [1])
+            @test_throws ArgumentError elicit_request("m"; requested_schema = schema)
+        end
+        @test elicit_request("m"; requested_schema = Dict(:type => "object", :properties => Dict(
+            :n => Dict(:type => "string")))) isa IR
         # A hand-built URL request passes the same URL check as the helper
         @test_throws ArgumentError IR("elicitation/create",
             Dict("mode" => "url", "message" => "m", "url" => "not a url"))
@@ -379,7 +386,10 @@
         for (name, tamper) in (
                 ("voice", r -> (r.params["mode"] = "voice")),
                 ("bad-url", r -> (r.params["mode"] = "url"; r.params["url"] = "not a url")),
-                ("unserializable", r -> (r.params["requestedSchema"] = Dict("x" => Inf))))
+                ("unserializable", r -> (r.params["requestedSchema"] = Dict(
+                    "type" => "object", "properties" => Dict("x" => Dict("default" => Inf))))),
+                ("schema-type", r -> (r.params["requestedSchema"]["type"] = 5)),
+                ("no-schema", r -> delete!(r.params, "requestedSchema")))
             register!(server, MCPTool(name = "tampered-$name", description = "t", parameters = [],
                 handler = (args, ctx) -> begin
                     r = elicit_request("q")
@@ -390,6 +400,16 @@
             @test r["error"]["code"] == -32603
             @test occursin("invalid input request", r["error"]["message"])
         end
+        # Package content types inside a sampling request keep their wire form
+        register!(server, MCPTool(name = "typed-sampling", description = "t", parameters = [],
+            handler = (args, ctx) -> InputRequired(Dict("s" => sampling_request(Dict(
+                "maxTokens" => 8,
+                "messages" => [Dict("role" => "user", "content" => TextContent(text = "hello"))]))))))
+        r = call(10, Dict("name" => "typed-sampling", "arguments" => Dict(),
+                          "_meta" => mmeta(Dict("sampling" => Dict()))))
+        sent = r["result"]["inputRequests"]["s"]["params"]["messages"][1]["content"]
+        @test sent["type"] == "text" && sent["text"] == "hello"
+        @test JSON3.write(sent) == JSON3.write(TextContent(text = "hello"))
         # ...while a request switched to URL mode properly is judged as a URL request
         register!(server, MCPTool(name = "switched", description = "t", parameters = [],
             handler = (args, ctx) -> begin

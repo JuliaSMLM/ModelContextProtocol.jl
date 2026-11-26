@@ -70,12 +70,25 @@ struct InputRequest
                 (url isa AbstractString && _valid_http_url(url)) || throw(ArgumentError(
                     "a URL-mode elicitation needs a valid absolute http(s) `url` without userinfo (got $(repr(url)))"))
             else
-                get(params, "requestedSchema", nothing) isa AbstractDict ||
-                    throw(ArgumentError("a form-mode elicitation needs a `requestedSchema` object"))
+                _valid_form_schema(get(params, "requestedSchema", nothing)) || throw(ArgumentError(
+                    "a form-mode elicitation needs a `requestedSchema` that is an object schema: " *
+                    "a dictionary with \"type\" => \"object\" (and \"properties\", a dictionary)"))
             end
         end
         new(method, params)
     end
+end
+
+# The wire type of a form's requestedSchema is an object schema: its type is
+# "object" and its properties, when given, are a dictionary. Keys may be Strings
+# or Symbols here (a frozen snapshot has Strings only)
+function _valid_form_schema(schema)::Bool
+    schema isa AbstractDict || return false
+    field(name) = haskey(schema, name) ? schema[name] : get(schema, Symbol(name), nothing)
+    kind = field("type")
+    (kind isa Union{AbstractString,Symbol} && string(kind) == "object") || return false
+    properties = field("properties")
+    properties === nothing || properties isa Union{AbstractDict,NamedTuple}
 end
 
 # The request's own copy of its top-level params, with String keys: what the
