@@ -1116,8 +1116,8 @@
         # collect what comes back until `want` responses arrived, the server closed
         # the connection, or `wait` seconds passed.
         # Returns (received text, whether the server closed, seconds until done).
-        function exchange(parts...; want = 2, wait = 5)
-            sock = HTTP.Sockets.connect("127.0.0.1", port)
+        function exchange(parts...; want = 2, wait = 5, to = port)
+            sock = HTTP.Sockets.connect("127.0.0.1", to)
             received = IOBuffer()
             reader = @async try
                 while !eof(sock)
@@ -1216,6 +1216,34 @@
         @test occursin(r"(?i)\r\nconnection: close\r\n", responses)
         @test closed
         @test 4 < elapsed < 9
+
+        # The 401 of a server that requires a bearer token: the path a remote
+        # deployment meets from every client that has not signed in yet
+        auth_port = port + 1
+        validator = ModelContextProtocol.SimpleTokenValidator()
+        add_token!(validator, "sk-good", ModelContextProtocol.AuthenticatedUser(
+            subject = "u", provider = "api_key", username = "u"))
+        auth_transport = HttpTransport(port = auth_port, auth = ModelContextProtocol.AuthMiddleware(
+            config = ModelContextProtocol.OAuthConfig(issuer = "local", audience = "local"),
+            validator = validator))
+        auth_server = mcp_server(name = "reject-early-auth", version = "1.0.0")
+        auth_server.transport = auth_transport
+        ModelContextProtocol.connect(auth_transport)
+        auth_task = @async start!(auth_server)
+        sleep(2)
+        auth_host = "127.0.0.1:$auth_port"
+        signed(token) = request("POST", "/", ["Host" => auth_host, "Content-Type" => "application/json",
+                                             "Accept" => "application/json, text/event-stream",
+                                             "Authorization" => "Bearer $token"], body)
+        unsigned = request("POST", "/", ["Host" => auth_host, "Content-Type" => "application/json"], body)
+        for first in (unsigned, signed("sk-wrong"))
+            responses, closed, _ = exchange(first, 0.3, signed("sk-good"); to = auth_port)
+            @test statuses(responses) == ["401", "200"]
+            @test !closed
+            @test occursin(r"(?i)\r\nwww-authenticate: Bearer", responses)
+        end
+        auth_server.active = false
+        ModelContextProtocol.close(auth_transport)
 
         # A pooling client: rejected and good requests alternating
         for _ in 1:20
