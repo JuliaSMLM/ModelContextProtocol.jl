@@ -1090,10 +1090,12 @@
         Base.close(timer)
     end
 
-    @testset "A request rejected before processing leaves its connection usable" begin
-        # The 403/404/405/415 answers are sent without the request being processed.
-        # Its body must still be read, or the server drops the connection and a
-        # client that pools connections loses its next request ("other side closed").
+    @testset "A response sent before the body is read leaves its connection usable" begin
+        # The 403/404/405/415 answers (and the health check) are sent without the
+        # request being processed. Its body must still be read, or the server drops
+        # the connection and a client that pools connections loses its next request
+        # ("other side closed"). The read is bounded in bytes and in time; past
+        # either bound the response says `Connection: close` and the server closes.
         port = 19090 + rand(1001:2000)
         transport = HttpTransport(port = port)
         server = mcp_server(name = "reject-early", version = "1.0.0")
@@ -1104,14 +1106,17 @@
 
         body = """{"jsonrpc":"2.0","id":1,"method":"ping"}"""
         host = "127.0.0.1:$port"
+        head(method, path, headers) =
+            "$method $path HTTP/1.1\r\n" * join(("$k: $v\r\n" for (k, v) in headers)) * "\r\n"
         request(method, path, headers, payload) =
-            "$method $path HTTP/1.1\r\n" * join(("$k: $v\r\n" for (k, v) in headers)) *
-            "Content-Length: $(ncodeunits(payload))\r\n\r\n" * payload
+            head(method, path, vcat(headers, ["Content-Length" => string(ncodeunits(payload))])) * payload
         good = request("POST", "/", ["Host" => host, "Content-Type" => "application/json",
                                      "Accept" => "application/json, text/event-stream"], body)
-        # Send `first` and then `good` on ONE connection; return everything received
-        # until both responses are in (or 5 s pass)
-        function two_requests(first)
+        # Write `parts` in order on ONE connection (a Real is a pause in seconds) and
+        # collect what comes back until `want` responses arrived, the server closed
+        # the connection, or `wait` seconds passed.
+        # Returns (received text, whether the server closed, seconds until done).
+        function exchange(parts...; want = 2, wait = 5)
             sock = HTTP.Sockets.connect("127.0.0.1", port)
             received = IOBuffer()
             reader = @async try
@@ -1120,45 +1125,99 @@
                 end
             catch
             end
-            write(sock, first)
-            sleep(0.3)
-            try
-                write(sock, good)
-            catch
+            started = time()
+            for part in parts
+                part isa Real ? sleep(part) : try
+                    write(sock, part)
+                catch
+                end
             end
-            timer = Timer(5)
-            while isopen(timer) && count("HTTP/1.1 ", String(copy(received.data[1:received.size]))) < 2 &&
-                  !istaskdone(reader)
-                sleep(0.05)
+            seen() = String(copy(received.data[1:received.size]))
+            timer = Timer(wait)
+            while isopen(timer) && !istaskdone(reader) &&
+                  length(collect(eachmatch(r"HTTP/1\.1 [2-5]\d\d", seen()))) < want
+                sleep(0.02)
             end
+            sleep(0.1)  # let a close that follows the last response show
+            elapsed = time() - started
+            closed = istaskdone(reader)
             Base.close(timer); Base.close(sock)
-            String(take!(received))
+            String(take!(received)), closed, elapsed
         end
-        rejected = [
-            ("415", request("POST", "/", ["Host" => host, "Content-Type" => "text/plain"], body)),
-            ("404", request("POST", "/elsewhere", ["Host" => host, "Content-Type" => "application/json"], body)),
-            ("405", request("PUT", "/", ["Host" => host, "Content-Type" => "application/json"], body)),
+        statuses(text) = [m.match[10:12] for m in eachmatch(r"HTTP/1\.1 [2-5]\d\d", text)]
+        json = ["Host" => host, "Content-Type" => "application/json"]
+        text_plain = ["Host" => host, "Content-Type" => "text/plain"]
+
+        # Each early response, with a body, followed by a good request on the same
+        # connection: both are answered, and the connection is not closed
+        early = [
+            ("415", request("POST", "/", text_plain, body)),
+            ("404", request("POST", "/elsewhere", json, body)),
+            ("404", request("GET", "/.well-known/oauth-protected-resource", json, body)),
+            ("405", request("PUT", "/", json, body)),
             ("403", request("POST", "/", ["Host" => "evil.example", "Content-Type" => "application/json"], body)),
+            ("200", request("GET", "/", json, body)),   # the health check
+            # no body at all, and an empty one
+            ("415", head("POST", "/", text_plain)),
+            ("415", request("POST", "/", text_plain, "")),
+            # a chunked body, and an empty chunked body
+            ("415", head("POST", "/", vcat(text_plain, ["Transfer-Encoding" => "chunked"])) *
+                    "5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n"),
+            ("415", head("POST", "/", vcat(text_plain, ["Transfer-Encoding" => "chunked"])) * "0\r\n\r\n"),
+            # a body of exactly the most that is read
+            ("415", request("POST", "/", text_plain, "x"^(1024 * 1024))),
         ]
-        for (status, first) in rejected
-            responses = two_requests(first)
-            @test startswith(responses, "HTTP/1.1 $status")
-            # ...and the request that followed on the same connection was answered
-            @test occursin("HTTP/1.1 200", responses)
+        for (status, first) in early
+            responses, closed, _ = exchange(first, 0.3, good)
+            @test statuses(responses) == [status, "200"]
+            @test !closed
+            @test !occursin(r"(?i)\r\nconnection: close", responses)
             @test occursin("\"id\":1", responses)
         end
 
-        # A rejected request with a very large body is not read to the end: the
-        # response says the connection will close
-        huge = "x"^(2 * 1024 * 1024)
-        r = HTTP.post("http://127.0.0.1:$port/", ["Content-Type" => "text/plain"], huge;
+        # After `Expect: 100-continue` every early response is still a complete
+        # response: a status line and headers, not a bare body
+        for (status, path, headers) in (("404", "/elsewhere", json), ("415", "/", text_plain))
+            first = request("POST", path, vcat(headers, ["Expect" => "100-continue"]), body)
+            responses, closed, _ = exchange(first, 0.3, good)
+            @test occursin("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 $status", responses)
+            @test statuses(responses) == [status, "200"]
+            @test occursin(r"(?i)HTTP/1\.1 404[^\r]*\r\n(?:[^\r]+\r\n)*content-length: 9\r\n", responses) ||
+                  status != "404"
+        end
+
+        # A body over the limit is not read: the response comes at once, says the
+        # connection will close, and the server closes it. Nothing after it is served.
+        over = request("POST", "/", text_plain, "x"^(1024 * 1024 + 1))
+        responses, closed, elapsed = exchange(over, good; want = 2, wait = 4)
+        @test statuses(responses) == ["415"]
+        @test occursin(r"(?i)\r\nconnection: close\r\n", responses)
+        @test closed
+        @test elapsed < 4
+        # ...and an ordinary client sees that as a normal 415
+        r = HTTP.post("http://127.0.0.1:$port/", ["Content-Type" => "text/plain"], "x"^(2 * 1024 * 1024);
                       status_exception = false, retry = false)
         @test r.status == 415
         @test lowercase(HTTP.header(r, "Connection", "")) == "close"
 
-        # A pooling client: rejected and good requests alternating
+        # A body that never arrives does not hold the connection open: after the
+        # time bound the client gets its answer and the server closes. Meanwhile
+        # other connections are served.
+        stalled = head("POST", "/", vcat(text_plain, ["Content-Length" => "100"]))
+        stalled_result = @async exchange(stalled; want = 1, wait = 12)
+        sleep(0.5)
         url = "http://127.0.0.1:$port/"
         ok_headers = ["Content-Type" => "application/json", "Accept" => "application/json, text/event-stream"]
+        t0 = time()
+        @test HTTP.post(url, ok_headers, body; status_exception = false, retry = false).status == 200
+        @test time() - t0 < 2
+        responses, closed, elapsed = fetch(stalled_result)
+        @test statuses(responses) == ["415"]
+        @test occursin(r"(?i)\r\nconnection: close\r\n", responses)
+        @test closed
+        @test 4 < elapsed < 9
+
+        # A pooling client: rejected and good requests alternating
         for _ in 1:20
             @test HTTP.post(url, ["Content-Type" => "text/plain"], body;
                             status_exception = false, retry = false).status == 415
